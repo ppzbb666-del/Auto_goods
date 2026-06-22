@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
-import type { AutomationDryRunJob, AutomationFillDraftJob, AutomationFullFlowJob, AutomationSaveDraftJob, AutomationSubmitListingJob, SelectorCalibrationJob } from "@temu-ai-ops/shared"
-import { fetchAutomationDryRunJobLog, fetchAutomationFillDraftJobLog, fetchAutomationSaveDraftJobLog, fetchAutomationSubmitListingJobLog, fetchSelectorCalibrationJobLog } from "../api"
+import type { AutomationDryRunJob, AutomationFillDraftJob, AutomationFullFlowJob, AutomationRepairApplyJob, AutomationRepairPreviewJob, AutomationSaveDraftJob, AutomationSubmitListingJob, SelectorCalibrationJob, DianxiaomiAccountScanJob, DianxiaomiImageCheckJob } from "@temu-ai-ops/shared"
+import { fetchAutomationDryRunJobLog, fetchAutomationFillDraftJobLog, fetchAutomationRepairApplyJobLog, fetchAutomationRepairPreviewJobLog, fetchAutomationSaveDraftJobLog, fetchAutomationSubmitListingJobLog, fetchDianxiaomiAccountScanJobLog, fetchDianxiaomiImageCheckJobLog, fetchSelectorCalibrationJobLog } from "../api"
 
 const jobStatusClass = (status: string) => status === "completed" ? "completed" : status === "failed" ? "failed" : "partial"
 
@@ -71,6 +71,50 @@ export function FillDraftJobCard({ job }: { job: AutomationFillDraftJob }) {
   const { data: log } = useQuery({
     queryKey: ["automation-fill-draft-job-log", job.id],
     queryFn: () => fetchAutomationFillDraftJobLog(job.id),
+    refetchInterval: job.status === "running" ? 3000 : false
+  })
+
+  return (
+    <JobCardShell
+      status={job.status}
+      startedAt={job.startedAt}
+      exitCode={job.exitCode}
+      id={job.id}
+      logPath={job.logPath}
+      artifactDir={job.artifactDir}
+      reportStatus={job.reportStatus}
+      error={job.error}
+      log={log}
+    />
+  )
+}
+
+export function RepairPreviewJobCard({ job }: { job: AutomationRepairPreviewJob }) {
+  const { data: log } = useQuery({
+    queryKey: ["automation-repair-preview-job-log", job.id],
+    queryFn: () => fetchAutomationRepairPreviewJobLog(job.id),
+    refetchInterval: job.status === "running" ? 3000 : false
+  })
+
+  return (
+    <JobCardShell
+      status={job.status}
+      startedAt={job.startedAt}
+      exitCode={job.exitCode}
+      id={job.id}
+      logPath={job.logPath}
+      artifactDir={job.artifactDir}
+      reportStatus={job.reportStatus}
+      error={job.error}
+      log={log}
+    />
+  )
+}
+
+export function RepairApplyJobCard({ job }: { job: AutomationRepairApplyJob }) {
+  const { data: log } = useQuery({
+    queryKey: ["automation-repair-apply-job-log", job.id],
+    queryFn: () => fetchAutomationRepairApplyJobLog(job.id),
     refetchInterval: job.status === "running" ? 3000 : false
   })
 
@@ -176,5 +220,66 @@ export function SelectorCalibrationJobCard({ job }: { job: SelectorCalibrationJo
       error={job.error}
       log={log}
     />
+  )
+}
+
+export function DianxiaomiAccountScanJobCard({ job }: { job: DianxiaomiAccountScanJob }) {
+  const { data: log } = useQuery({
+    queryKey: ["dianxiaomi-account-scan-job-log", job.id],
+    queryFn: () => fetchDianxiaomiAccountScanJobLog(job.id),
+    refetchInterval: job.status === "running" ? 3000 : false
+  })
+
+  return (
+    <div className={`automation-report ${jobStatusClass(job.status)}`}>
+      <div className="report-main">
+        <strong>account scan {job.status}</strong>
+        <span>{new Date(job.startedAt).toLocaleString()}</span>
+        <span>{job.exitCode === null ? "running" : `exit ${job.exitCode}`}</span>
+      </div>
+      <div className="report-detail">
+        <span>{job.id}</span>
+        <span>{job.artifactDir}</span>
+        {job.result ? <span>stores {job.result.totals.storeCount} / links {job.result.totals.linkCount}</span> : null}
+        {job.error ? <span>{job.error}</span> : null}
+        {job.result?.stores.slice(0, 3).map((store) => (
+          <span key={`${store.storeName}-${store.shopId ?? "none"}`}>
+            {store.storeName}: {store.links.length}
+          </span>
+        ))}
+      </div>
+      {job.result?.warnings?.length ? (
+        <div className="account-scan-warning-list">
+          {job.result.warnings.map((warning) => <span key={warning}>{warning}</span>)}
+        </div>
+      ) : null}
+      {log ? <JobLogGrid stdout={log.stdout} stderr={log.stderr} /> : null}
+    </div>
+  )
+}
+
+export function DianxiaomiImageCheckJobCard({ job }: { job: DianxiaomiImageCheckJob }) {
+  const { data: log } = useQuery({
+    queryKey: ["dianxiaomi-image-check-job-log", job.id],
+    queryFn: () => fetchDianxiaomiImageCheckJobLog(job.id),
+    refetchInterval: job.status === "running" ? 3000 : false
+  })
+
+  return (
+    <div className={`automation-report ${jobStatusClass(job.status)}`}>
+      <div className="report-main">
+        <strong>image check {job.status}</strong>
+        <span>{new Date(job.startedAt).toLocaleString()}</span>
+        <span>{job.exitCode === null ? "running" : `exit ${job.exitCode}`}</span>
+      </div>
+      <div className="report-detail">
+        <span>{job.id}</span>
+        <span>{job.artifactDir}</span>
+        <span>{job.workItemId}</span>
+        {job.result ? <span>{job.result.passed ? "passed" : job.result.summary.join(" / ")}</span> : null}
+        {job.error ? <span>{job.error}</span> : null}
+      </div>
+      {log ? <JobLogGrid stdout={log.stdout} stderr={log.stderr} /> : null}
+    </div>
   )
 }

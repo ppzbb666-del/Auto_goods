@@ -83,7 +83,19 @@ import type {
   SelectorCalibrationJob,
   SelectorCalibrationJobLog,
   SelectorCalibrationStartInput,
-  SelectorCalibrationStartResult
+  SelectorCalibrationStartResult,
+  DianxiaomiAccountScanImportInput,
+  DianxiaomiAccountScanImportResult,
+  DianxiaomiAccountScanJob,
+  DianxiaomiAccountScanJobLog,
+  DianxiaomiAccountScanStartInput,
+  DianxiaomiAccountScanStartResult,
+  DianxiaomiPageContext,
+  DianxiaomiImageCheckJob,
+  DianxiaomiImageCheckJobLog,
+  DianxiaomiImageCheckStartInput,
+  DianxiaomiImageCheckStartResult,
+  DianxiaomiStoreMetrics
 } from "@temu-ai-ops/shared"
 
 const API_BASE = "http://localhost:8787"
@@ -108,10 +120,22 @@ const assertOkWithResponseMessage = async (response: Response, message: string) 
 const automationQuery = (input: AutomationDryRunStartInput = {}) => {
   const params = new URLSearchParams()
 
-  for (const key of ["url", "taskFile", "repairPlanFile", "profile", "screenshots", "selectorConfig", "mediaAutomationMode"] as const) {
+  for (const key of ["url", "taskFile", "repairPlanFile", "storeId", "storeName", "profile", "screenshots", "selectorConfig", "mediaAutomationMode"] as const) {
     const value = input[key]?.trim()
     if (value) {
       params.set(key, value)
+    }
+  }
+
+  for (const itemUrl of input.itemUrls ?? []) {
+    if (itemUrl.trim()) {
+      params.append("itemUrls", itemUrl.trim())
+    }
+  }
+
+  for (const sourceBucket of input.sourceBuckets ?? []) {
+    if (sourceBucket.trim()) {
+      params.append("sourceBuckets", sourceBucket.trim())
     }
   }
 
@@ -152,7 +176,7 @@ export const fetchDebugSnapshots = async (): Promise<PageDebugSnapshot[]> => {
 }
 
 export const fetchDianxiaomiCollectedProducts = async (): Promise<DianxiaomiCollectedProduct[]> => {
-  const response = await fetch(`${API_BASE}/dianxiaomi/collected-products`)
+  const response = await fetch(`${API_BASE}/dianxiaomi/collected-products?limit=100`)
   assertOk(response, "dianxiaomi collected products loading failed")
   return response.json()
 }
@@ -165,9 +189,24 @@ export const createTaskFromDianxiaomiCollectedProduct = async (id: string): Prom
   return response.json()
 }
 
-export const fetchDianxiaomiProductWorkItems = async (): Promise<DianxiaomiProductWorkItem[]> => {
-  const response = await fetch(`${API_BASE}/dianxiaomi/product-work-items`)
+export const fetchDianxiaomiProductWorkItems = async (
+  input: Pick<AutomationDryRunStartInput, "storeId" | "storeName" | "itemUrls" | "sourceBuckets"> = {},
+  limit = 100
+): Promise<DianxiaomiProductWorkItem[]> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/product-work-items?limit=${limit}${automationQuery(input) ? `&${automationQuery(input).slice(1)}` : ""}`)
   assertOk(response, "dianxiaomi product work items loading failed")
+  return response.json()
+}
+
+export const fetchDianxiaomiPageContext = async (): Promise<DianxiaomiPageContext | null> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/page-context`)
+  assertOk(response, "dianxiaomi page context loading failed")
+  return response.json()
+}
+
+export const fetchDianxiaomiStoreMetrics = async (): Promise<DianxiaomiStoreMetrics[]> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/store-metrics`)
+  assertOk(response, "dianxiaomi store metrics loading failed")
   return response.json()
 }
 
@@ -369,6 +408,12 @@ export const fetchAutomationRepairApplyJobs = async (): Promise<AutomationRepair
   return response.json()
 }
 
+export const fetchAutomationRepairApplyJob = async (id: string): Promise<AutomationRepairApplyJob> => {
+  const response = await fetch(`${API_BASE}/automation/repair-apply/jobs/${encodeURIComponent(id)}`)
+  assertOk(response, "automation repair apply job loading failed")
+  return response.json()
+}
+
 export const fetchAutomationRepairApplyJobLog = async (id: string): Promise<AutomationRepairApplyJobLog> => {
   const response = await fetch(`${API_BASE}/automation/repair-apply/jobs/${id}/logs?maxChars=3000`)
   assertOk(response, "automation repair apply job log loading failed")
@@ -435,8 +480,8 @@ export const fetchAutomationQueueDaemon = async (): Promise<AutomationQueueDaemo
   return response.json()
 }
 
-export const fetchAutomationQueueDaemonHealth = async (): Promise<AutomationQueueDaemonHealth> => {
-  const response = await fetch(`${API_BASE}/automation/queue-daemon/health`)
+export const fetchAutomationQueueDaemonHealth = async (input: AutomationDryRunStartInput = {}): Promise<AutomationQueueDaemonHealth> => {
+  const response = await fetch(`${API_BASE}/automation/queue-daemon/health${automationQuery(input)}`)
   assertOk(response, "automation queue daemon health loading failed")
   return response.json()
 }
@@ -646,6 +691,93 @@ export const fetchSelectorCalibrationJobs = async (): Promise<SelectorCalibratio
 export const fetchSelectorCalibrationJobLog = async (id: string): Promise<SelectorCalibrationJobLog> => {
   const response = await fetch(`${API_BASE}/selector-calibration/jobs/${id}/logs?maxChars=3000`)
   assertOk(response, "selector calibration job log loading failed")
+  return response.json()
+}
+
+export const startDianxiaomiAccountScan = async (input: DianxiaomiAccountScanStartInput = {}): Promise<DianxiaomiAccountScanStartResult> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/account-scan`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(input)
+  })
+  await assertOkWithResponseMessage(response, "dianxiaomi account scan start failed")
+  return response.json()
+}
+
+export const fetchDianxiaomiAccountScanJobs = async (): Promise<DianxiaomiAccountScanJob[]> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/account-scan/jobs`)
+  assertOk(response, "dianxiaomi account scan jobs loading failed")
+  return response.json()
+}
+
+export const fetchDianxiaomiAccountScanJob = async (id: string): Promise<DianxiaomiAccountScanJob> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/account-scan/jobs/${encodeURIComponent(id)}`)
+  await assertOkWithResponseMessage(response, "dianxiaomi account scan job loading failed")
+  return response.json()
+}
+
+export const fetchDianxiaomiAccountScanJobLog = async (id: string): Promise<DianxiaomiAccountScanJobLog> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/account-scan/jobs/${id}/logs?maxChars=3000`)
+  assertOk(response, "dianxiaomi account scan job log loading failed")
+  return response.json()
+}
+
+export const importDianxiaomiAccountScanJobLinks = async (
+  jobId: string,
+  input: DianxiaomiAccountScanImportInput
+): Promise<DianxiaomiAccountScanImportResult> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/account-scan/jobs/${encodeURIComponent(jobId)}/import`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(input)
+  })
+  await assertOkWithResponseMessage(response, "dianxiaomi account scan import failed")
+  return response.json()
+}
+
+export const startDianxiaomiImageCheck = async (input: DianxiaomiImageCheckStartInput): Promise<DianxiaomiImageCheckStartResult> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/image-check`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(input)
+  })
+  await assertOkWithResponseMessage(response, "dianxiaomi image check start failed")
+  return response.json()
+}
+
+export const startDianxiaomiWorkItemImageCheck = async (id: string, input: DianxiaomiImageCheckStartInput = {}): Promise<DianxiaomiImageCheckStartResult> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/product-work-items/${encodeURIComponent(id)}/image-check`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(input)
+  })
+  await assertOkWithResponseMessage(response, "dianxiaomi work item image check start failed")
+  return response.json()
+}
+
+export const fetchDianxiaomiImageCheckJobs = async (): Promise<DianxiaomiImageCheckJob[]> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/image-check/jobs`)
+  assertOk(response, "dianxiaomi image check jobs loading failed")
+  return response.json()
+}
+
+export const fetchDianxiaomiImageCheckJob = async (id: string): Promise<DianxiaomiImageCheckJob> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/image-check/jobs/${encodeURIComponent(id)}`)
+  assertOk(response, "dianxiaomi image check job loading failed")
+  return response.json()
+}
+
+export const fetchDianxiaomiImageCheckJobLog = async (id: string): Promise<DianxiaomiImageCheckJobLog> => {
+  const response = await fetch(`${API_BASE}/dianxiaomi/image-check/jobs/${encodeURIComponent(id)}/logs?maxChars=3000`)
+  assertOk(response, "dianxiaomi image check job log loading failed")
   return response.json()
 }
 

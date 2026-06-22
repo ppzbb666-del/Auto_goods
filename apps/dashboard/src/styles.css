@@ -1,18 +1,18 @@
 :root {
   color-scheme: light;
   font-family: "Segoe UI", "PingFang SC", sans-serif;
-  --bg: #f3ede3;
-  --card: rgba(255, 250, 243, 0.95);
+  --bg: #eef3f7;
+  --card: rgba(247, 250, 252, 0.96);
   --card-strong: #ffffff;
-  --line: #e5d7c5;
-  --text: #1d1a17;
-  --muted: #6f675d;
-  --accent: #b44c1d;
-  --accent-dark: #8f3813;
-  --accent-soft: #f6dccb;
-  --success-soft: #e3f3ea;
-  --danger-soft: #fbe7dd;
-  background: #f6f3ee;
+  --line: #d5dfe8;
+  --text: #14202b;
+  --muted: #5d6976;
+  --accent: #0f766e;
+  --accent-dark: #115e59;
+  --accent-soft: #dff5f2;
+  --success-soft: #e8f7ef;
+  --danger-soft: #fceae6;
+  background: #f4f7fb;
   color: var(--text);
 }
 
@@ -132,6 +132,183 @@ button {
   gap: 8px;
 }
 
+.daily-home-grid {
+  align-items: start;
+}
+
+.daily-guide-list {
+  display: grid;
+  gap: 10px;
+}
+
+.daily-guide-step {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.daily-guide-step > strong {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 15px;
+}
+
+.daily-guide-step h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.daily-guide-step p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.daily-scope-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.daily-scope-bar.daily-scope-bar-compact {
+  grid-template-columns: minmax(240px, 0.95fr) minmax(0, 1.05fr);
+}
+
+.daily-scope-control,
+.daily-scope-summary {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffaf4;
+}
+
+.daily-scope-control > span,
+.daily-scope-summary > strong,
+.daily-scope-summary > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.daily-scope-control > span,
+.daily-scope-summary > strong {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.daily-scope-summary > span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.daily-scope-summary .daily-scope-meta {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.daily-scope-control select {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--text);
+  font: inherit;
+}
+
+.daily-scope-control textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 96px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--text);
+  font: inherit;
+}
+
+.daily-scope-textarea {
+  grid-column: 1 / -1;
+}
+
+.daily-scope-checkboxes {
+  grid-column: 1 / -1;
+}
+
+.daily-scope-choice-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.daily-scope-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.daily-scope-checkbox input {
+  margin: 0;
+}
+
+.daily-inline-details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.daily-inline-details summary {
+  padding: 12px 14px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+
+.daily-inline-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.daily-inline-details[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.daily-inline-detail-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
 .daily-mode-actions {
   display: flex;
   flex-wrap: wrap;
@@ -173,12 +350,12 @@ button {
 
 .daily-status-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
 }
 
 .daily-status-strip.main-kpis {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 .daily-mini-feed {
@@ -267,6 +444,12 @@ button {
   padding: 16px;
 }
 
+.daily-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .daily-panel-head {
   display: flex;
   justify-content: space-between;
@@ -339,6 +522,54 @@ button {
 .daily-alert.bad {
   border-color: #e19a84;
   background: #fff5ef;
+}
+
+.daily-store-overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.daily-store-chip {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffaf4;
+}
+
+.daily-store-chip strong,
+.daily-store-chip span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.daily-store-chip strong {
+  font-size: 13px;
+}
+
+.daily-store-chip span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.daily-store-chip.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.daily-store-chip.good {
+  border-color: #a8d8b8;
+  background: #f5fff8;
+}
+
+.daily-store-chip.warn {
+  border-color: #e4bd74;
+  background: #fff8e8;
 }
 
 .daily-action-state.running {
@@ -1270,6 +1501,115 @@ button {
 
 .automation-report.failed {
   border-color: #e19a84;
+}
+
+.account-scan-warning-list {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.account-scan-warning-list span {
+  display: inline-flex;
+  padding: 6px 10px;
+  border: 1px solid #e4bd74;
+  border-radius: 999px;
+  background: #fff8e8;
+  color: #7a5616;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.account-scan-pool {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--card-strong);
+}
+
+.account-scan-pool-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.account-scan-pool-summary,
+.account-scan-pool-filters,
+.account-scan-pool-filters label,
+.account-scan-link-main {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.account-scan-pool-summary strong {
+  font-size: 15px;
+}
+
+.account-scan-pool-summary span,
+.account-scan-pool-filters span,
+.account-scan-link-main span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.account-scan-pool-filters {
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+}
+
+.account-scan-pool-filters select {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: white;
+  color: var(--text);
+  font: inherit;
+}
+
+.account-scan-pool-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.account-scan-link-list {
+  display: grid;
+  gap: 8px;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.account-scan-link-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fffaf4;
+}
+
+.account-scan-link-item.imported {
+  border-color: #a8d8b8;
+  background: #f5fff8;
+}
+
+.account-scan-link-item input {
+  margin-top: 2px;
+}
+
+.account-scan-link-main strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
 }
 
 .automation-gate-grid {
@@ -2399,6 +2739,7 @@ button {
   .main-grid,
   .bottom-grid,
   .daily-console-head,
+  .daily-scope-bar,
   .daily-status-strip,
   .daily-status-strip.main-kpis,
   .daily-grid,
@@ -2406,6 +2747,10 @@ button {
   .daily-mini-feed.compact,
   .daily-trial-summary,
   .daily-trial-recovery {
+    grid-template-columns: 1fr;
+  }
+
+  .daily-scope-bar.daily-scope-bar-compact {
     grid-template-columns: 1fr;
   }
 
@@ -2455,4 +2800,515 @@ button {
   .daily-mode-badge {
     width: fit-content;
   }
+}
+
+/* Simplified UI override */
+:root {
+  --bg: #eef3f7;
+  --card: #f7fafc;
+  --card-strong: #ffffff;
+  --line: #d5dfe8;
+  --text: #14202b;
+  --muted: #5d6976;
+  --accent: #0f766e;
+  --accent-dark: #115e59;
+  --accent-soft: #dff5f2;
+  --success-soft: #e8f7ef;
+  --danger-soft: #fceae6;
+  background: #f4f7fb;
+  color: #14202b;
+}
+
+body {
+  background: #f4f7fb;
+  color: #14202b;
+}
+
+.app-shell {
+  gap: 12px;
+  padding: 12px;
+  background: #f4f7fb;
+}
+
+.daily-workspace,
+.sidebar,
+.workspace,
+.summary-grid,
+.main-grid,
+.daily-grid,
+.daily-status-strip,
+.daily-mini-feed,
+.daily-trial-summary,
+.daily-scope-bar,
+.automation-gate-grid,
+.queue-health-grid,
+.run-confirmation-grid,
+.target-surface-grid,
+.automation-launch-form {
+  gap: 8px;
+}
+
+.daily-console,
+.daily-panel,
+.daily-metric,
+.advanced-console-bar,
+.brand-panel,
+.queue-panel,
+.hero-panel,
+.summary-card,
+.panel,
+.queue-item,
+.sku-item,
+.flow-item,
+.explain-item,
+.automation-report,
+.daily-alert,
+.daily-action-state,
+.daily-check,
+.daily-work-item,
+.daily-empty,
+.daily-repair-plan,
+.daily-trial-gate,
+.daily-trial-stat,
+.daily-trial-recovery,
+.daily-mini-feed div,
+.daily-scope-control,
+.daily-scope-summary,
+.daily-scope-checkbox,
+.automation-gate,
+.automation-preflight-check,
+.run-confirmation,
+.run-confirmation-item,
+.target-surface-summary,
+.task-snapshot-diff,
+.selector-diff-preview,
+.review-state,
+.review-history-item,
+.draft-version-item {
+  border: 1px solid #d9d9d9 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  background: #ffffff !important;
+  color: #222222;
+}
+
+.brand-panel,
+.queue-panel,
+.hero-panel,
+.panel,
+.daily-console,
+.daily-panel {
+  padding: 12px;
+}
+
+.summary-card,
+.queue-item,
+.sku-item,
+.flow-item,
+.explain-item,
+.daily-metric,
+.daily-alert,
+.daily-action-state,
+.daily-check,
+.daily-work-item,
+.daily-repair-plan,
+.daily-trial-stat,
+.daily-trial-recovery,
+.review-state,
+.review-history-item,
+.draft-version-item {
+  padding: 10px;
+}
+
+.hero-panel {
+  display: block;
+}
+
+.hero-actions,
+.review-actions,
+.task-export-actions,
+.daily-console-actions,
+.daily-mode-actions,
+.report-list,
+.queue-list,
+.collected-product-list,
+.alert-list,
+.import-warnings,
+.selector-risk-list,
+.selector-diff-list,
+.automation-preflight-checks,
+.automation-preflight-jobs,
+.queue-health-alerts,
+.queue-health-issues,
+.draft-version-list,
+.job-log-grid,
+.manual-proof-filter-buttons,
+.action-chip-list,
+.tag-list,
+.risk-list-simple {
+  gap: 6px;
+}
+
+.primary-button,
+.ghost-button,
+button,
+.tag-chip,
+.risk-pill,
+.daily-failure-pill,
+.manual-proof-filter-button {
+  border-radius: 0 !important;
+}
+
+.primary-button,
+.ghost-button,
+.manual-proof-filter-button {
+  padding: 8px 10px;
+  border: 1px solid #bfbfbf !important;
+  background: #f5f5f5 !important;
+  color: #222222 !important;
+  font-weight: 400;
+  box-shadow: none !important;
+}
+
+.primary-button:disabled,
+.ghost-button:disabled,
+.manual-proof-filter-button:disabled {
+  opacity: 0.6;
+}
+
+.queue-item.active,
+.manual-proof-filter-button.active {
+  background: #eeeeee !important;
+  border-color: #999999 !important;
+}
+
+.csv-import-box,
+.compact-textarea,
+.tall-textarea,
+.pricing-form input,
+.pricing-form .rule-toggle,
+.pricing-form textarea,
+.daily-scope-control select,
+.daily-scope-control textarea,
+.selector-choice textarea,
+.selector-choice input,
+input,
+select,
+textarea {
+  border: 1px solid #cfcfcf !important;
+  border-radius: 0 !important;
+  background: #ffffff !important;
+  color: #222222 !important;
+  box-shadow: none !important;
+}
+
+.eyebrow,
+.subtle,
+.queue-head p,
+.summary-card span,
+.summary-card p,
+.daily-message,
+.import-result,
+.import-warnings span,
+.report-detail,
+.muted,
+.mini-detail,
+.daily-mini-feed span,
+.daily-section-head span,
+.daily-panel-head span,
+.daily-metric span,
+.daily-metric small,
+.review-state span,
+.review-history-item span,
+.review-history-item small,
+.draft-version-item small {
+  color: #666666 !important;
+  letter-spacing: 0 !important;
+}
+
+.tag-chip,
+.risk-pill,
+.daily-failure-pill {
+  padding: 4px 8px;
+  border: 1px solid #d9d9d9 !important;
+  background: #ffffff !important;
+  color: #333333 !important;
+  font-weight: 400;
+}
+
+/* Readability adjustments */
+.daily-console,
+.daily-panel,
+.brand-panel,
+.queue-panel,
+.panel,
+.hero-panel {
+  border-color: #c8c8c8 !important;
+}
+
+.daily-section + .daily-section,
+.panel + .panel,
+.queue-panel + .queue-panel,
+.brand-panel + .queue-panel {
+  margin-top: 2px;
+}
+
+.daily-console h1,
+.hero-panel h2,
+.brand-panel h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  line-height: 1.3;
+  color: #111111;
+}
+
+.panel-head h3,
+.queue-head strong,
+.daily-section-head strong,
+.daily-panel-head strong,
+.summary-card strong,
+.daily-metric strong {
+  color: #111111;
+}
+
+.panel-head,
+.queue-head,
+.daily-section-head,
+.daily-panel-head {
+  padding-bottom: 6px;
+  border-bottom: 1px solid #ececec;
+}
+
+.panel-head h3,
+.queue-head strong {
+  font-size: 16px;
+}
+
+.summary-card strong {
+  font-size: 24px;
+}
+
+.daily-metric strong {
+  font-size: 20px;
+}
+
+.primary-button {
+  background: #eaeaea !important;
+  border-color: #9f9f9f !important;
+  font-weight: 600;
+}
+
+.ghost-button {
+  background: #f7f7f7 !important;
+}
+
+.daily-action-state,
+.daily-alert,
+.daily-check,
+.daily-trial-gate,
+.daily-trial-recovery,
+.automation-report,
+.review-state,
+.review-history-item {
+  border-color: #cfcfcf !important;
+}
+
+.daily-alert.good,
+.daily-alert.empty,
+.daily-alert.warn,
+.daily-alert.bad,
+.daily-check.pass,
+.daily-check.warning,
+.daily-check.block,
+.daily-trial-stat.good,
+.daily-trial-stat.warn,
+.daily-trial-stat.bad,
+.daily-action-state.running,
+.daily-action-state.warn,
+.daily-action-state.blocked {
+  background: #fafafa !important;
+}
+
+/* Information hierarchy adjustments */
+.pricing-form,
+.review-box,
+.review-history,
+.automation-launch-form {
+  padding: 10px 0 0;
+  border-top: 1px solid #ededed;
+}
+
+.pricing-form label,
+.selector-choice,
+.daily-scope-control > span,
+.daily-scope-summary > strong,
+.panel-group > label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #444444;
+}
+
+.import-result {
+  padding: 8px 10px;
+  border: 1px solid #dcdcdc;
+  background: #fafafa !important;
+  color: #333333 !important;
+}
+
+.import-result p {
+  font-weight: 600;
+}
+
+.report-main,
+.report-detail,
+.empty-report,
+.collected-product-item,
+.selector-diff-summary,
+.run-confirmation-head,
+.job-log-grid pre {
+  padding: 8px 10px;
+  border: 1px solid #e6e6e6;
+  background: #fcfcfc;
+}
+
+.report-main strong,
+.selector-diff-summary strong,
+.run-confirmation-head strong,
+.collected-product-item strong,
+.empty-report {
+  color: #222222;
+  font-weight: 700;
+}
+
+.report-main span,
+.report-detail span,
+.collected-product-item span,
+.collected-product-item small,
+.selector-diff-summary span,
+.run-confirmation-head span {
+  color: #666666;
+  line-height: 1.45;
+}
+
+.empty-report {
+  color: #666666;
+  font-size: 13px;
+}
+
+.automation-report {
+  padding: 0;
+  overflow: hidden;
+}
+
+.automation-report > .report-main {
+  border-width: 0 0 1px 0;
+  background: #f7f7f7;
+}
+
+.automation-report > .report-detail {
+  border-width: 0;
+  background: #ffffff;
+}
+
+.job-log-grid pre {
+  margin: 0;
+  background: #ffffff;
+}
+
+.job-log-grid .error-log {
+  border-color: #d0d0d0;
+}
+
+/* Final consistency pass */
+.panel-head h3,
+.queue-head strong,
+.daily-section-head strong,
+.daily-panel-head strong,
+.panel-group > label {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.summary-card strong,
+.daily-metric strong {
+  line-height: 1.2;
+}
+
+.report-main,
+.report-detail,
+.empty-report,
+.collected-product-item,
+.selector-diff-summary,
+.run-confirmation-head,
+.job-log-grid pre,
+.daily-alert,
+.daily-check,
+.daily-work-item,
+.daily-repair-plan,
+.daily-trial-stat,
+.daily-trial-recovery,
+.daily-action-state,
+.daily-mini-feed div,
+.daily-scope-control,
+.daily-scope-summary {
+  line-height: 1.45;
+}
+
+.report-list,
+.queue-list,
+.collected-product-list,
+.draft-version-list,
+.review-history,
+.daily-check-list,
+.daily-work-item-list,
+.automation-preflight-checks,
+.automation-preflight-jobs,
+.queue-health-alerts,
+.queue-health-issues {
+  gap: 8px;
+}
+
+.daily-console-actions,
+.daily-mode-actions,
+.review-actions,
+.task-export-actions,
+.hero-actions,
+.manual-proof-filter-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.daily-console-actions > .primary-button,
+.daily-mode-actions > .primary-button,
+.review-actions > .primary-button,
+.task-export-actions > .primary-button,
+.hero-actions > .primary-button {
+  order: 0;
+}
+
+.daily-console-actions > .ghost-button,
+.daily-mode-actions > .ghost-button,
+.review-actions > .ghost-button,
+.task-export-actions > .ghost-button,
+.hero-actions > .ghost-button {
+  order: 1;
+}
+
+.review-actions button,
+.task-export-actions button,
+.hero-actions button,
+.daily-console-actions button,
+.daily-mode-actions button {
+  min-height: 34px;
+}
+
+.import-warnings,
+.report-detail,
+.collected-product-item div,
+.review-state,
+.review-history-item {
+  gap: 6px;
 }

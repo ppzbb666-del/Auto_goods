@@ -1,11 +1,18 @@
 // Pure helpers, constants, and types extracted from App.tsx.
 // No React / JSX dependencies — safe to import anywhere.
 
+import {
+  automationSourceBucketOptions,
+  matchesAutomationItemScope,
+  normalizeAutomationItemUrls,
+  normalizeAutomationSourceBuckets
+} from "@temu-ai-ops/shared"
 import type {
   AutomationDryRunStartInput,
   AutomationFullFlowJob,
   AutomationQueueRunStartResult,
   AutomationTaskFileExportResult,
+  AutomationSourceBucket,
   DianxiaomiListingRequirementRules,
   DianxiaomiProductWorkItem,
   ManualProductInput,
@@ -61,13 +68,16 @@ export const defaultManualProduct: ManualProductInput = {
   images: []
 }
 
-export const defaultDailyMediaAutomationTools = ["image-translation", "batch-resize", "white-background", "image-editor"]
+export const defaultDailyMediaAutomationTools = ["image-translation", "batch-resize"]
+export const defaultQueueProductScopeBuckets: AutomationSourceBucket[] = ["pending-publish"]
+export const queueProductScopeModes = ["ready-queue", "item-urls", "source-buckets"] as const
+export type QueueProductScopeMode = typeof queueProductScopeModes[number]
 
 export const defaultAutomationLaunchDraft = {
   url: "",
   taskFile: "",
   selectorConfig: "",
-  profile: "",
+  profile: ".runtime/dianxiaomi-real-profile",
   screenshots: "",
   mediaAutomationMode: "unattended-apply",
   mediaAutomationTools: defaultDailyMediaAutomationTools.join("\n"),
@@ -236,6 +246,77 @@ export const automationDraftFromInput = (input: AutomationDryRunStartInput = {})
   headed: input.headed ?? true
 })
 
+export const buildQueueProductScopeInput = (
+  mode: QueueProductScopeMode,
+  itemUrlsText: string,
+  sourceBuckets: AutomationSourceBucket[]
+): Pick<AutomationDryRunStartInput, "itemUrls" | "sourceBuckets"> => {
+  if (mode === "item-urls") {
+    const itemUrls = normalizeAutomationItemUrls(parseLines(itemUrlsText))
+    return itemUrls.length > 0 ? { itemUrls } : {}
+  }
+
+  if (mode === "source-buckets") {
+    const normalizedSourceBuckets = normalizeAutomationSourceBuckets(sourceBuckets)
+    return normalizedSourceBuckets.length > 0 ? { sourceBuckets: normalizedSourceBuckets } : {}
+  }
+
+  return {}
+}
+
+export const queueProductScopeReady = (
+  mode: QueueProductScopeMode,
+  itemUrlsText: string,
+  sourceBuckets: AutomationSourceBucket[]
+) => {
+  if (mode === "item-urls") {
+    return normalizeAutomationItemUrls(parseLines(itemUrlsText)).length > 0
+  }
+
+  if (mode === "source-buckets") {
+    return normalizeAutomationSourceBuckets(sourceBuckets).length > 0
+  }
+
+  return true
+}
+
+export const queueProductScopeSummary = (
+  mode: QueueProductScopeMode,
+  itemUrlsText: string,
+  sourceBuckets: AutomationSourceBucket[]
+) => {
+  if (mode === "item-urls") {
+    const itemUrls = normalizeAutomationItemUrls(parseLines(itemUrlsText))
+    return itemUrls.length > 0 ? `指定链接 ${itemUrls.length} 个` : "等待输入商品链接"
+  }
+
+  if (mode === "source-buckets") {
+    const normalizedSourceBuckets = normalizeAutomationSourceBuckets(sourceBuckets)
+    if (normalizedSourceBuckets.length === 0) {
+      return "等待选择来源页面"
+    }
+    const labels = normalizedSourceBuckets.map((bucket) =>
+      automationSourceBucketOptions.find((option) => option.value === bucket)?.label ?? bucket
+    )
+    return labels.join(" / ")
+  }
+
+  return "运行店铺 ready 队列"
+}
+
+export const matchesSelectedQueueProductScope = (
+  item: {
+    pageUrl?: string
+    pageTitle?: string
+    pageProfile?: string
+    rawTextSample?: string
+    notes?: string[]
+  },
+  mode: QueueProductScopeMode,
+  itemUrlsText: string,
+  sourceBuckets: AutomationSourceBucket[]
+) => matchesAutomationItemScope(item, buildQueueProductScopeInput(mode, itemUrlsText, sourceBuckets))
+
 export type DailyTrialGate = {
   status: "missing" | "running" | "failed" | "passed"
   message: string
@@ -327,6 +408,48 @@ export const getManualTriggerStats = (workItems: DianxiaomiProductWorkItem[]) =>
     productCount,
     average: productCount > 0 ? triggerCount / productCount : 0
   }
+}
+
+const BROWSER_RECOVERY_WRITERS = ["fill-single-field", "fill-attributes", "fill-sku-pricing", "run-media-tool"] as const
+
+export const needsImageCheck = (item: Pick<DianxiaomiProductWorkItem, "snapshot">) =>
+  !item.snapshot.imageCheck?.passed || (item.snapshot.imageCheck?.issues?.length ?? 0) > 0
+
+export const canRunFullyAutomaticRepair = (item: Pick<DianxiaomiProductWorkItem, "repairPlan">) => {
+  const repairPlan = item.repairPlan
+  if (!repairPlan || repairPlan.actions.length === 0) {
+    return false
+  }
+
+  const automaticActions = repairPlan.actions.filter((action) => action.automation === "auto")
+  if (automaticActions.length === 0) {
+    return false
+  }
+
+  return repairPlan.actions.every((action) =>
+    action.automation === "auto"
+    || (action.automation === "manual" && action.type === "inspect-logs")
+  )
+}
+
+export const canRunBrowserRecovery = (item: Pick<DianxiaomiProductWorkItem, "status" | "repairPlan">) => {
+  const repairPlan = item.repairPlan
+  return item.status === "blocked"
+    && repairPlan?.status === "auto-ready"
+    && repairPlan.canAutoRepair
+    && repairPlan.actions.length > 0
+    && repairPlan.actions.some((action) =>
+      action.automation === "auto"
+      && BROWSER_RECOVERY_WRITERS.includes(action.payload?.writer as typeof BROWSER_RECOVERY_WRITERS[number])
+    )
+    && repairPlan.actions.every((action) =>
+      action.automation === "auto"
+      && (
+        action.payload?.writer
+          ? BROWSER_RECOVERY_WRITERS.includes(action.payload.writer as typeof BROWSER_RECOVERY_WRITERS[number])
+          : action.required === false
+      )
+    )
 }
 
 export const getDailyTrialRecovery = (

@@ -1,6 +1,7 @@
-import { useEffect, useState, type SetStateAction } from "react"
+import { useEffect, useRef, useState, type SetStateAction } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
-import type { AutomationDryRunStartInput, AutomationFullFlowJob, AutomationManualStepBudgetTrialProposal, AutomationManualStepBudgetTrialRequestResult, AutomationPreflightReport, AutomationQueueDaemonHealth, AutomationQueueDaemonState, AutomationQueueRunStartResult, AutomationRecoveryRun, AutomationTaskFileExportResult, AutomationTaskSnapshotDiffResult, AutomationUnattendedStartupCheck, DianxiaomiListingRequirementRules, DianxiaomiProductWorkItem, DianxiaomiSelectorConfig, DraftUpdateInput, ManualProductInput, PricingRules, ProductUpdateInput, PublishCheckResult, PublishTask, SelectorCalibrationJob, SelectorConfigChangeRisk, SelectorConfigDiffResult, SelectorWorkbench } from "@temu-ai-ops/shared"
+import { automationSourceBucketOptions, normalizeAutomationItemUrls, normalizeAutomationSourceBuckets } from "@temu-ai-ops/shared"
+import type { AutomationDryRunStartInput, AutomationFullFlowJob, AutomationManualStepBudgetTrialProposal, AutomationManualStepBudgetTrialRequestResult, AutomationPreflightReport, AutomationQueueDaemonHealth, AutomationQueueDaemonState, AutomationQueueRunStartResult, AutomationRecoveryRun, AutomationSourceBucket, AutomationTaskFileExportResult, AutomationTaskSnapshotDiffResult, AutomationUnattendedStartupCheck, DianxiaomiAccountScanLink, DianxiaomiImageCheckJob, DianxiaomiListingRequirementRules, DianxiaomiPageContext, DianxiaomiProductWorkItem, DianxiaomiSelectorConfig, DianxiaomiStoreMetrics, DraftUpdateInput, ManualProductInput, PricingRules, ProductUpdateInput, PublishCheckResult, PublishTask, SelectorCalibrationJob, SelectorConfigChangeRisk, SelectorConfigDiffResult, SelectorWorkbench } from "@temu-ai-ops/shared"
 import {
   archiveStaleProfileLocks,
   createAutomationLaunchPreset,
@@ -24,12 +25,22 @@ import {
   fetchAutomationSubmitListingJobs,
   fetchAutomationTaskFileExportDiff,
   fetchAutomationTaskFileExports,
+  fetchDianxiaomiAccountScanJobs,
+  fetchDianxiaomiAccountScanJob,
   fetchDianxiaomiCollectedProducts,
+  fetchDianxiaomiImageCheckJob,
+  fetchDianxiaomiPageContext,
+  fetchDianxiaomiImageCheckJobs,
+  fetchDianxiaomiStoreMetrics,
   fetchDianxiaomiRequirementRules,
   fetchDianxiaomiProductWorkItems,
+  importDianxiaomiAccountScanJobLinks,
   fetchAutomationPreflight,
   fetchAutomationQueueDaemon,
   fetchAutomationQueueDaemonHealth,
+  fetchAutomationRepairApplyJob,
+  fetchAutomationRepairApplyJobs,
+  fetchAutomationRepairPreviewJobs,
   fetchAutomationReadiness,
   fetchAutomationReports,
   fetchActiveTask,
@@ -64,6 +75,10 @@ import {
   startAutomationSubmitListing,
   pauseAutomationQueueDaemon,
   retryDianxiaomiProductWorkItemAfterFix,
+  startDianxiaomiAccountScan,
+  startDianxiaomiWorkItemRepairApply,
+  startDianxiaomiWorkItemRepairPreview,
+  startDianxiaomiWorkItemImageCheck,
   startSelectorCalibration,
   tickAutomationQueueDaemon,
   restoreTaskDraftVersion,
@@ -84,6 +99,9 @@ import {
   AutomationRunConfirmation,
   DailyMetric,
   DailyWorkItemList,
+  DianxiaomiAccountScanJobCard,
+  DianxiaomiImageCheckJobCard,
+  DianxiaomiAccountScanPool,
   DryRunJobCard,
   FillDraftJobCard,
   FullFlowJobCard,
@@ -92,6 +110,8 @@ import {
   QueueDaemonCard,
   QueueDaemonHealthCard,
   QueueRunCard,
+  RepairApplyJobCard,
+  RepairPreviewJobCard,
   RecoveryRunCard,
   SaveDraftJobCard,
   SelectorCalibrationJobCard,
@@ -107,6 +127,9 @@ import { buildSelectorConfigDiffPreview, cloneSelectorConfig, createSelectorConf
 import {
   asRecord,
   automationDraftFromInput,
+  buildQueueProductScopeInput,
+  canRunBrowserRecovery,
+  canRunFullyAutomaticRepair,
   createAutomationStartInput,
   createDianxiaomiRequirementRulesDraft,
   createListingEditDraft,
@@ -114,6 +137,7 @@ import {
   csvExample,
   defaultAutomationLaunchDraft,
   defaultDailyMediaAutomationTools,
+  defaultQueueProductScopeBuckets,
   defaultManualProduct,
   formatAttributeText,
   formatLines,
@@ -121,21 +145,432 @@ import {
   formatMoney,
   getErrorMessage,
   getTaskProgress,
+  needsImageCheck,
   parseAttributeText,
   parseImagesText,
   parseLines,
   parseLogisticsTiersText,
   parseSkusText,
+  queueProductScopeReady,
+  queueProductScopeSummary,
   reviewDecisionLabel,
   reviewStatusLabel,
   statusLabel,
   taskFileLaunchClass,
+  matchesSelectedQueueProductScope,
   type AutomationLaunchDraft,
   type DailyAlert,
   type ListingEditDraft,
-  type ProductEditDraft
+  type ProductEditDraft,
+  type QueueProductScopeMode
 } from "./lib/dashboard-helpers"
 import { useDailyDashboard } from "./lib/use-daily-dashboard"
+
+type StoreScopeOption = {
+  key: string
+  storeId?: string
+  storeName?: string
+  label: string
+  workItemCount: number
+  readyCount: number
+  collectedCount: number
+  blockedCount: number
+  needsRevisionCount: number
+  editedCount: number
+}
+
+type StoreScopeMetrics = Pick<
+  StoreScopeOption,
+  "workItemCount" | "readyCount" | "collectedCount" | "blockedCount" | "needsRevisionCount" | "editedCount"
+>
+
+type BatchPrepareSummary = {
+  checked: number
+  repaired: number
+  requeued: number
+  recovered: number
+  recoveryQueued: number
+}
+
+const ACTIVE_PAGE_CONTEXT_MAX_AGE_MS = 30_000
+const CURRENT_STORE_SCAN_SOURCE_BUCKETS: AutomationSourceBucket[] = ["collection-box", "pending-publish"]
+const ALL_STORES_SCOPE_KEY = "all"
+const EMPTY_STORE_SCOPE_METRICS: StoreScopeMetrics = {
+  workItemCount: 0,
+  readyCount: 0,
+  collectedCount: 0,
+  blockedCount: 0,
+  needsRevisionCount: 0,
+  editedCount: 0
+}
+
+const normalizeStoreScopeValue = (value?: string | null) => value?.trim() || undefined
+
+const createStoreScopeOptionKey = (storeId?: string, storeName?: string) =>
+  storeId ? `id:${storeId}` : storeName ? `name:${storeName}` : null
+
+const createStoreScopeNameKey = (storeName?: string) =>
+  normalizeStoreScopeValue(storeName)?.toLowerCase() ?? null
+
+const createStoreScopeDedupeKey = (storeId?: string, storeName?: string) =>
+  createStoreScopeOptionKey(
+    normalizeStoreScopeValue(storeId)?.toLowerCase(),
+    createStoreScopeNameKey(storeName) ?? undefined
+  )
+
+const buildStoreScopeNameIndex = (
+  entries: Array<{
+    storeId?: string
+    storeName?: string
+  }>
+) => {
+  const nameIndex = new Map<string, Set<string>>()
+
+  for (const entry of entries) {
+    const normalizedStoreId = normalizeStoreScopeValue(entry.storeId)
+    const nameKey = createStoreScopeNameKey(entry.storeName)
+    if (!normalizedStoreId || !nameKey) {
+      continue
+    }
+
+    const ids = nameIndex.get(nameKey) ?? new Set<string>()
+    ids.add(normalizedStoreId)
+    nameIndex.set(nameKey, ids)
+  }
+
+  return nameIndex
+}
+
+const resolveStoreScopeIdentity = (
+  nameIndex: Map<string, Set<string>>,
+  storeId?: string,
+  storeName?: string
+) => {
+  const normalizedStoreId = normalizeStoreScopeValue(storeId)
+  const normalizedStoreName = normalizeStoreScopeValue(storeName)
+  if (normalizedStoreId) {
+    return {
+      key: createStoreScopeDedupeKey(normalizedStoreId, normalizedStoreName),
+      storeId: normalizedStoreId,
+      storeName: normalizedStoreName
+    }
+  }
+
+  const nameKey = createStoreScopeNameKey(normalizedStoreName)
+  if (!nameKey || !normalizedStoreName) {
+    return null
+  }
+
+  const matchedStoreIds = nameIndex.get(nameKey)
+  if (matchedStoreIds?.size === 1) {
+    const [resolvedStoreId] = Array.from(matchedStoreIds)
+    return {
+      key: createStoreScopeDedupeKey(resolvedStoreId, normalizedStoreName),
+      storeId: resolvedStoreId,
+      storeName: normalizedStoreName
+    }
+  }
+
+  return {
+    key: createStoreScopeDedupeKey(undefined, normalizedStoreName),
+    storeName: normalizedStoreName
+  }
+}
+
+const createStoreScopeOption = (
+  storeId?: string,
+  storeName?: string,
+  metrics: StoreScopeMetrics = EMPTY_STORE_SCOPE_METRICS
+): StoreScopeOption | null => {
+  const normalizedStoreId = normalizeStoreScopeValue(storeId)
+  const normalizedStoreName = normalizeStoreScopeValue(storeName)
+  const key = createStoreScopeOptionKey(normalizedStoreId, normalizedStoreName)
+  if (!key) {
+    return null
+  }
+
+  return {
+    key,
+    storeId: normalizedStoreId,
+    storeName: normalizedStoreName,
+    label: normalizedStoreName ?? normalizedStoreId ?? key,
+    workItemCount: metrics.workItemCount,
+    readyCount: metrics.readyCount,
+    collectedCount: metrics.collectedCount,
+    blockedCount: metrics.blockedCount,
+    needsRevisionCount: metrics.needsRevisionCount,
+    editedCount: metrics.editedCount
+  }
+}
+
+const buildStoreScopeOptions = (
+  entries: Array<{
+    storeId?: string
+    storeName?: string
+  }>,
+  metricsMap: Map<string, StoreScopeMetrics> = new Map()
+) => {
+  const nameIndex = buildStoreScopeNameIndex(entries)
+  const optionMap = new Map<string, StoreScopeOption>()
+
+  for (const entry of entries) {
+    const identity = resolveStoreScopeIdentity(nameIndex, entry.storeId, entry.storeName)
+    if (!identity?.key) {
+      continue
+    }
+
+    const nextOption = createStoreScopeOption(
+      identity.storeId,
+      identity.storeName,
+      metricsMap.get(identity.key) ?? EMPTY_STORE_SCOPE_METRICS
+    )
+    if (!nextOption) {
+      continue
+    }
+    const existing = optionMap.get(identity.key)
+
+    if (!existing || (!existing.storeId && identity.storeId)) {
+      optionMap.set(identity.key, nextOption)
+    }
+  }
+
+  return Array.from(optionMap.values())
+    .sort((left, right) => left.label.localeCompare(right.label, "zh-CN"))
+}
+
+const buildStoreMetricsMap = (
+  workItems: Array<{
+    storeId?: string
+    storeName?: string
+    status?: string
+  }>,
+  collectedProducts: Array<{
+    storeId?: string
+    storeName?: string
+  }> = []
+) => {
+  const nameIndex = buildStoreScopeNameIndex([...workItems, ...collectedProducts])
+  const metricsMap = new Map<string, StoreScopeMetrics>()
+
+  const ensureMetrics = (storeId?: string, storeName?: string) => {
+    const identity = resolveStoreScopeIdentity(nameIndex, storeId, storeName)
+    if (!identity?.key) {
+      return null
+    }
+
+    const current = metricsMap.get(identity.key) ?? { ...EMPTY_STORE_SCOPE_METRICS }
+    metricsMap.set(identity.key, current)
+    return current
+  }
+
+  for (const item of workItems) {
+    const current = ensureMetrics(item.storeId, item.storeName)
+    if (!current) {
+      continue
+    }
+    current.workItemCount += 1
+    if (item.status === "ready-for-automation") {
+      current.readyCount += 1
+    } else if (item.status === "blocked") {
+      current.blockedCount += 1
+    } else if (item.status === "needs-revision") {
+      current.needsRevisionCount += 1
+    } else if (item.status === "edited") {
+      current.editedCount += 1
+    }
+  }
+
+  for (const item of collectedProducts) {
+    const current = ensureMetrics(item.storeId, item.storeName)
+    if (!current) {
+      continue
+    }
+    current.collectedCount += 1
+  }
+
+  return metricsMap
+}
+
+const buildStoreMetricsMapFromSummary = (metricsList: DianxiaomiStoreMetrics[]) => {
+  const nameIndex = buildStoreScopeNameIndex(metricsList)
+  const metricsMap = new Map<string, StoreScopeMetrics>()
+
+  for (const item of metricsList) {
+    const identity = resolveStoreScopeIdentity(nameIndex, item.storeId, item.storeName)
+    if (!identity?.key) {
+      continue
+    }
+
+    const current = metricsMap.get(identity.key) ?? { ...EMPTY_STORE_SCOPE_METRICS }
+    current.workItemCount += item.workItemCount
+    current.readyCount += item.readyCount
+    current.collectedCount += item.collectedCount
+    current.blockedCount += item.blockedCount
+    current.needsRevisionCount += item.needsRevisionCount
+    current.editedCount += item.editedCount
+    metricsMap.set(identity.key, current)
+  }
+
+  return metricsMap
+}
+
+const sumStoreScopeMetrics = (metricsMap: Map<string, StoreScopeMetrics>) => {
+  const total = { ...EMPTY_STORE_SCOPE_METRICS }
+
+  for (const metrics of metricsMap.values()) {
+    total.workItemCount += metrics.workItemCount
+    total.readyCount += metrics.readyCount
+    total.collectedCount += metrics.collectedCount
+    total.blockedCount += metrics.blockedCount
+    total.needsRevisionCount += metrics.needsRevisionCount
+    total.editedCount += metrics.editedCount
+  }
+
+  return total
+}
+
+const matchesStoreScopeOption = (
+  option: Pick<StoreScopeOption, "storeId" | "storeName"> | null | undefined,
+  item: { storeId?: string; storeName?: string } | null | undefined
+) => {
+  if (!option) {
+    return false
+  }
+
+  const optionStoreId = normalizeStoreScopeValue(option.storeId)
+  const optionStoreName = normalizeStoreScopeValue(option.storeName)
+  const itemStoreId = normalizeStoreScopeValue(item?.storeId)
+  const itemStoreName = normalizeStoreScopeValue(item?.storeName)
+
+  if (optionStoreId) {
+    if (itemStoreId) {
+      return itemStoreId === optionStoreId
+    }
+    return Boolean(optionStoreName && itemStoreName && itemStoreName === optionStoreName)
+  }
+
+  if (optionStoreName) {
+    return itemStoreName === optionStoreName
+  }
+
+  return false
+}
+
+const resolveDefaultReadyStoreScope = (
+  options: StoreScopeOption[],
+  items: Array<{ storeId?: string; storeName?: string; status?: string }>
+) => items
+  .filter((item) => item.status === "ready-for-automation")
+  .map((item) => {
+    const normalizedStoreId = normalizeStoreScopeValue(item.storeId)
+    const normalizedStoreName = normalizeStoreScopeValue(item.storeName)
+    if (!normalizedStoreId && !normalizedStoreName) {
+      return null
+    }
+    return options.find((option) => matchesStoreScopeOption(option, item))
+      ?? createStoreScopeOption(normalizedStoreId, normalizedStoreName)
+  })
+  .find((item): item is StoreScopeOption => Boolean(item))
+  ?? options[0]
+  ?? null
+
+const resolveDefaultReadyStoreScopeFromMetrics = (
+  options: StoreScopeOption[],
+  metricsMap: Map<string, StoreScopeMetrics>
+) => options.find((option) => {
+  const dedupeKey = createStoreScopeDedupeKey(option.storeId, option.storeName)
+  return dedupeKey ? (metricsMap.get(dedupeKey)?.readyCount ?? 0) > 0 : false
+})
+  ?? options[0]
+  ?? null
+
+const formatStoreScopeLabel = (option: Pick<StoreScopeOption, "label" | "storeId" | "readyCount" | "workItemCount">) =>
+  `${option.label}${option.storeId ? ` (${option.storeId})` : ""} · ready ${option.readyCount} / items ${option.workItemCount}`
+
+const formatStoreSyncTimestamp = (value?: string) => {
+  if (!value) {
+    return ""
+  }
+
+  const timestamp = new Date(value)
+  if (!Number.isFinite(timestamp.getTime())) {
+    return ""
+  }
+
+  return timestamp.toLocaleString("zh-CN", {
+    hour12: false
+  })
+}
+
+const normalizePageIdentity = (value?: string) =>
+  value?.trim().replace(/^https?:\/\//i, "").toLowerCase() ?? ""
+
+const summarizeImageCheckIssues = (
+  items: Array<{
+    snapshot: {
+      imageCheck?: {
+        issues?: Array<{
+          category: string
+          issue: string
+        }>
+      }
+    }
+  }>
+) => {
+  const counts = new Map<string, number>()
+
+  for (const item of items) {
+    for (const issue of item.snapshot.imageCheck?.issues ?? []) {
+      const label = `${issue.category} ${issue.issue}`.trim()
+      counts.set(label, (counts.get(label) ?? 0) + 1)
+    }
+  }
+
+  return Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 3)
+    .map(([label, count]) => `${label} x${count}`)
+    .join(" / ")
+}
+
+const describeStoreQueueState = (option: StoreScopeOption) => {
+  if (option.workItemCount === 0) {
+    return option.collectedCount > 0
+      ? `已导入待处理 ${option.collectedCount}`
+      : "已识别店铺，暂无商品队列"
+  }
+
+  return `ready ${option.readyCount} / 商品 ${option.workItemCount} / blocked ${option.blockedCount}`
+}
+
+const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+const resolveStoreScopeOptionFromContext = (
+  context: DianxiaomiPageContext | null | undefined,
+  options: StoreScopeOption[]
+) => {
+  const contextStoreId = normalizeStoreScopeValue(context?.storeId)
+  const contextStoreName = normalizeStoreScopeValue(context?.storeName)
+  if (!contextStoreId && !contextStoreName) {
+    return null
+  }
+
+  if (contextStoreId) {
+    const matchedById = options.find((option) => option.storeId === contextStoreId)
+    if (matchedById) {
+      return matchedById
+    }
+  }
+
+  if (contextStoreName) {
+    const matchedByName = options.find((option) => option.storeName === contextStoreName)
+    if (matchedByName) {
+      return matchedByName
+    }
+  }
+
+  return null
+}
 
 export function App() {
   const { tasks, setTasks, activeTaskId, setActiveTaskId } = useDashboardStore()
@@ -159,6 +594,15 @@ export function App() {
   const [batchRestoreMessage, setBatchRestoreMessage] = useState("")
   const [selectorConfigMessage, setSelectorConfigMessage] = useState("")
   const [selectorCalibrationMessage, setSelectorCalibrationMessage] = useState("")
+  const [accountScanMessage, setAccountScanMessage] = useState("")
+  const [storeScopeMessage, setStoreScopeMessage] = useState("")
+  const [currentStoreImportJobId, setCurrentStoreImportJobId] = useState<string | null>(null)
+  const [batchPreparePending, setBatchPreparePending] = useState(false)
+  const [imageCheckMessage, setImageCheckMessage] = useState("")
+  const [repairMessage, setRepairMessage] = useState("")
+  const [selectedAccountScanLinkIds, setSelectedAccountScanLinkIds] = useState<string[]>([])
+  const [accountScanStoreFilter, setAccountScanStoreFilter] = useState("all")
+  const [accountScanBucketFilter, setAccountScanBucketFilter] = useState<"all" | AutomationSourceBucket>("all")
   const [selectorConfigDraft, setSelectorConfigDraft] = useState<DianxiaomiSelectorConfig | null>(null)
   const [automationLaunchDraft, setAutomationLaunchDraft] = useState<AutomationLaunchDraft>(defaultAutomationLaunchDraft)
   const [selectedAutomationPresetId, setSelectedAutomationPresetId] = useState("")
@@ -173,18 +617,45 @@ export function App() {
   const [automationSaveDraftMessage, setAutomationSaveDraftMessage] = useState("")
   const [automationSubmitListingMessage, setAutomationSubmitListingMessage] = useState("")
   const [automationFullFlowMessage, setAutomationFullFlowMessage] = useState("")
+  const [dailySaveDraftProofMessage, setDailySaveDraftProofMessage] = useState("")
   const [automationQueueRunMessage, setAutomationQueueRunMessage] = useState("")
   const [automationRecoveryRunMessage, setAutomationRecoveryRunMessage] = useState("")
   const [automationQueueDaemonMessage, setAutomationQueueDaemonMessage] = useState("")
-  const [automationQueueDaemonInterval, setAutomationQueueDaemonInterval] = useState("300")
+  const [automationQueueDaemonInterval, setAutomationQueueDaemonInterval] = useState("60")
   const [automationQueueDaemonMaxFailures, setAutomationQueueDaemonMaxFailures] = useState("3")
   const [showAdvancedConsole, setShowAdvancedConsole] = useState(false)
   const [showDailyDetails, setShowDailyDetails] = useState(false)
+  const [selectedStoreScopeKey, setSelectedStoreScopeKey] = useState("auto")
+  const [selectedQueueProductScopeMode, setSelectedQueueProductScopeMode] = useState<QueueProductScopeMode>("ready-queue")
+  const [selectedItemUrlsText, setSelectedItemUrlsText] = useState("")
+  const [selectedSourceBuckets, setSelectedSourceBuckets] = useState<AutomationSourceBucket[]>(defaultQueueProductScopeBuckets)
+  const currentStoreAutoImportRef = useRef<{
+    scanJobId: string
+    storeId?: string
+    storeName?: string
+    storeScopeKey?: string
+  } | null>(null)
   const automationStartInput = createAutomationStartInput(automationLaunchDraft)
+  const selectedQueueProductScopeInput = buildQueueProductScopeInput(
+    selectedQueueProductScopeMode,
+    selectedItemUrlsText,
+    selectedSourceBuckets
+  )
+  const selectedQueueProductScopeReady = queueProductScopeReady(
+    selectedQueueProductScopeMode,
+    selectedItemUrlsText,
+    selectedSourceBuckets
+  )
+  const selectedQueueProductScopeSummary = queueProductScopeSummary(
+    selectedQueueProductScopeMode,
+    selectedItemUrlsText,
+    selectedSourceBuckets
+  )
   const automationReadinessKey = [
     automationStartInput.url ?? "",
     automationStartInput.taskFile ?? "",
     automationStartInput.selectorConfig ?? "",
+    automationStartInput.profile ?? "",
     automationStartInput.mediaAutomationMode ?? "",
     automationStartInput.submitAfterSave ? "submit-after-save" : "no-submit-after-save",
     String(automationStartInput.submitMaxAttempts ?? ""),
@@ -220,17 +691,108 @@ export function App() {
     .slice(0, 6)
   const blockedTaskFileExportCount = automationTaskFileExports.filter((item) => item.launchStatus.status === "blocked").length
 
-  const { data: dianxiaomiCollectedProducts = [], refetch: refetchDianxiaomiCollectedProducts } = useQuery({
+  const { data: allDianxiaomiCollectedProducts = [], refetch: refetchDianxiaomiCollectedProducts } = useQuery({
     queryKey: ["dianxiaomi-collected-products"],
     queryFn: fetchDianxiaomiCollectedProducts,
     refetchInterval: 10000
   })
 
-  const { data: dianxiaomiProductWorkItems = [], refetch: refetchDianxiaomiProductWorkItems, isError: dianxiaomiProductWorkItemsError, error: dianxiaomiProductWorkItemsQueryError } = useQuery({
-    queryKey: ["dianxiaomi-product-work-items"],
-    queryFn: fetchDianxiaomiProductWorkItems,
+  const { data: allDianxiaomiProductWorkItems = [], refetch: refetchAllDianxiaomiProductWorkItems } = useQuery({
+    queryKey: ["dianxiaomi-product-work-items", "all"],
+    queryFn: () => fetchDianxiaomiProductWorkItems({}, 1000),
     refetchInterval: 10000
   })
+
+  const { data: dianxiaomiStoreMetricsSummary = [] } = useQuery({
+    queryKey: ["dianxiaomi-store-metrics"],
+    queryFn: fetchDianxiaomiStoreMetrics,
+    refetchInterval: 5000
+  })
+
+  const { data: dianxiaomiPageContext } = useQuery({
+    queryKey: ["dianxiaomi-page-context"],
+    queryFn: fetchDianxiaomiPageContext,
+    refetchInterval: 5000
+  })
+  const activeDianxiaomiPageContext = dianxiaomiPageContext?.updatedAt
+    && Number.isFinite(new Date(dianxiaomiPageContext.updatedAt).getTime())
+    && Date.now() - new Date(dianxiaomiPageContext.updatedAt).getTime() <= ACTIVE_PAGE_CONTEXT_MAX_AGE_MS
+    ? dianxiaomiPageContext
+    : null
+
+  const storeMetrics = dianxiaomiStoreMetricsSummary.length > 0
+    ? buildStoreMetricsMapFromSummary(dianxiaomiStoreMetricsSummary)
+    : buildStoreMetricsMap(
+      allDianxiaomiProductWorkItems,
+      allDianxiaomiCollectedProducts
+    )
+  const storeScopeOptions = buildStoreScopeOptions([
+    ...dianxiaomiStoreMetricsSummary.map((item) => ({
+      storeId: item.storeId,
+      storeName: item.storeName
+    })),
+    ...[...allDianxiaomiProductWorkItems, ...allDianxiaomiCollectedProducts].map((item) => {
+      return {
+        storeId: item.storeId,
+        storeName: item.storeName
+      }
+    }),
+    ...(dianxiaomiPageContext?.availableStores ?? []),
+    {
+      storeId: activeDianxiaomiPageContext?.storeId,
+      storeName: activeDianxiaomiPageContext?.storeName
+    }
+  ], storeMetrics)
+  const currentPageStoreScope = resolveStoreScopeOptionFromContext(activeDianxiaomiPageContext, storeScopeOptions)
+  const currentPageStoreDisplayScope = resolveStoreScopeOptionFromContext(dianxiaomiPageContext, storeScopeOptions)
+  const defaultReadyStoreScope = dianxiaomiStoreMetricsSummary.length > 0
+    ? resolveDefaultReadyStoreScopeFromMetrics(storeScopeOptions, storeMetrics)
+    : resolveDefaultReadyStoreScope(
+      storeScopeOptions,
+      allDianxiaomiProductWorkItems
+    )
+  const selectedStoreScopeForQuery = selectedStoreScopeKey === "auto"
+    ? currentPageStoreScope ?? defaultReadyStoreScope
+    : selectedStoreScopeKey === ALL_STORES_SCOPE_KEY
+      ? null
+      : storeScopeOptions.find((option) => option.key === selectedStoreScopeKey) ?? null
+  const selectedStoreQueueInputForQuery = selectedStoreScopeForQuery
+    ? {
+        storeId: selectedStoreScopeForQuery.storeId,
+        storeName: selectedStoreScopeForQuery.storeName
+      }
+    : {}
+  const selectedQueueScopeInputForQuery = {
+    ...selectedStoreQueueInputForQuery,
+    ...selectedQueueProductScopeInput
+  }
+  const scopeFilterEnabled = selectedQueueProductScopeMode === "ready-queue" || selectedQueueProductScopeReady
+  const {
+    data: scopedDianxiaomiProductWorkItems = [],
+    refetch: refetchScopedDianxiaomiProductWorkItems,
+    isError: dianxiaomiProductWorkItemsError,
+    error: dianxiaomiProductWorkItemsQueryError
+  } = useQuery({
+    queryKey: [
+      "dianxiaomi-product-work-items",
+      "scope",
+      selectedStoreQueueInputForQuery.storeId ?? "",
+      selectedStoreQueueInputForQuery.storeName ?? "",
+      selectedQueueProductScopeMode,
+      (selectedQueueProductScopeInput.itemUrls ?? []).join("|"),
+      (selectedQueueProductScopeInput.sourceBuckets ?? []).join("|")
+    ],
+    queryFn: () => scopeFilterEnabled ? fetchDianxiaomiProductWorkItems(selectedQueueScopeInputForQuery, 1000) : Promise.resolve([]),
+    enabled: scopeFilterEnabled,
+    refetchInterval: 10000
+  })
+  const refetchDianxiaomiProductWorkItems = async () => {
+    const [scopedResult] = await Promise.all([
+      refetchScopedDianxiaomiProductWorkItems(),
+      refetchAllDianxiaomiProductWorkItems()
+    ])
+    return scopedResult
+  }
 
   const { data: dianxiaomiRequirementRules, refetch: refetchDianxiaomiRequirementRules } = useQuery({
     queryKey: ["dianxiaomi-requirement-rules"],
@@ -293,8 +855,20 @@ export function App() {
   })
 
   const { data: automationQueueDaemonHealth, refetch: refetchAutomationQueueDaemonHealth, isError: automationQueueDaemonHealthError, error: automationQueueDaemonHealthQueryError } = useQuery({
-    queryKey: ["automation-queue-daemon-health"],
-    queryFn: fetchAutomationQueueDaemonHealth,
+    queryKey: [
+      "automation-queue-daemon-health",
+      ...automationReadinessKey,
+      selectedStoreScopeKey,
+      selectedStoreQueueInputForQuery.storeId ?? "",
+      selectedStoreQueueInputForQuery.storeName ?? "",
+      selectedQueueProductScopeMode,
+      (selectedQueueProductScopeInput.itemUrls ?? []).join("|"),
+      (selectedQueueProductScopeInput.sourceBuckets ?? []).join("|")
+    ],
+    queryFn: () => fetchAutomationQueueDaemonHealth({
+      ...automationStartInput,
+      ...selectedQueueScopeInputForQuery
+    }),
     refetchInterval: 3000
   })
 
@@ -311,14 +885,38 @@ export function App() {
   })
 
   const { data: automationUnattendedStartupCheck, refetch: refetchAutomationUnattendedStartupCheck, isError: automationUnattendedStartupCheckError, error: automationUnattendedStartupCheckQueryError } = useQuery({
-    queryKey: ["automation-unattended-startup-check", ...automationReadinessKey],
-    queryFn: () => fetchAutomationUnattendedStartupCheck(automationStartInput),
+    queryKey: [
+      "automation-unattended-startup-check",
+      ...automationReadinessKey,
+      selectedStoreScopeKey,
+      selectedStoreQueueInputForQuery.storeId ?? "",
+      selectedStoreQueueInputForQuery.storeName ?? "",
+      selectedQueueProductScopeMode,
+      (selectedQueueProductScopeInput.itemUrls ?? []).join("|"),
+      (selectedQueueProductScopeInput.sourceBuckets ?? []).join("|")
+    ],
+    queryFn: () => fetchAutomationUnattendedStartupCheck({
+      ...automationStartInput,
+      ...selectedQueueScopeInputForQuery
+    }),
     refetchInterval: 5000
   })
 
   const { data: automationFillDraftJobs = [], refetch: refetchAutomationFillDraftJobs } = useQuery({
     queryKey: ["automation-fill-draft-jobs"],
     queryFn: fetchAutomationFillDraftJobs,
+    refetchInterval: 3000
+  })
+
+  const { data: automationRepairPreviewJobs = [], refetch: refetchAutomationRepairPreviewJobs } = useQuery({
+    queryKey: ["automation-repair-preview-jobs"],
+    queryFn: fetchAutomationRepairPreviewJobs,
+    refetchInterval: 3000
+  })
+
+  const { data: automationRepairApplyJobs = [], refetch: refetchAutomationRepairApplyJobs } = useQuery({
+    queryKey: ["automation-repair-apply-jobs"],
+    queryFn: fetchAutomationRepairApplyJobs,
     refetchInterval: 3000
   })
 
@@ -345,6 +943,40 @@ export function App() {
     queryFn: fetchSelectorCalibrationJobs,
     refetchInterval: 3000
   })
+
+  const { data: dianxiaomiAccountScanJobs = [], refetch: refetchDianxiaomiAccountScanJobs } = useQuery({
+    queryKey: ["dianxiaomi-account-scan-jobs"],
+    queryFn: fetchDianxiaomiAccountScanJobs,
+    refetchInterval: 3000
+  })
+
+  const { data: dianxiaomiImageCheckJobs = [], refetch: refetchDianxiaomiImageCheckJobs } = useQuery({
+    queryKey: ["dianxiaomi-image-check-jobs"],
+    queryFn: fetchDianxiaomiImageCheckJobs,
+    refetchInterval: 3000
+  })
+
+  const latestCompletedAccountScanJob = dianxiaomiAccountScanJobs.find((job) => job.status === "completed" && job.result) ?? null
+  const latestCurrentPageStoreScanJob = dianxiaomiAccountScanJobs.find((job) => {
+    if (job.status !== "completed" || !job.result || !currentPageStoreScope) {
+      return false
+    }
+
+    return job.result.stores.some((store) => matchesStoreScopeOption(currentPageStoreScope, {
+      storeId: store.shopId ?? undefined,
+      storeName: store.storeName
+    }))
+  }) ?? null
+  const existingWorkItemEditUrlSet = new Set(
+    allDianxiaomiProductWorkItems.map((item) => item.pageUrl.trim().toLowerCase())
+  )
+  const currentPageStoreScanLinks = latestCurrentPageStoreScanJob?.result?.stores
+    .filter((store) => matchesStoreScopeOption(currentPageStoreScope, {
+      storeId: store.shopId ?? undefined,
+      storeName: store.storeName
+    }))
+    .flatMap((store) => store.links) ?? []
+  const currentPageStoreImportableLinks = currentPageStoreScanLinks.filter((link) => !existingWorkItemEditUrlSet.has(link.editUrl.trim().toLowerCase()))
 
   const { data: selectorConfig, refetch: refetchSelectorConfig } = useQuery({
     queryKey: ["selector-config"],
@@ -416,6 +1048,50 @@ export function App() {
   useEffect(() => {
     setWriteModeConfirmed(false)
   }, [automationStartSignature])
+
+  const runCurrentStoreScan = async () => {
+    if (!activeDianxiaomiPageContext) {
+      throw new Error("未识别店小秘页面店铺，请先打开对应店铺页面")
+    }
+
+    const result = await dianxiaomiAccountScanner.mutateAsync({
+      headed: false,
+      sourceBuckets: CURRENT_STORE_SCAN_SOURCE_BUCKETS,
+      maxPages: 100,
+      storeId: activeDianxiaomiPageContext.storeId,
+      storeName: activeDianxiaomiPageContext.storeName
+    })
+
+    currentStoreAutoImportRef.current = {
+      scanJobId: result.id,
+      storeId: activeDianxiaomiPageContext.storeId,
+      storeName: activeDianxiaomiPageContext.storeName,
+      storeScopeKey: currentPageStoreScope?.key
+    }
+    setCurrentStoreImportJobId(result.id)
+    setAccountScanMessage("正在扫描当前店铺并自动导入链接，适合批量采集商品。")
+    return result
+  }
+
+  const importCurrentStoreLinksFromJob = async (jobId: string, override?: {
+    storeId?: string
+    storeName?: string
+    storeScopeKey?: string
+  }) => {
+    const targetStoreId = override?.storeId ?? activeDianxiaomiPageContext?.storeId
+    const targetStoreName = override?.storeName ?? activeDianxiaomiPageContext?.storeName
+    if (!targetStoreId && !targetStoreName) {
+      throw new Error("未识别店小秘页面店铺，无法导入该页面店铺链接")
+    }
+
+    return dianxiaomiAccountScanImporter.mutateAsync({
+      jobId,
+      storeId: targetStoreId,
+      storeName: targetStoreName,
+      sourceBuckets: CURRENT_STORE_SCAN_SOURCE_BUCKETS,
+      storeScopeKey: override?.storeScopeKey ?? currentPageStoreScope?.key
+    })
+  }
 
   const activeTask = tasks.find((task) => task.id === activeTaskId) ?? tasks[0]
   const selectedAutomationPreset = automationLaunchPresets.find((preset) => preset.id === selectedAutomationPresetId) ?? null
@@ -729,6 +1405,55 @@ export function App() {
     }
   })
 
+  const dailySaveDraftProofRunner = useMutation({
+    mutationFn: async ({ workItemId }: { workItemId: string }) => {
+      const workItem = allDianxiaomiProductWorkItems.find((item) => item.id === workItemId)
+      if (!workItem) {
+        throw new Error("当前待验证商品不存在，请刷新队列后重试")
+      }
+
+      const taskResult = await createTaskFromDianxiaomiProductWorkItem(workItemId)
+      const exported = await exportAutomationTaskFile({
+        taskId: taskResult.task.id,
+        input: {}
+      })
+      const flow = await startAutomationFullFlow({
+        ...automationStartInput,
+        url: workItem.pageUrl,
+        taskFile: exported.taskFile,
+        mediaAutomationMode: "unattended-apply",
+        mediaAutomationTools: dailyMediaAutomationTools,
+        submitAfterSave: false
+      })
+
+      return {
+        workItem,
+        exported,
+        flow
+      }
+    },
+    onMutate: ({ workItemId }) => {
+      const workItem = allDianxiaomiProductWorkItems.find((item) => item.id === workItemId)
+      setDailySaveDraftProofMessage(`正在准备保存草稿验证：${workItem?.title ?? workItemId}`)
+    },
+    onSuccess: async ({ workItem, exported, flow }) => {
+      setSelectedTaskFileExportId(exported.exportId)
+      setDailySaveDraftProofMessage(`已启动保存草稿验证：${workItem.title}`)
+      setAutomationFullFlowMessage(`save-draft proof started: ${flow.artifactDir}`)
+      await refetch()
+      await refetchAutomationTaskFileExports()
+      await refetchAutomationFullFlowJobs()
+      await refetchAutomationDryRunJobs()
+      await refetchAutomationFillDraftJobs()
+      await refetchAutomationSaveDraftJobs()
+      await refetchAutomationReports()
+      await refetchDianxiaomiProductWorkItems()
+    },
+    onError: (error) => {
+      setDailySaveDraftProofMessage(getErrorMessage(error))
+    }
+  })
+
   const automationQueueRunner = useMutation({
     mutationFn: startAutomationQueueRun,
     onSuccess: async (result) => {
@@ -759,7 +1484,7 @@ export function App() {
   const automationRecoveryRunner = useMutation({
     mutationFn: startAutomationRecoveryRun,
     onSuccess: async (result) => {
-      setAutomationRecoveryRunMessage(`recovery-run started ${result.queued} item(s), skipped ${result.skipped}`)
+      setAutomationRecoveryRunMessage(`自动恢复已启动：发起 ${result.queued} 个，跳过 ${result.skipped} 个。`)
       await refetchAutomationRecoveryRuns()
       await refetchAutomationFullFlowJobs()
       await refetchAutomationDryRunJobs()
@@ -1006,6 +1731,343 @@ export function App() {
     }
   })
 
+  const dianxiaomiAccountScanner = useMutation({
+    mutationFn: startDianxiaomiAccountScan,
+    onSuccess: async (result) => {
+      setAccountScanMessage(`account scan started: ${result.artifactDir}`)
+      setSelectedAccountScanLinkIds([])
+      currentStoreAutoImportRef.current = null
+      setCurrentStoreImportJobId(null)
+      setAccountScanStoreFilter("all")
+      setAccountScanBucketFilter("all")
+      await refetchDianxiaomiAccountScanJobs()
+    },
+    onError: async (error) => {
+      setAccountScanMessage(getErrorMessage(error))
+      await refetchDianxiaomiAccountScanJobs()
+    }
+  })
+
+  const dianxiaomiAccountScanImporter = useMutation({
+    mutationFn: ({
+      jobId,
+      linkIds,
+      storeScopeKey,
+      storeId,
+      storeName,
+      sourceBuckets
+    }: {
+      jobId: string
+      linkIds?: string[]
+      storeScopeKey?: string
+      storeId?: string
+      storeName?: string
+      sourceBuckets?: AutomationSourceBucket[]
+    }) =>
+      importDianxiaomiAccountScanJobLinks(jobId, {
+        linkIds,
+        storeId,
+        storeName,
+        sourceBuckets
+      }),
+    onSuccess: async (result, variables) => {
+      setAccountScanMessage(`已导入 ${result.importedCount} 个链接，ready ${result.readyCount}，待修订 ${result.needsRevisionCount}`)
+      setSelectedAccountScanLinkIds([])
+      if (variables.storeScopeKey) {
+        setSelectedStoreScopeKey(variables.storeScopeKey)
+      }
+      currentStoreAutoImportRef.current = null
+      setCurrentStoreImportJobId(null)
+      await refetchDianxiaomiProductWorkItems()
+      await refetchDianxiaomiAccountScanJobs()
+    },
+    onError: (error) => {
+      currentStoreAutoImportRef.current = null
+      setCurrentStoreImportJobId(null)
+      setAccountScanMessage(getErrorMessage(error))
+    }
+  })
+
+  useEffect(() => {
+    if (!currentStoreImportJobId || dianxiaomiAccountScanImporter.isPending) {
+      return
+    }
+
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const job = await fetchDianxiaomiAccountScanJob(currentStoreImportJobId)
+        if (cancelled) {
+          return
+        }
+
+        if (job.status === "running") {
+          window.setTimeout(() => {
+            void poll()
+          }, 1500)
+          return
+        }
+
+        if (job.status === "failed") {
+          currentStoreAutoImportRef.current = null
+          setCurrentStoreImportJobId(null)
+          setAccountScanMessage(job.error ?? "店小秘页面店铺链接池扫描失败")
+          await refetchDianxiaomiAccountScanJobs()
+          return
+        }
+
+        const scope = currentStoreAutoImportRef.current
+        await refetchDianxiaomiAccountScanJobs()
+        await importCurrentStoreLinksFromJob(job.id, scope ?? undefined)
+        await refetchDianxiaomiProductWorkItems()
+        await runBatchPrepareForCurrentScope()
+      } catch (error) {
+        if (!cancelled) {
+          currentStoreAutoImportRef.current = null
+          setCurrentStoreImportJobId(null)
+          setAccountScanMessage(getErrorMessage(error))
+        }
+      }
+    }
+
+    void poll()
+    return () => {
+      cancelled = true
+    }
+  }, [currentStoreImportJobId, dianxiaomiAccountScanImporter.isPending])
+
+  const dianxiaomiImageChecker = useMutation({
+    mutationFn: ({ workItemId }: { workItemId: string }) => startDianxiaomiWorkItemImageCheck(workItemId, {
+      headed: automationStartInput.headed,
+      profile: automationStartInput.profile,
+      screenshots: automationStartInput.screenshots
+    }),
+    onSuccess: async (result) => {
+      setImageCheckMessage(`图片检测已启动：${result.workItemId}`)
+      await refetchDianxiaomiImageCheckJobs()
+      await refetchDianxiaomiProductWorkItems()
+    },
+    onError: async (error) => {
+      setImageCheckMessage(getErrorMessage(error))
+      await refetchDianxiaomiImageCheckJobs()
+    }
+  })
+
+  const runCurrentScopeImageCheck = async () => {
+    const candidateItems = dianxiaomiProductWorkItems
+      .filter((item) => item.status !== "blocked" || canRunFullyAutomaticRepair(item))
+      .filter((item) => needsImageCheck(item))
+      .slice(0, 3)
+
+    if (candidateItems.length === 0) {
+      setImageCheckMessage("当前范围没有需要补检的图片项。")
+      return
+    }
+
+    setImageCheckMessage(`正在批量图片检测：${candidateItems.map((item) => item.title).join(" / ")}`)
+    for (const item of candidateItems) {
+      await dianxiaomiImageChecker.mutateAsync({ workItemId: item.id })
+    }
+    await refetchDianxiaomiProductWorkItems()
+    await refetchDianxiaomiImageCheckJobs()
+    setImageCheckMessage(`已启动 ${candidateItems.length} 个图片检测任务。`)
+  }
+
+  const waitForImageCheckJob = async (jobId: string) => {
+    while (true) {
+      const job = await fetchDianxiaomiImageCheckJob(jobId)
+      if (job.status !== "running") {
+        return job
+      }
+      await delay(1500)
+    }
+  }
+
+  const waitForRepairApplyJob = async (jobId: string) => {
+    while (true) {
+      const job = await fetchAutomationRepairApplyJob(jobId)
+      if (job.status !== "running") {
+        return job
+      }
+      await delay(2000)
+    }
+  }
+
+  const waitForLatestImageCheckCompletion = async (workItemId: string, startedAt: string) => {
+    while (true) {
+      const jobs = await fetchDianxiaomiImageCheckJobs()
+      const job = jobs
+        .filter((candidate) => candidate.workItemId === workItemId && candidate.startedAt.localeCompare(startedAt) >= 0)
+        .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
+
+      if (!job) {
+        await delay(1500)
+        continue
+      }
+
+      if (job.status !== "running") {
+        return job
+      }
+
+      await delay(1500)
+    }
+  }
+
+  const waitForRecoveryRun = async (runId: string) => {
+    while (true) {
+      const runs = await fetchAutomationRecoveryRuns()
+      const run = runs.find((candidate) => candidate.id === runId)
+      if (run && run.status !== "running") {
+        return run
+      }
+      await delay(2500)
+    }
+  }
+
+  const runBatchPrepareForCurrentScope = async () => {
+    const candidates = dianxiaomiProductWorkItems
+      .filter((item) => item.status !== "blocked" || canRunFullyAutomaticRepair(item))
+      .filter((item) => needsImageCheck(item))
+      .slice(0, 5)
+
+    if (candidates.length === 0 && scopeBrowserRecoveryCandidateCount === 0) {
+      setImageCheckMessage("当前范围没有需要批量准备或自动恢复的商品。")
+      return
+    }
+
+    setBatchPreparePending(true)
+    setRepairMessage("")
+    setAutomationRecoveryRunMessage("")
+    const summary: BatchPrepareSummary = {
+      checked: 0,
+      repaired: 0,
+      requeued: 0,
+      recovered: 0,
+      recoveryQueued: 0
+    }
+
+    setImageCheckMessage(
+      candidates.length > 0
+        ? `正在批量准备 ${candidates.length} 个商品：先图片检测，再按店小秘分类尝试自动修复，必要时继续自动恢复。`
+        : `当前范围图片已处理，开始自动恢复 ${scopeBrowserRecoveryCandidateCount} 个阻塞商品。`
+    )
+
+    try {
+      for (const item of candidates) {
+        setImageCheckMessage(`正在图片检测：${item.title}`)
+        const imageCheckStarted = await dianxiaomiImageChecker.mutateAsync({ workItemId: item.id })
+        const finishedImageCheckJob = await waitForImageCheckJob(imageCheckStarted.id)
+        summary.checked += 1
+
+        if (finishedImageCheckJob.status !== "completed") {
+          continue
+        }
+
+        const refreshedWorkItems = filterWorkItemsForCurrentScope((await refetchDianxiaomiProductWorkItems()).data ?? [])
+        const refreshedItem = refreshedWorkItems.find((candidate) => candidate.id === item.id)
+        const canAutoRepair = refreshedItem ? canRunFullyAutomaticRepair(refreshedItem) : false
+
+        if (!refreshedItem || !canAutoRepair) {
+          continue
+        }
+
+        setRepairMessage(`正在自动修复：${refreshedItem.title}`)
+        const repairStarted = await dianxiaomiRepairApplyRunner.mutateAsync({ workItemId: refreshedItem.id })
+        const finishedRepairJob = await waitForRepairApplyJob(repairStarted.id)
+        if (finishedRepairJob.status !== "completed" || finishedRepairJob.reportStatus !== "completed") {
+          continue
+        }
+
+        summary.repaired += 1
+        await waitForLatestImageCheckCompletion(refreshedItem.id, finishedRepairJob.startedAt)
+        const repairedWorkItems = filterWorkItemsForCurrentScope((await refetchDianxiaomiProductWorkItems()).data ?? [])
+        const repairedItem = repairedWorkItems.find((candidate) => candidate.id === item.id)
+        if (!repairedItem) {
+          continue
+        }
+
+        const retryResult = await retryDianxiaomiProductWorkItemAfterFix(repairedItem.id)
+        if (retryResult.requeued) {
+          summary.requeued += 1
+        }
+        await refetchDianxiaomiProductWorkItems()
+      }
+
+      const scopedWorkItemsAfterPrepare = filterWorkItemsForCurrentScope((await refetchDianxiaomiProductWorkItems()).data ?? [])
+      const refreshedRecoveryCandidateCount = scopedWorkItemsAfterPrepare.filter((item) => canRunBrowserRecovery(item)).length
+
+      if (refreshedRecoveryCandidateCount > 0) {
+        setAutomationRecoveryRunMessage(`正在自动恢复 ${refreshedRecoveryCandidateCount} 个阻塞商品。`)
+        const recoveryRun = await automationRecoveryRunner.mutateAsync({
+          ...defaultRecoveryRunInput,
+          limit: Math.min(5, refreshedRecoveryCandidateCount)
+        })
+        summary.recoveryQueued = recoveryRun.queued
+        const finishedRecoveryRun = await waitForRecoveryRun(recoveryRun.id)
+        summary.recovered = finishedRecoveryRun.completed
+      }
+
+      await refetchDianxiaomiImageCheckJobs()
+      await refetchAutomationRepairApplyJobs()
+      await refetchAutomationRepairPreviewJobs()
+      await refetchAutomationRecoveryRuns()
+      await refetchAutomationFullFlowJobs()
+      await refetchAutomationQueueDaemonHealth()
+      await refetchAutomationUnattendedStartupCheck()
+      setRepairMessage(summary.repaired > 0 || summary.requeued > 0
+        ? `自动修复完成：${summary.repaired} 个，回到 ready ${summary.requeued} 个。`
+        : "")
+      setAutomationRecoveryRunMessage(summary.recoveryQueued > 0
+        ? `自动恢复完成：成功 ${summary.recovered} / 发起 ${summary.recoveryQueued}。`
+        : "")
+      setImageCheckMessage(`批量准备完成：图片检测 ${summary.checked}，自动修复 ${summary.repaired}，回到 ready ${summary.requeued}，自动恢复 ${summary.recovered}/${summary.recoveryQueued}。`)
+    } finally {
+      setBatchPreparePending(false)
+    }
+  }
+
+  const dianxiaomiRepairPreviewRunner = useMutation({
+    mutationFn: ({ workItemId }: { workItemId: string }) => startDianxiaomiWorkItemRepairPreview(workItemId, {
+      headed: automationStartInput.headed,
+      profile: automationStartInput.profile,
+      screenshots: automationStartInput.screenshots,
+      selectorConfig: automationStartInput.selectorConfig,
+      mediaAutomationMode: automationStartInput.mediaAutomationMode,
+      mediaAutomationTools: automationStartInput.mediaAutomationTools
+    }),
+    onSuccess: async (result) => {
+      setRepairMessage(`repair preview started: ${result.workItemId ?? result.id}`)
+      await refetchAutomationRepairPreviewJobs()
+      await refetchDianxiaomiProductWorkItems()
+    },
+    onError: async (error) => {
+      setRepairMessage(getErrorMessage(error))
+      await refetchAutomationRepairPreviewJobs()
+    }
+  })
+
+  const dianxiaomiRepairApplyRunner = useMutation({
+    mutationFn: ({ workItemId }: { workItemId: string }) => startDianxiaomiWorkItemRepairApply(workItemId, {
+      headed: automationStartInput.headed,
+      profile: automationStartInput.profile,
+      screenshots: automationStartInput.screenshots,
+      selectorConfig: automationStartInput.selectorConfig,
+      mediaAutomationMode: automationStartInput.mediaAutomationMode ?? "unattended-apply",
+      mediaAutomationTools: automationStartInput.mediaAutomationTools
+    }),
+    onSuccess: async (result) => {
+      setRepairMessage(`自动修复已启动：${result.workItemId ?? result.id}`)
+      await refetchAutomationRepairApplyJobs()
+      await refetchAutomationRepairPreviewJobs()
+      await refetchDianxiaomiProductWorkItems()
+      await refetchAutomationReports()
+    },
+    onError: async (error) => {
+      setRepairMessage(getErrorMessage(error))
+      await refetchAutomationRepairApplyJobs()
+    }
+  })
+
   const setPricingField = (field: keyof PricingRules, value: string) => {
     setPricingDraft((current) => current ? { ...current, [field]: Number(value) } : current)
   }
@@ -1186,27 +2248,251 @@ export function App() {
   const selectedReviewableTaskIds = selectedTaskIds.filter((taskId) => tasks.some((task) => task.id === taskId && task.status !== "approved" && task.status !== "rejected"))
   const batchPublishableCount = batchPublishChecks.filter((check) => check.canPublish).length
   const batchBlockingCount = batchPublishChecks.length - batchPublishableCount
-  const latestQueueTick = automationQueueDaemon?.ticks[0] ?? null
-  const latestFullFlowJob = automationFullFlowJobs[0] ?? null
+  const selectedStoreScope = selectedStoreScopeKey === "auto"
+    ? currentPageStoreScope ?? defaultReadyStoreScope
+    : selectedStoreScopeKey === ALL_STORES_SCOPE_KEY
+      ? null
+      : storeScopeOptions.find((option) => option.key === selectedStoreScopeKey) ?? null
+  const allStoreScopeMetrics = sumStoreScopeMetrics(storeMetrics)
+  const selectedStoreScopeMetrics: StoreScopeOption = selectedStoreScope ?? {
+    key: ALL_STORES_SCOPE_KEY,
+    label: "全部店铺",
+    workItemCount: allStoreScopeMetrics.workItemCount,
+    readyCount: allStoreScopeMetrics.readyCount,
+    collectedCount: allStoreScopeMetrics.collectedCount,
+    blockedCount: allStoreScopeMetrics.blockedCount,
+    needsRevisionCount: allStoreScopeMetrics.needsRevisionCount,
+    editedCount: allStoreScopeMetrics.editedCount
+  }
+  const filterByStoreScope = <T extends { storeId?: string; storeName?: string }>(items: T[]) => {
+    if (!selectedStoreScope) {
+      return items
+    }
+
+    return items.filter((item) => matchesStoreScopeOption(selectedStoreScope, item))
+  }
+  const filterWorkItemsForCurrentScope = (items: DianxiaomiProductWorkItem[]) => {
+    const storeScopedItems = filterByStoreScope(items)
+    return scopeFilterEnabled
+      ? storeScopedItems.filter((item) =>
+          matchesSelectedQueueProductScope(item, selectedQueueProductScopeMode, selectedItemUrlsText, selectedSourceBuckets)
+        )
+      : []
+  }
+  const storeScopedCollectedProducts = filterByStoreScope(allDianxiaomiCollectedProducts)
+  const storeScopedProductWorkItems = filterByStoreScope(allDianxiaomiProductWorkItems)
+  const dianxiaomiCollectedProducts = scopeFilterEnabled
+    ? storeScopedCollectedProducts.filter((item) =>
+        matchesSelectedQueueProductScope(item, selectedQueueProductScopeMode, selectedItemUrlsText, selectedSourceBuckets)
+      )
+    : []
+  const dianxiaomiProductWorkItems = scopeFilterEnabled ? scopedDianxiaomiProductWorkItems : []
+  const selectedStoreScopeSummary = selectedStoreScopeKey === ALL_STORES_SCOPE_KEY
+    ? "全部店铺"
+    : selectedStoreScope
+    ? formatStoreScopeLabel(selectedStoreScope)
+    : "全部店铺"
+  const selectedStoreQueueInput = selectedStoreScope
+    ? {
+        storeId: selectedStoreScope.storeId,
+        storeName: selectedStoreScope.storeName
+      }
+    : {}
+  const selectedQueueScopeInput = {
+    ...selectedStoreQueueInput,
+    ...selectedQueueProductScopeInput
+  }
+  const selectedQueueScopeSummary = `${selectedStoreScopeSummary} / ${selectedQueueProductScopeSummary}`
+  const calibrationCandidateWorkItem = dianxiaomiProductWorkItems.find((item) =>
+    item.status === "ready-for-automation"
+    && item.pageUrl.includes("/web/popTemu/edit")
+  ) ?? storeScopedProductWorkItems.find((item) =>
+    item.status === "ready-for-automation"
+    && item.pageUrl.includes("/web/popTemu/edit")
+  ) ?? allDianxiaomiProductWorkItems.find((item) =>
+    item.status === "ready-for-automation"
+    && item.pageUrl.includes("/web/popTemu/edit")
+  ) ?? null
+  const dailyCalibrationTargetUrl = automationStartInput.url?.trim() || calibrationCandidateWorkItem?.pageUrl || undefined
+  const handleStoreScopeChange = (nextKey: string) => {
+    setSelectedStoreScopeKey(nextKey)
+
+    if (nextKey === "auto") {
+      setStoreScopeMessage("当前运行范围将跟随当前识别到的店小秘页面店铺队列。")
+      return
+    }
+
+    if (nextKey === ALL_STORES_SCOPE_KEY) {
+      setStoreScopeMessage("当前运行范围已切换为全部店铺。不会切换店小秘页面店铺。")
+      return
+    }
+
+    const nextOption = storeScopeOptions.find((option) => option.key === nextKey)
+    if (!nextOption) {
+      return
+    }
+
+    setStoreScopeMessage(`当前运行范围已切换到 ${formatStoreScopeLabel(nextOption)}。仅影响本软件中的队列筛选和运行范围，不会切换店小秘页面店铺。`)
+  }
+  const selectedScopeUrlSet = normalizeAutomationItemUrls(selectedQueueProductScopeInput.itemUrls)
+  const selectedScopeBucketSet = normalizeAutomationSourceBuckets(selectedQueueProductScopeInput.sourceBuckets)
+  const matchesSelectedScopeValues = (actual: string[], expected: string[]) =>
+    expected.length === 0 || expected.every((value) => actual.includes(value))
+  const isQueueRunInSelectedStoreScope = (run: Pick<AutomationQueueRunStartResult, "storeId" | "storeName" | "itemUrls" | "sourceBuckets">) => {
+    if (!selectedStoreScope) {
+      return matchesSelectedScopeValues(normalizeAutomationItemUrls(run.itemUrls), selectedScopeUrlSet)
+        && matchesSelectedScopeValues(normalizeAutomationSourceBuckets(run.sourceBuckets), selectedScopeBucketSet)
+    }
+
+    if (!matchesStoreScopeOption(selectedStoreScope, run)) {
+      return false
+    }
+
+    return matchesSelectedScopeValues(normalizeAutomationItemUrls(run.itemUrls), selectedScopeUrlSet)
+      && matchesSelectedScopeValues(normalizeAutomationSourceBuckets(run.sourceBuckets), selectedScopeBucketSet)
+  }
+  const isRecoveryRunInSelectedStoreScope = (run: Pick<AutomationRecoveryRun, "input">) => {
+    if (!selectedStoreScope) {
+      return matchesSelectedScopeValues(normalizeAutomationItemUrls(run.input.itemUrls), selectedScopeUrlSet)
+        && matchesSelectedScopeValues(normalizeAutomationSourceBuckets(run.input.sourceBuckets), selectedScopeBucketSet)
+    }
+
+    if (!matchesStoreScopeOption(selectedStoreScope, run.input)) {
+      return false
+    }
+
+    return matchesSelectedScopeValues(normalizeAutomationItemUrls(run.input.itemUrls), selectedScopeUrlSet)
+      && matchesSelectedScopeValues(normalizeAutomationSourceBuckets(run.input.sourceBuckets), selectedScopeBucketSet)
+  }
+  const inScopeWorkItemIds = new Set(dianxiaomiProductWorkItems.map((item) => item.id))
+  const inScopeWorkItemUrls = new Set(
+    dianxiaomiProductWorkItems
+      .map((item) => normalizePageIdentity(item.pageUrl))
+      .filter(Boolean)
+  )
+  const selectedQueueScopeActive = Boolean(selectedStoreScope) || selectedScopeUrlSet.length > 0 || selectedScopeBucketSet.length > 0
+  const automationQueueRunsInScope = automationQueueRuns.filter((run) => isQueueRunInSelectedStoreScope(run))
+  const automationRecoveryRunsInScope = automationRecoveryRuns.filter((run) => isRecoveryRunInSelectedStoreScope(run))
+  const queueRunFlowJobIdsInScope = new Set(automationQueueRunsInScope.flatMap((run) => run.flowJobIds))
+  const recoveryFlowJobIdsInScope = new Set(
+    automationRecoveryRunsInScope.flatMap((run) =>
+      run.items
+        .map((item) => item.fullFlowJobId)
+        .filter((id): id is string => Boolean(id))
+    )
+  )
+  const automationFullFlowJobsInScope = selectedQueueScopeActive
+    ? automationFullFlowJobs.filter((job) =>
+        (job.workItemId ? inScopeWorkItemIds.has(job.workItemId) : false)
+        || (job.input.url ? inScopeWorkItemUrls.has(normalizePageIdentity(job.input.url)) : false)
+        || queueRunFlowJobIdsInScope.has(job.id)
+        || recoveryFlowJobIdsInScope.has(job.id)
+      )
+    : automationFullFlowJobs
+  const latestQueueTick = automationQueueDaemon?.ticks.find((tick) => {
+    if (!selectedQueueScopeActive) {
+      return true
+    }
+    if (tick.queueRun) {
+      return isQueueRunInSelectedStoreScope(tick.queueRun)
+    }
+    if (tick.recoveryRun) {
+      return isRecoveryRunInSelectedStoreScope(tick.recoveryRun)
+    }
+    return false
+  }) ?? null
+  const latestFullFlowJob = automationFullFlowJobsInScope[0] ?? null
+  const latestSaveDraftProofJob = automationFullFlowJobsInScope.find((job) =>
+    job.input.submitAfterSave === false
+    && !job.input.repairPlanFile
+    && job.stages.some((stage) => stage.name === "save-draft")
+  ) ?? null
+  const latestSuccessfulSaveDraftReport = automationReports.find((report) =>
+    report.status === "completed"
+    && report.steps.some((step) => step.id === "save-draft" && step.status === "done")
+  ) ?? null
+  const latestImageCheckJobByWorkItemId = new Map<string, DianxiaomiImageCheckJob>()
+  for (const job of dianxiaomiImageCheckJobs) {
+    if (!job.workItemId || latestImageCheckJobByWorkItemId.has(job.workItemId)) {
+      continue
+    }
+    latestImageCheckJobByWorkItemId.set(job.workItemId, job)
+  }
+  const latestRepairPreviewJobByWorkItemId = new Map<string, typeof automationRepairPreviewJobs[number]>()
+  for (const job of automationRepairPreviewJobs) {
+    if (!job.workItemId || latestRepairPreviewJobByWorkItemId.has(job.workItemId)) {
+      continue
+    }
+    latestRepairPreviewJobByWorkItemId.set(job.workItemId, job)
+  }
+  const latestRepairApplyJobByWorkItemId = new Map<string, typeof automationRepairApplyJobs[number]>()
+  for (const job of automationRepairApplyJobs) {
+    if (!job.workItemId || latestRepairApplyJobByWorkItemId.has(job.workItemId)) {
+      continue
+    }
+    latestRepairApplyJobByWorkItemId.set(job.workItemId, job)
+  }
   const readyWorkItems = dianxiaomiProductWorkItems.filter((item) => item.status === "ready-for-automation")
   const blockedWorkItems = dianxiaomiProductWorkItems.filter((item) => item.status === "blocked")
-  const browserRecoveryCandidateCount = blockedWorkItems.filter((item) =>
-    item.repairPlan?.status === "auto-ready"
-    && item.repairPlan.canAutoRepair
-    && item.repairPlan.actions.length > 0
-    && item.repairPlan.actions.some((action) =>
-      action.automation === "auto"
-      && ["fill-single-field", "fill-attributes", "fill-sku-pricing", "run-media-tool"].includes(action.payload?.writer ?? "")
+  const dailySaveDraftCandidate = (
+    latestSuccessfulSaveDraftReport
+      ? dianxiaomiProductWorkItems.find((item) =>
+          normalizePageIdentity(item.pageUrl) === normalizePageIdentity(latestSuccessfulSaveDraftReport.pageUrl)
+        )
+      : null
+  ) ?? readyWorkItems.find((item) => item.pageUrl.includes("/web/popTemu/edit")) ?? readyWorkItems[0] ?? null
+  const dailySaveDraftProofStages = (["dry-run", "fill-draft", "save-draft"] as const).map((name) => {
+    const stage = latestSaveDraftProofJob?.stages.find((item) => item.name === name) ?? null
+    const reportStep = latestSuccessfulSaveDraftReport?.steps.find((item) => item.id === name) ?? null
+    const status = stage?.status ?? (
+      latestSuccessfulSaveDraftReport
+        ? reportStep?.status === "failed"
+          ? "failed"
+          : "completed"
+        : "pending"
     )
-    && item.repairPlan.actions.every((action) =>
-      action.automation === "auto"
-      && (
-        action.payload?.writer
-          ? ["fill-single-field", "fill-attributes", "fill-sku-pricing", "run-media-tool"].includes(action.payload.writer)
-          : action.required === false
-      )
-    )
-  ).length
+    const tone = status === "completed"
+      ? "good"
+      : status === "failed"
+        ? "bad"
+        : status === "running"
+          ? "warn"
+          : "neutral"
+    return {
+      name,
+      status,
+      tone
+    }
+  })
+  const latestSaveDraftProofStage = latestSaveDraftProofJob?.stages.find((stage) => stage.name === "save-draft") ?? null
+  const latestSaveDraftProofSummary = latestSaveDraftProofJob
+    ? latestSaveDraftProofJob.status === "completed"
+      ? `已保存草稿 ${new Date(latestSaveDraftProofJob.finishedAt ?? latestSaveDraftProofJob.startedAt).toLocaleString()}`
+      : latestSaveDraftProofJob.status === "failed"
+        ? `失败：${latestSaveDraftProofJob.error ?? latestSaveDraftProofStage?.error ?? "未知错误"}`
+        : `运行中：${latestSaveDraftProofJob.workItemId ?? latestSaveDraftProofJob.id}`
+    : latestSuccessfulSaveDraftReport
+      ? `已保存草稿 ${new Date(latestSuccessfulSaveDraftReport.createdAt).toLocaleString()}`
+      : "还没有保存草稿验证记录"
+  const dailySaveDraftCandidateSummary = dailySaveDraftCandidate
+    ? `${dailySaveDraftCandidate.title} / ${dailySaveDraftCandidate.storeName ?? dailySaveDraftCandidate.storeId ?? "未识别店铺"}`
+    : "当前范围没有 ready 商品"
+  const dailySaveDraftProofStatusLabel = latestSaveDraftProofJob
+    ? latestSaveDraftProofJob.status === "completed"
+      ? "已验证"
+      : latestSaveDraftProofJob.status === "failed"
+        ? "验证失败"
+        : "验证中"
+    : latestSuccessfulSaveDraftReport
+      ? "已验证"
+      : "待验证"
+  const dailySaveDraftProofRunning = dailySaveDraftProofRunner.isPending || latestSaveDraftProofJob?.status === "running"
+  const selectedScopeConfigurationMessage = !selectedQueueProductScopeReady
+    ? selectedQueueProductScopeMode === "item-urls"
+      ? "请输入要上的店小秘商品链接，一行一个。"
+      : "请至少勾选一个来源页面。"
+    : null
+  const scopeBrowserRecoveryCandidateCount = blockedWorkItems.filter((item) => canRunBrowserRecovery(item)).length
   const backendConnectionError = [
     dianxiaomiProductWorkItemsError ? dianxiaomiProductWorkItemsQueryError : null,
     automationQueueRunsError ? automationQueueRunsQueryError : null,
@@ -1245,8 +2531,8 @@ export function App() {
     publishFailureSummary,
     dailyAlerts
   } = useDailyDashboard({
-    automationQueueRuns,
-    automationFullFlowJobs,
+    automationQueueRuns: automationQueueRunsInScope,
+    automationFullFlowJobs: automationFullFlowJobsInScope,
     dianxiaomiProductWorkItems,
     automationQueueDaemon,
     automationQueueDaemonHealth,
@@ -1258,15 +2544,17 @@ export function App() {
     : defaultDailyMediaAutomationTools
   const defaultQueueDaemonInput = {
     ...automationStartInput,
+    ...selectedQueueScopeInput,
     mediaAutomationMode: "unattended-apply" as const,
     mediaAutomationTools: dailyMediaAutomationTools,
     intervalSeconds: Number.parseInt(automationQueueDaemonInterval, 10) || 300,
     maxConsecutiveFailures: Number.parseInt(automationQueueDaemonMaxFailures, 10) || 3,
-    limit: 5,
+    limit: 1,
     submitAfterSave: true
   }
   const dailyTrialQueueRunInput = {
     ...automationStartInput,
+    ...selectedQueueScopeInput,
     mediaAutomationMode: "unattended-apply" as const,
     mediaAutomationTools: dailyMediaAutomationTools,
     limit: 3,
@@ -1274,19 +2562,24 @@ export function App() {
   }
   const defaultRecoveryRunInput = {
     ...automationStartInput,
+    ...selectedQueueScopeInput,
     mediaAutomationMode: "unattended-apply" as const,
     mediaAutomationTools: dailyMediaAutomationTools,
     submitAfterSave: true,
     limit: 5
   }
   const dailySelectorCalibrationInput = {
+    url: dailyCalibrationTargetUrl,
     headed: true,
+    profile: automationStartInput.profile,
+    screenshots: automationStartInput.screenshots,
     sampleMediaActions: true,
     mediaAutomationTools: dailyMediaAutomationTools
   }
   const requestManualBudgetTrial = (proposal: AutomationManualStepBudgetTrialProposal) => {
     void manualBudgetTrialRunner.mutateAsync({
       ...automationStartInput,
+      ...selectedQueueScopeInput,
       candidateKey: proposal.candidateKey,
       rollbackAcknowledged: true,
       acceptedRollbackCriteria: proposal.rollbackCriteria,
@@ -1299,6 +2592,7 @@ export function App() {
   const requestNextManualBudgetValidation = () => {
     void manualBudgetValidationRunner.mutateAsync({
       ...automationStartInput,
+      ...selectedQueueScopeInput,
       mediaAutomationMode: "unattended-apply",
       mediaAutomationTools: dailyMediaAutomationTools,
       submitAfterSave: true
@@ -1313,11 +2607,101 @@ export function App() {
     )
   }
 
+  const toggleAccountScanLinkSelection = (linkId: string) => {
+    setSelectedAccountScanLinkIds((current) =>
+      current.includes(linkId)
+        ? current.filter((item) => item !== linkId)
+        : [...current, linkId]
+    )
+  }
+
+  const toggleVisibleAccountScanLinks = (links: DianxiaomiAccountScanLink[]) => {
+    const visibleIds = links.map((link) => link.id)
+    setSelectedAccountScanLinkIds((current) => {
+      const allSelected = visibleIds.length > 0 && visibleIds.every((id) => current.includes(id))
+      if (allSelected) {
+        return current.filter((id) => !visibleIds.includes(id))
+      }
+
+      return Array.from(new Set([...current, ...visibleIds]))
+    })
+  }
+
+  const needsRevisionWorkItems = dianxiaomiProductWorkItems.filter((item) => item.status === "needs-revision")
+  const useStoreScopeSummaryCounts = selectedQueueProductScopeMode === "ready-queue"
+  const scopeReadyCount = useStoreScopeSummaryCounts ? selectedStoreScopeMetrics.readyCount : readyWorkItems.length
+  const scopeWorkItemCount = useStoreScopeSummaryCounts ? selectedStoreScopeMetrics.workItemCount : dianxiaomiProductWorkItems.length
+  const scopeBlockedCount = useStoreScopeSummaryCounts ? selectedStoreScopeMetrics.blockedCount : blockedWorkItems.length
+  const scopeNeedsRevisionCount = useStoreScopeSummaryCounts ? selectedStoreScopeMetrics.needsRevisionCount : needsRevisionWorkItems.length
+  const imageCheckPendingWorkItems = dianxiaomiProductWorkItems.filter((item) =>
+    needsImageCheck(item)
+  )
+  const imageCheckPendingCount = imageCheckPendingWorkItems.length
+  const batchPrepareAvailableCount = Math.min(
+    5,
+    dianxiaomiProductWorkItems
+      .filter((item) => item.status !== "blocked" || canRunFullyAutomaticRepair(item))
+      .filter((item) => needsImageCheck(item))
+      .length
+  )
+  const batchPrepareActionableCount = batchPrepareAvailableCount + scopeBrowserRecoveryCandidateCount
+  const imageCheckIssueSummary = summarizeImageCheckIssues(imageCheckPendingWorkItems)
+  const dailyTopAlerts = dailyAlerts.slice(0, 3)
+  const dailyGuideSteps = [
+    {
+      title: "先在店小秘页内处理当前商品",
+      detail: "右侧插件会显示当前页面状态、下一步和默认动作。图片问题优先按店小秘图片检测的分类处理。"
+    },
+    {
+      title: "这里默认只选店铺",
+      detail: "日常直接跑运行店铺的 ready 队列。只有明确要限链接或来源页时，再展开更多范围。"
+    },
+    {
+      title: "先批量准备，再试跑放量",
+      detail: "先点一键批量准备，让系统按店小秘分类处理图片并自动恢复可修复阻塞项；再跑 3 个 ready 商品试跑，通过后启动无人值守。"
+    }
+  ]
+  const dailyScopeHint = selectedQueueProductScopeMode === "ready-queue"
+    ? "默认推荐：系统自动处理运行店铺的 ready 队列。"
+    : selectedQueueProductScopeMode === "item-urls"
+      ? "当前只处理你填入的商品链接。"
+      : "当前只处理你勾选来源页的商品。"
+  const currentPageStoreSyncTimestamp = formatStoreSyncTimestamp(dianxiaomiPageContext?.updatedAt)
+  const currentPageStoreScopeLabel = currentPageStoreDisplayScope
+    ? activeDianxiaomiPageContext
+      ? `${formatStoreScopeLabel(currentPageStoreDisplayScope)} · 已同步`
+      : currentPageStoreSyncTimestamp
+        ? `${formatStoreScopeLabel(currentPageStoreDisplayScope)} · 上次同步 ${currentPageStoreSyncTimestamp}`
+        : `${formatStoreScopeLabel(currentPageStoreDisplayScope)} · 等待重新同步`
+    : currentPageStoreSyncTimestamp
+      ? `未识别店小秘当前页面店铺 · 上次同步 ${currentPageStoreSyncTimestamp}`
+      : "未识别店小秘当前页面店铺"
+  const currentPageStorePoolLabel = activeDianxiaomiPageContext
+    ? currentPageStoreScanLinks.length > 0
+      ? currentPageStoreImportableLinks.length > 0
+        ? `已扫描 ${currentPageStoreScanLinks.length} / 待导入 ${currentPageStoreImportableLinks.length}`
+        : `已扫描 ${currentPageStoreScanLinks.length} / 当前没有新的可导入链接`
+      : "店小秘页面店铺还没有扫描结果"
+    : currentPageStoreDisplayScope
+      ? `店小秘页面上次停留在 ${formatStoreScopeLabel(currentPageStoreDisplayScope)}，请重新打开该店铺页面继续同步链接池`
+      : "先打开店小秘页面店铺"
+  const latestQueueSummary = latestQueueTick
+    ? `${latestQueueTick.category}: ${latestQueueTick.reason ?? latestQueueTick.error ?? "已记录"}`
+    : "还没有新的轮询记录。"
+  const latestFullFlowSummary = latestFullFlowJob
+    ? `${latestFullFlowJob.status}: ${latestFullFlowJob.error ?? latestFullFlowJob.id}`
+    : "还没有新的全流程结果。"
+  const dailyManualReviewSummary = publishFailureSummary?.firstManualBudgetItem
+    ? `${publishFailureSummary.firstManualBudgetItem.title}: ${publishFailureSummary.firstManualBudgetItem.operatorAction}`
+    : firstManualBudgetItem
+      ? `${firstManualBudgetItem.title}: ${firstManualBudgetItem.operatorAction}`
+      : "没有需要额外人工接手的发布结果。"
+
   return (
     <div className={`app-shell ${showAdvancedConsole ? "advanced-mode" : ""}`}>
       {!showAdvancedConsole ? (
         <main className="daily-workspace">
-          <section className={`daily-console ${dailyModeTone}`}>
+          <section className={`daily-console ${dailyModeTone}`} style={{ display: "none" }}>
             <div className="daily-console-head">
               <div>
                 <p className="eyebrow">Default Entry</p>
@@ -1326,6 +2710,71 @@ export function App() {
               </div>
               <strong className={`daily-mode-badge ${dailyModeTone}`}>{dailyModeLabel}</strong>
             </div>
+
+            <div className="daily-scope-bar">
+              <label className="daily-scope-control">
+                <span>Store scope</span>
+                <select value={selectedStoreScopeKey} onChange={(event) => handleStoreScopeChange(event.target.value)}>
+                  <option value="auto">跟随店小秘页面店铺</option>
+                  <option value={ALL_STORES_SCOPE_KEY}>全部店铺</option>
+                  {storeScopeOptions.map((option) => (
+                    <option key={option.key} value={option.key}>{formatStoreScopeLabel(option)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="daily-scope-control">
+                <span>Product scope</span>
+                <select
+                  value={selectedQueueProductScopeMode}
+                  onChange={(event) => setSelectedQueueProductScopeMode(event.target.value as QueueProductScopeMode)}
+                >
+                  <option value="ready-queue">运行店铺 ready 队列</option>
+                  <option value="item-urls">只上指定商品链接</option>
+                  <option value="source-buckets">按来源页面上品</option>
+                </select>
+              </label>
+              {selectedQueueProductScopeMode === "item-urls" ? (
+                <label className="daily-scope-control daily-scope-textarea">
+                  <span>商品链接</span>
+                  <textarea
+                    rows={4}
+                    value={selectedItemUrlsText}
+                    onChange={(event) => setSelectedItemUrlsText(event.target.value)}
+                    placeholder="一行一个店小秘商品编辑链接"
+                  />
+                </label>
+              ) : null}
+              {selectedQueueProductScopeMode === "source-buckets" ? (
+                <div className="daily-scope-control daily-scope-checkboxes">
+                  <span>来源页面</span>
+                  <div className="daily-scope-choice-list">
+                    {automationSourceBucketOptions.map((option) => {
+                      const checked = selectedSourceBuckets.includes(option.value)
+                      return (
+                        <label key={option.value} className="daily-scope-checkbox">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => setSelectedSourceBuckets((current) =>
+                              event.target.checked
+                                ? Array.from(new Set<AutomationSourceBucket>([...current, option.value]))
+                                : current.filter((item) => item !== option.value)
+                            )}
+                          />
+                          <span>{option.label}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : null}
+              <div className="daily-scope-summary">
+                <strong>Current scope</strong>
+                <span>{selectedQueueScopeSummary}</span>
+                <span className="daily-scope-meta">ready {scopeReadyCount} / items {scopeWorkItemCount}</span>
+              </div>
+            </div>
+            {selectedScopeConfigurationMessage ? <p className="daily-message">{selectedScopeConfigurationMessage}</p> : null}
 
             <div className="daily-section">
               <div className="daily-section-head">
@@ -1345,7 +2794,7 @@ export function App() {
                   detail={`${dailyManualTriggers.triggerCount}/${dailyManualTriggers.productCount} triggers/products`}
                   tone={dailyManualTriggerTone}
                 />
-                <DailyMetric label="待处理队列" value={String(readyWorkItems.length)} detail="ready 商品" tone={readyWorkItems.length > 0 ? "good" : "neutral"} />
+                <DailyMetric label="待处理队列" value={String(scopeReadyCount)} detail="ready 商品" tone={scopeReadyCount > 0 ? "good" : "neutral"} />
                 <DailyMetric label="启动检查" value={dailyBackendOffline ? "离线" : automationUnattendedStartupCheck?.status ?? "检查中"} detail={dailyTrialLabel} tone={dailyBackendOffline || automationUnattendedStartupCheck?.status === "blocked" ? "bad" : automationUnattendedStartupCheck?.status === "ready" ? "good" : "warn"} />
               </div>
             </div>
@@ -1375,7 +2824,7 @@ export function App() {
             <div className="daily-section">
               <div className="daily-section-head">
                 <strong>动作</strong>
-                <span>{dailyActionTitle}</span>
+                <span>{`${selectedQueueScopeSummary} / ${dailyActionTitle}`}</span>
               </div>
               <div className={`daily-action-state ${dailyModeTone}`}>
                 <strong>{dailyActionTitle}</strong>
@@ -1385,7 +2834,7 @@ export function App() {
                 <button
                   className="primary-button"
                   onClick={() => void automationQueueDaemonStarter.mutateAsync(defaultQueueDaemonInput)}
-                  disabled={automationQueueDaemonStarter.isPending || !dailyCanStart}
+                  disabled={automationQueueDaemonStarter.isPending || !dailyCanStart || !selectedQueueProductScopeReady}
                 >
                   {automationQueueDaemonStarter.isPending ? "正在启动..." : automationQueueDaemon?.status === "ACTIVE" ? "运行中" : dailyTrialGate.status === "passed" ? "开始无人值守" : "等待试跑通过"}
                 </button>
@@ -1399,7 +2848,7 @@ export function App() {
                 <button
                   className="ghost-button"
                   onClick={() => void automationQueueRunner.mutateAsync(dailyTrialQueueRunInput)}
-                  disabled={automationQueueRunner.isPending || !dailyStartupCanStart}
+                  disabled={automationQueueRunner.isPending || !dailyStartupCanStart || !selectedQueueProductScopeReady}
                 >
                   {automationQueueRunner.isPending ? "试跑中..." : "小批量试跑"}
                 </button>
@@ -1437,6 +2886,370 @@ export function App() {
               {automationQueueRunMessage ? <p className="daily-message">{automationQueueRunMessage}</p> : null}
               {selectorCalibrationMessage ? <p className="daily-message">{selectorCalibrationMessage}</p> : null}
             </div>
+          </section>
+
+          <section className={`daily-console ${dailyModeTone}`}>
+            <div className="daily-console-head">
+              <div>
+                <p className="eyebrow">Daily Mode</p>
+                <h1>常用首页</h1>
+                <p>日常只走这一条路：在店小秘页里让插件处理图片和字段，这里先做小批量试跑，验收通过后再启动无人值守。</p>
+              </div>
+              <strong className={`daily-mode-badge ${dailyModeTone}`}>{dailyModeLabel}</strong>
+            </div>
+
+            <div className="daily-status-strip main-kpis">
+              <DailyMetric label="已就绪" value={String(scopeReadyCount)} detail="ready 商品" tone={scopeReadyCount > 0 ? "good" : "neutral"} />
+              <DailyMetric
+                label="自动通过率"
+                value={dailyAutomaticPass.rate === null ? "--" : `${Math.round(dailyAutomaticPass.rate * 100)}%`}
+                detail={dailyAutomaticPass.finished > 0 ? `${dailyAutomaticPass.completed}/${dailyAutomaticPass.finished} 已完成` : "等待新的全流程结果"}
+                tone={dailyAutomaticPassTone}
+              />
+              <DailyMetric
+                label="待修复"
+                value={String(scopeNeedsRevisionCount + scopeBlockedCount)}
+                detail={`改造 ${scopeNeedsRevisionCount} / 阻塞 ${scopeBlockedCount}`}
+                tone={scopeNeedsRevisionCount + scopeBlockedCount > 0 ? "warn" : "neutral"}
+              />
+              <DailyMetric
+                label="图片待检"
+                value={String(imageCheckPendingCount)}
+                detail={imageCheckIssueSummary || "已过检或未发现问题"}
+                tone={imageCheckPendingCount > 0 ? "warn" : "good"}
+              />
+              <DailyMetric
+                label="已识别店铺"
+                value={String(storeScopeOptions.length)}
+                detail={selectedStoreScope ? `运行：${formatStoreScopeLabel(selectedStoreScope)} / 页面：${currentPageStoreScopeLabel}` : `页面：${currentPageStoreScopeLabel}`}
+                tone={storeScopeOptions.length > 0 ? "good" : "warn"}
+              />
+            </div>
+          </section>
+
+          <section className="daily-grid daily-home-grid">
+            <article className="daily-panel">
+              <div className="daily-panel-head">
+                <strong>今天怎么用</strong>
+                <span>只保留日常该点的动作</span>
+              </div>
+              <div className="daily-guide-list">
+                {dailyGuideSteps.map((step, index) => (
+                  <div key={step.title} className="daily-guide-step">
+                    <strong>{index + 1}</strong>
+                    <div>
+                      <h3>{step.title}</h3>
+                      <p>{step.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className={`daily-action-state ${dailyModeTone}`}>
+                <strong>{dailyActionTitle}</strong>
+                <p>{dailyActionDetail}</p>
+              </div>
+              <div className="daily-console-actions">
+                <button
+                  className="primary-button"
+                  onClick={() => void automationQueueDaemonStarter.mutateAsync(defaultQueueDaemonInput)}
+                  disabled={automationQueueDaemonStarter.isPending || !dailyCanStart || !selectedQueueProductScopeReady}
+                >
+                  {automationQueueDaemonStarter.isPending ? "正在启动..." : automationQueueDaemon?.status === "ACTIVE" ? "运行中" : dailyTrialGate.status === "passed" ? "开始无人值守" : "等待试跑通过"}
+                </button>
+                <button
+                  className="ghost-button"
+                  onClick={() => void automationQueueDaemonPauser.mutateAsync()}
+                  disabled={automationQueueDaemonPauser.isPending || automationQueueDaemon?.status !== "ACTIVE"}
+                >
+                  {automationQueueDaemonPauser.isPending ? "正在暂停..." : "暂停"}
+                </button>
+                <button
+                  className="ghost-button"
+                  onClick={() => void automationQueueRunner.mutateAsync(dailyTrialQueueRunInput)}
+                  disabled={automationQueueRunner.isPending || !dailyStartupCanStart || !selectedQueueProductScopeReady}
+                >
+                  {automationQueueRunner.isPending ? "试跑中..." : "小批量试跑"}
+                </button>
+                <button
+                  className="ghost-button"
+                  onClick={() => setShowAdvancedConsole(true)}
+                >
+                  高级区
+                </button>
+              </div>
+              {automationQueueDaemonMessage ? <p className="daily-message">{automationQueueDaemonMessage}</p> : null}
+              {automationQueueRunMessage ? <p className="daily-message">{automationQueueRunMessage}</p> : null}
+            </article>
+
+            <article className="daily-panel">
+              <div className="daily-panel-head">
+                <strong>运行范围</strong>
+                <span>默认推荐：运行店铺 ready 队列</span>
+              </div>
+              <div className="daily-scope-bar daily-scope-bar-compact">
+                <label className="daily-scope-control">
+                  <span>店铺</span>
+                  <select value={selectedStoreScopeKey} onChange={(event) => handleStoreScopeChange(event.target.value)}>
+                    <option value="auto">跟随店小秘页面店铺</option>
+                    <option value={ALL_STORES_SCOPE_KEY}>全部店铺</option>
+                    {storeScopeOptions.map((option) => (
+                      <option key={option.key} value={option.key}>{formatStoreScopeLabel(option)}</option>
+                    ))}
+                  </select>
+                </label>
+                <div className="daily-scope-summary">
+                  <strong>当前范围</strong>
+                  <span>{selectedQueueScopeSummary}</span>
+                  <span className="daily-scope-meta">ready {scopeReadyCount} / items {scopeWorkItemCount}</span>
+                </div>
+              </div>
+              <p className="daily-message">{dailyScopeHint}</p>
+              {storeScopeMessage ? <p className="daily-message">{storeScopeMessage}</p> : null}
+              <div className="daily-mini-feed compact">
+                <div>
+                  <strong>店小秘页面店铺链接池</strong>
+                  <span>{currentPageStorePoolLabel}</span>
+                </div>
+                <div>
+                  <strong>店小秘当前页面店铺</strong>
+                  <span>{currentPageStoreScopeLabel}</span>
+                </div>
+              </div>
+              <div className="daily-store-overview">
+                {storeScopeOptions.map((option) => {
+                  const selected = selectedStoreScope?.key === option.key
+                  const tone = option.readyCount > 0 ? "good" : option.workItemCount > 0 ? "warn" : "neutral"
+                  return (
+                    <div key={option.key} className={`daily-store-chip ${selected ? "selected" : ""} ${tone}`}>
+                      <strong>{option.label}</strong>
+                      <span>{describeStoreQueueState(option)}</span>
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="daily-panel-actions">
+                <button
+                  className="primary-button small-button"
+                  onClick={() => void runCurrentStoreScan()}
+                  disabled={dianxiaomiAccountScanner.isPending || dianxiaomiAccountScanImporter.isPending || !activeDianxiaomiPageContext}
+                >
+                  {dianxiaomiAccountScanner.isPending || dianxiaomiAccountScanImporter.isPending
+                    ? "执行中..."
+                    : `一键扫描并导入页面店铺${currentPageStoreImportableLinks.length > 0 ? ` ${currentPageStoreImportableLinks.length}` : ""}`}
+                </button>
+                <button
+                  className="ghost-button small-button"
+                  onClick={() => void runBatchPrepareForCurrentScope()}
+                  disabled={dianxiaomiAccountScanner.isPending || dianxiaomiAccountScanImporter.isPending || batchPreparePending || batchPrepareActionableCount === 0}
+                >
+                  {batchPreparePending ? "准备中..." : "批量准备当前范围"}
+                </button>
+              </div>
+              {accountScanMessage ? <p className="daily-message">{accountScanMessage}</p> : null}
+              <details className="daily-inline-details">
+                <summary>限定链接或来源页</summary>
+                <div className="daily-inline-detail-body">
+                  <label className="daily-scope-control">
+                    <span>商品范围</span>
+                    <select
+                      value={selectedQueueProductScopeMode}
+                      onChange={(event) => setSelectedQueueProductScopeMode(event.target.value as QueueProductScopeMode)}
+                    >
+                  <option value="ready-queue">运行店铺 ready 队列</option>
+                      <option value="item-urls">只跑指定商品链接</option>
+                      <option value="source-buckets">按来源页处理</option>
+                    </select>
+                  </label>
+                  {selectedQueueProductScopeMode === "item-urls" ? (
+                    <label className="daily-scope-control daily-scope-textarea">
+                      <span>商品链接</span>
+                      <textarea
+                        rows={4}
+                        value={selectedItemUrlsText}
+                        onChange={(event) => setSelectedItemUrlsText(event.target.value)}
+                        placeholder="一行一个店小秘商品编辑链接"
+                      />
+                    </label>
+                  ) : null}
+                  {selectedQueueProductScopeMode === "source-buckets" ? (
+                    <div className="daily-scope-control daily-scope-checkboxes">
+                      <span>来源页</span>
+                      <div className="daily-scope-choice-list">
+                        {automationSourceBucketOptions.map((option) => {
+                          const checked = selectedSourceBuckets.includes(option.value)
+                          return (
+                            <label key={option.value} className="daily-scope-checkbox">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(event) => setSelectedSourceBuckets((current) =>
+                                  event.target.checked
+                                    ? Array.from(new Set<AutomationSourceBucket>([...current, option.value]))
+                                    : current.filter((item) => item !== option.value)
+                                )}
+                              />
+                              <span>{option.label}</span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+                  {selectedScopeConfigurationMessage ? <p className="daily-message">{selectedScopeConfigurationMessage}</p> : null}
+                </div>
+              </details>
+            </article>
+
+            <article className="daily-panel">
+              <div className="daily-panel-head">
+                <strong>图片检测</strong>
+                <span>{imageCheckPendingCount > 0 ? `待检 ${imageCheckPendingCount} 个` : "当前已过检"}</span>
+              </div>
+              <div className="daily-mini-feed compact">
+                <div>
+                  <strong>常见问题</strong>
+                  <span>{imageCheckIssueSummary || "轮播图、产品图、详情图、主图"}</span>
+                </div>
+                <div>
+                  <strong>默认动作</strong>
+                  <span>先处理最多 5 个待检商品，能自动修的直接修，遇到可恢复阻塞商品继续自动恢复。</span>
+                </div>
+              </div>
+              <div className="daily-panel-actions">
+                <button
+                  className="primary-button small-button"
+                  onClick={() => void runBatchPrepareForCurrentScope()}
+                  disabled={batchPreparePending || dianxiaomiImageChecker.isPending || batchPrepareActionableCount === 0}
+                >
+                  {batchPreparePending ? "准备中..." : "一键批量准备"}
+                </button>
+                <button
+                  className="ghost-button small-button"
+                  onClick={() => void runCurrentScopeImageCheck()}
+                  disabled={imageCheckPendingCount === 0 || batchPreparePending || dianxiaomiImageChecker.isPending}
+                >
+                  {dianxiaomiImageChecker.isPending ? "检测中..." : "只跑图片检测"}
+                </button>
+                <button
+                  className="ghost-button small-button"
+                  onClick={() => setShowDailyDetails((current) => !current)}
+                >
+                  {showDailyDetails ? "收起详情" : "查看明细"}
+                </button>
+              </div>
+              {imageCheckMessage ? <p className="daily-message">{imageCheckMessage}</p> : null}
+              {repairMessage ? <p className="daily-message">{repairMessage}</p> : null}
+              {automationRecoveryRunMessage ? <p className="daily-message">{automationRecoveryRunMessage}</p> : null}
+            </article>
+
+            <article className="daily-panel">
+              <div className="daily-panel-head">
+                <strong>真实草稿验证</strong>
+                <span>{dailySaveDraftProofStatusLabel}</span>
+              </div>
+              <div className="daily-mini-feed compact">
+                <div>
+                  <strong>当前候选</strong>
+                  <span>{dailySaveDraftCandidateSummary}</span>
+                </div>
+                <div>
+                  <strong>最近保存草稿</strong>
+                  <span>{latestSaveDraftProofSummary}</span>
+                </div>
+              </div>
+              <div className="daily-trial-summary">
+                {dailySaveDraftProofStages.map((stage) => (
+                  <div key={stage.name} className={`daily-trial-stat ${stage.tone}`}>
+                    <span>{stage.name}</span>
+                    <strong>{stage.status}</strong>
+                  </div>
+                ))}
+              </div>
+              <p className="daily-message">这一步只验证到店小秘保存草稿成功，不提交。</p>
+              <div className={`daily-trial-gate ${dailyTrialGate.status}`}>
+                <strong>{dailyTrialGate.recovery.title}</strong>
+                <span>{dailyTrialGate.message}</span>
+              </div>
+              <div className="daily-mini-feed compact">
+                <div>
+                  <strong>最近轮询</strong>
+                  <span>{latestQueueSummary}</span>
+                </div>
+                <div>
+                  <strong>最近全流程</strong>
+                  <span>{latestFullFlowSummary}</span>
+                </div>
+              </div>
+              <div className="daily-trial-summary">
+                {dailyTrialGate.details.map((item) => (
+                  <div key={item.label} className={`daily-trial-stat ${item.tone}`}>
+                    <span>{item.label}</span>
+                    <strong>{item.value}</strong>
+                  </div>
+                ))}
+              </div>
+              <div className="daily-panel-actions">
+                <button
+                  className="primary-button small-button"
+                  onClick={() => {
+                    if (!dailySaveDraftCandidate) {
+                      return
+                    }
+                    void dailySaveDraftProofRunner.mutateAsync({ workItemId: dailySaveDraftCandidate.id })
+                  }}
+                  disabled={!dailySaveDraftCandidate || dailySaveDraftProofRunning || dailyBackendOffline}
+                >
+                  {dailySaveDraftProofRunning ? "验证中..." : "验证保存草稿"}
+                </button>
+                <button
+                  className="ghost-button small-button"
+                  onClick={() => setShowDailyDetails((current) => !current)}
+                >
+                  {showDailyDetails ? "收起验收" : "查看验收"}
+                </button>
+                <button
+                  className="ghost-button small-button"
+                  onClick={() => void selectorCalibrationRunner.mutateAsync(dailySelectorCalibrationInput)}
+                  disabled={selectorCalibrationRunner.isPending || dailyBackendOffline}
+                >
+                  {selectorCalibrationRunner.isPending ? "校准中..." : "页面校准"}
+                </button>
+              </div>
+              {dailySaveDraftProofMessage ? <p className="daily-message">{dailySaveDraftProofMessage}</p> : null}
+              {selectorCalibrationMessage ? <p className="daily-message">{selectorCalibrationMessage}</p> : null}
+            </article>
+
+            <article className="daily-panel">
+              <div className="daily-panel-head">
+                <strong>需要你处理的事情</strong>
+                <span>{dailyTopAlerts.length > 0 ? `${dailyTopAlerts.length} 条` : "当前可直接跑"}</span>
+              </div>
+              {dailyTopAlerts.length > 0 ? (
+                <div className="daily-alert-list">
+                  {dailyTopAlerts.map((alert) => (
+                    <div key={alert.id} className={`daily-alert ${alert.tone}`}>
+                      <strong>{alert.title}</strong>
+                      <span>{alert.message}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="daily-alert empty">
+                  <strong>当前没有额外阻塞</strong>
+                  <span>继续让店小秘页内插件加队列，然后在这里试跑或启动无人值守。</span>
+                </div>
+              )}
+              <div className="daily-mini-feed compact">
+                <div>
+                  <strong>人工接手</strong>
+                  <span>{dailyManualReviewSummary}</span>
+                </div>
+                <div>
+                  <strong>店小秘页内插件</strong>
+                  <span>在商品编辑页右侧查看当前动作、图片问题和下一步，不再单独切页面盯流程。</span>
+                </div>
+              </div>
+            </article>
           </section>
 
           {showDailyDetails ? (
@@ -1614,15 +3427,68 @@ export function App() {
         <div className="queue-panel">
           <div className="queue-head">
             <strong>Dianxiaomi edit queue</strong>
-            <p>{dianxiaomiProductWorkItems.length} Dianxiaomi products waiting for requirement-based edits.</p>
+            <p>{scopeWorkItemCount} Dianxiaomi products waiting for requirement-based edits in {selectedQueueScopeSummary}.</p>
           </div>
+          {imageCheckMessage ? (
+            <div className="import-result">
+              <p>{imageCheckMessage}</p>
+            </div>
+          ) : null}
+          {repairMessage ? (
+            <div className="import-result">
+              <p>{repairMessage}</p>
+            </div>
+          ) : null}
           <div className="collected-product-list">
             {dianxiaomiProductWorkItems.length > 0 ? dianxiaomiProductWorkItems.slice(0, 6).map((item) => (
               <div key={item.id} className="collected-product-item">
+                {(() => {
+                  const latestImageCheckJob = latestImageCheckJobByWorkItemId.get(item.id) ?? null
+                  const latestRepairPreviewJob = latestRepairPreviewJobByWorkItemId.get(item.id) ?? null
+                  const latestRepairApplyJob = latestRepairApplyJobByWorkItemId.get(item.id) ?? null
+                  const imageCheckIssues = item.snapshot.imageCheck?.issues ?? []
+                  const repairActions = item.repairPlan?.actions ?? []
+                  const autoRepairable = item.repairPlan?.status === "auto-ready"
+                    && item.repairPlan.canAutoRepair
+                    && repairActions.length > 0
+                    && repairActions.every((action) => action.automation === "auto")
+                  const repairRunning = latestRepairApplyJob?.status === "running" || latestRepairPreviewJob?.status === "running"
+                  const repairToolSummary = repairActions
+                    .filter((action) => action.payload?.writer === "run-media-tool")
+                    .map((action) => action.payload?.mediaTool ?? action.tool ?? action.target ?? action.label)
+                    .filter(Boolean)
+                    .join(" / ")
+                  return (
+                    <>
                 <div>
                   <strong>{item.title}</strong>
-                  <span>{item.pageProfile ?? "Dianxiaomi product"} / {item.status}</span>
+                  <span>{item.pageProfile ?? "Dianxiaomi product"} / {item.status} / {item.storeName ?? item.storeId ?? "unknown store"}</span>
                   <small>{new Date(item.updatedAt).toLocaleString()} / required {item.requirements.summary.requiredPassed}/{item.requirements.summary.requiredTotal} / SKU {item.snapshot.skuCount} / images {item.snapshot.imageCount}</small>
+                  {item.snapshot.imageCheck ? (
+                    <small>
+                      image check: {item.snapshot.imageCheck.passed ? "passed" : imageCheckIssues.length > 0 ? imageCheckIssues.map((issue) => `${issue.category} ${issue.issue}`).join(" / ") : "failed"}
+                    </small>
+                  ) : null}
+                  {latestImageCheckJob ? (
+                    <small>
+                      latest image check: {latestImageCheckJob.status}{latestImageCheckJob.result ? latestImageCheckJob.result.passed ? " / passed" : ` / ${latestImageCheckJob.result.summary.join(" / ")}` : ""}
+                    </small>
+                  ) : null}
+                  {item.repairPlan ? (
+                    <small>
+                      repair plan: {item.repairPlan.status} / {item.repairPlan.summary}{repairToolSummary ? ` / ${repairToolSummary}` : ""}
+                    </small>
+                  ) : null}
+                  {latestRepairPreviewJob ? (
+                    <small>
+                      latest repair preview: {latestRepairPreviewJob.status}{latestRepairPreviewJob.reportStatus ? ` / ${latestRepairPreviewJob.reportStatus}` : ""}
+                    </small>
+                  ) : null}
+                  {latestRepairApplyJob ? (
+                    <small>
+                      latest repair apply: {latestRepairApplyJob.status}{latestRepairApplyJob.reportStatus ? ` / ${latestRepairApplyJob.reportStatus}` : ""}
+                    </small>
+                  ) : null}
                   {item.suggestedEdits.length > 0 ? (
                     <small>{item.suggestedEdits.slice(0, 3).map((edit) => `${edit.field}: ${edit.suggestedValue || edit.reason}`).join(" / ")}</small>
                   ) : null}
@@ -1636,12 +3502,36 @@ export function App() {
                   </button>
                   <button
                     className="ghost-button small-button"
+                    onClick={() => void dianxiaomiImageChecker.mutateAsync({ workItemId: item.id })}
+                    disabled={dianxiaomiImageChecker.isPending || latestImageCheckJob?.status === "running"}
+                  >
+                    {latestImageCheckJob?.status === "running" ? "checking..." : "run image check"}
+                  </button>
+                  <button
+                    className="ghost-button small-button"
+                    onClick={() => void dianxiaomiRepairPreviewRunner.mutateAsync({ workItemId: item.id })}
+                    disabled={!item.repairPlan || repairRunning || dianxiaomiRepairPreviewRunner.isPending}
+                  >
+                    {latestRepairPreviewJob?.status === "running" ? "previewing..." : "repair preview"}
+                  </button>
+                  <button
+                    className="primary-button small-button"
+                    onClick={() => void dianxiaomiRepairApplyRunner.mutateAsync({ workItemId: item.id })}
+                    disabled={!autoRepairable || repairRunning || dianxiaomiRepairApplyRunner.isPending}
+                  >
+                    {latestRepairApplyJob?.status === "running" ? "repairing..." : "run auto repair"}
+                  </button>
+                  <button
+                    className="ghost-button small-button"
                     onClick={() => void dianxiaomiWorkItemTaskCreator.mutateAsync(item.id)}
                     disabled={dianxiaomiWorkItemTaskCreator.isPending}
                   >
                     create edit task
                   </button>
                 </div>
+                    </>
+                  )
+                })()}
               </div>
             )) : (
               <div className="empty-report">Open a Dianxiaomi collected/product edit page and click the extension button to add it here.</div>
@@ -1698,14 +3588,14 @@ export function App() {
         <div className="queue-panel">
           <div className="queue-head">
             <strong>店小秘采集</strong>
-            <p>{dianxiaomiCollectedProducts.length} 个来自浏览器插件的采集商品。</p>
+            <p>{dianxiaomiCollectedProducts.length} 个来自浏览器插件的采集商品，当前范围 {selectedQueueScopeSummary}。</p>
           </div>
           <div className="collected-product-list">
             {dianxiaomiCollectedProducts.length > 0 ? dianxiaomiCollectedProducts.slice(0, 6).map((product) => (
               <div key={product.id} className="collected-product-item">
                 <div>
                   <strong>{product.title}</strong>
-                  <span>{product.category}</span>
+                  <span>{product.category} / {product.storeName ?? product.storeId ?? "unknown store"}</span>
                   <small>{new Date(product.collectedAt).toLocaleString()} / {product.quality.status} {product.quality.score}% / SKU {product.skus.length} / images {product.images.length}</small>
                   {product.quality.checks.some((check) => !check.ok) ? (
                     <small>{product.quality.checks.filter((check) => !check.ok).map((check) => check.message).join(" / ")}</small>
@@ -1818,17 +3708,17 @@ export function App() {
             <DailyMetric label="浏览器恢复" value={String(displayedBrowserRecoveryCandidateCount)} detail="repair-preview / repair-apply / full-flow" tone={displayedBrowserRecoveryCandidateCount > 0 ? "good" : "neutral"} />
             <DailyMetric label="暂停恢复" value={String(pausedBrowserRecoveryCandidateCount)} detail="重复失败预算保护" tone={pausedBrowserRecoveryCandidateCount > 0 ? "warn" : "neutral"} />
             <DailyMetric label="直接安全重试" value={String(directSafeRetryCandidateCount)} detail="无需字段或图片修复" tone={directSafeRetryCandidateCount > 0 ? "warn" : "neutral"} />
-            <DailyMetric label="失败队列" value={String(blockedWorkItems.length)} detail="不计入日常主路径 KPI" tone={blockedWorkItems.length > 0 ? "warn" : "neutral"} />
-            <DailyMetric label="恢复批次" value={String(automationRecoveryRuns.length)} detail={automationRecoveryRuns[0] ? automationRecoveryRuns[0].status : "暂无恢复运行"} tone={automationRecoveryRuns[0]?.status === "failed" ? "bad" : automationRecoveryRuns[0]?.status === "completed" ? "good" : "neutral"} />
+            <DailyMetric label="失败队列" value={String(scopeBlockedCount)} detail="不计入日常主路径 KPI" tone={scopeBlockedCount > 0 ? "warn" : "neutral"} />
+            <DailyMetric label="恢复批次" value={String(automationRecoveryRunsInScope.length)} detail={automationRecoveryRunsInScope[0] ? automationRecoveryRunsInScope[0].status : "暂无恢复运行"} tone={automationRecoveryRunsInScope[0]?.status === "failed" ? "bad" : automationRecoveryRunsInScope[0]?.status === "completed" ? "good" : "neutral"} />
           </div>
           {automationRecoveryRunMessage ? (
             <div className="import-result">
               <p>{automationRecoveryRunMessage}</p>
             </div>
           ) : null}
-          {automationRecoveryRuns.length > 0 ? (
+          {automationRecoveryRunsInScope.length > 0 ? (
             <div className="report-list">
-              {automationRecoveryRuns.slice(0, 3).map((run) => <RecoveryRunCard key={run.id} run={run} />)}
+              {automationRecoveryRunsInScope.slice(0, 3).map((run) => <RecoveryRunCard key={run.id} run={run} />)}
             </div>
           ) : (
             <div className="empty-report">暂无恢复批跑记录。</div>
@@ -2114,7 +4004,7 @@ export function App() {
                       ...current,
                       profile: event.target.value
                     }))}
-                    placeholder=".runtime/playwright/dianxiaomi-profile"
+                    placeholder=".runtime/dianxiaomi-real-profile"
                   />
                 </label>
                 <label>
@@ -2360,10 +4250,11 @@ export function App() {
                 className="primary-button small-button"
                 onClick={() => void automationQueueRunner.mutateAsync({
                   ...automationStartInput,
+                  ...selectedQueueScopeInput,
                   mediaAutomationMode: automationStartInput.mediaAutomationMode ?? "unattended-apply",
-                  limit: 5
+                  limit: 1
                 })}
-                disabled={automationQueueRunner.isPending}
+                disabled={automationQueueRunner.isPending || !selectedQueueProductScopeReady}
               >
                 {automationQueueRunner.isPending ? "starting queue..." : "Run ready queue"}
               </button>
@@ -2392,12 +4283,13 @@ export function App() {
                   className="primary-button small-button"
                   onClick={() => void automationQueueDaemonStarter.mutateAsync({
                     ...automationStartInput,
+                    ...selectedQueueScopeInput,
                     mediaAutomationMode: automationStartInput.mediaAutomationMode ?? "unattended-apply",
                     intervalSeconds: Number.parseInt(automationQueueDaemonInterval, 10) || 300,
                     maxConsecutiveFailures: Number.parseInt(automationQueueDaemonMaxFailures, 10) || 3,
-                    limit: 5
+                    limit: 1
                   })}
-                  disabled={automationQueueDaemonStarter.isPending}
+                  disabled={automationQueueDaemonStarter.isPending || !selectedQueueProductScopeReady}
                 >
                   {automationQueueDaemonStarter.isPending ? "starting daemon..." : "Start queue daemon"}
                 </button>
@@ -2495,7 +4387,10 @@ export function App() {
                   profileLockArchivePending={profileLockArchiver.isPending}
                   onStartManualBudgetTrial={requestManualBudgetTrial}
                   onStartNextManualBudgetValidation={requestNextManualBudgetValidation}
-                  onArchiveStaleProfileLocks={() => void profileLockArchiver.mutateAsync(automationStartInput)}
+                  onArchiveStaleProfileLocks={() => void profileLockArchiver.mutateAsync({
+                    ...automationStartInput,
+                    ...selectedQueueScopeInput
+                  })}
                 />
               ) : null}
               {automationQueueDaemon ? <QueueDaemonCard state={automationQueueDaemon} /> : null}
@@ -2519,19 +4414,29 @@ export function App() {
                   {automationDryRunJobs.slice(0, 3).map((job) => <DryRunJobCard key={job.id} job={job} />)}
                 </div>
               ) : null}
-              {automationFullFlowJobs.length > 0 ? (
+              {automationFullFlowJobsInScope.length > 0 ? (
                 <div className="report-list">
-                  {automationFullFlowJobs.slice(0, 3).map((job) => <FullFlowJobCard key={job.id} job={job} />)}
+                  {automationFullFlowJobsInScope.slice(0, 3).map((job) => <FullFlowJobCard key={job.id} job={job} />)}
                 </div>
               ) : null}
-              {automationQueueRuns.length > 0 ? (
+              {automationQueueRunsInScope.length > 0 ? (
                 <div className="report-list">
-                  {automationQueueRuns.slice(0, 3).map((run) => <QueueRunCard key={run.id} run={run} />)}
+                  {automationQueueRunsInScope.slice(0, 3).map((run) => <QueueRunCard key={run.id} run={run} />)}
                 </div>
               ) : null}
               {automationFillDraftJobs.length > 0 ? (
                 <div className="report-list">
                   {automationFillDraftJobs.slice(0, 3).map((job) => <FillDraftJobCard key={job.id} job={job} />)}
+                </div>
+              ) : null}
+              {automationRepairPreviewJobs.length > 0 ? (
+                <div className="report-list">
+                  {automationRepairPreviewJobs.slice(0, 3).map((job) => <RepairPreviewJobCard key={job.id} job={job} />)}
+                </div>
+              ) : null}
+              {automationRepairApplyJobs.length > 0 ? (
+                <div className="report-list">
+                  {automationRepairApplyJobs.slice(0, 3).map((job) => <RepairApplyJobCard key={job.id} job={job} />)}
                 </div>
               ) : null}
               {automationSaveDraftJobs.length > 0 ? (
@@ -2574,6 +4479,17 @@ export function App() {
                 <div className="review-actions">
                   <button
                     className="ghost-button small-button"
+                    onClick={() => void dianxiaomiAccountScanner.mutateAsync({
+                      headed: false,
+                      sourceBuckets: ["collection-box", "pending-publish"],
+                      maxPages: 20
+                    })}
+                    disabled={dianxiaomiAccountScanner.isPending}
+                  >
+                    {dianxiaomiAccountScanner.isPending ? "scanning..." : "扫描店铺与链接"}
+                  </button>
+                  <button
+                    className="ghost-button small-button"
                     onClick={() => void selectorCalibrationRunner.mutateAsync({ headed: true })}
                     disabled={selectorCalibrationRunner.isPending}
                   >
@@ -2591,6 +4507,11 @@ export function App() {
               {selectorCalibrationMessage ? (
                 <div className="import-result">
                   <p>{selectorCalibrationMessage}</p>
+                </div>
+              ) : null}
+              {accountScanMessage ? (
+                <div className="import-result">
+                  <p>{accountScanMessage}</p>
                 </div>
               ) : null}
               {selectorConfigMessage ? (
@@ -2635,6 +4556,60 @@ export function App() {
                 <div className="report-list">
                   {selectorCalibrationJobs.slice(0, 3).map((job) => <SelectorCalibrationJobCard key={job.id} job={job} />)}
                 </div>
+              ) : null}
+              {dianxiaomiAccountScanJobs.length > 0 ? (
+                <div className="report-list">
+                  {dianxiaomiAccountScanJobs.slice(0, 3).map((job) => <DianxiaomiAccountScanJobCard key={job.id} job={job} />)}
+                </div>
+              ) : null}
+              {dianxiaomiImageCheckJobs.length > 0 ? (
+                <div className="report-list">
+                  {dianxiaomiImageCheckJobs.slice(0, 3).map((job) => <DianxiaomiImageCheckJobCard key={job.id} job={job} />)}
+                </div>
+              ) : null}
+              {latestCompletedAccountScanJob?.result ? (
+                <>
+                  <DianxiaomiAccountScanPool
+                    job={latestCompletedAccountScanJob}
+                    selectedLinkIds={selectedAccountScanLinkIds}
+                    selectedStoreFilter={accountScanStoreFilter}
+                    selectedBucketFilter={accountScanBucketFilter}
+                    existingEditUrlSet={existingWorkItemEditUrlSet}
+                    onToggleLink={toggleAccountScanLinkSelection}
+                    onToggleVisible={toggleVisibleAccountScanLinks}
+                    onStoreFilterChange={setAccountScanStoreFilter}
+                    onBucketFilterChange={setAccountScanBucketFilter}
+                  />
+                  <div className="review-actions">
+                    <button
+                      className="primary-button small-button"
+                      onClick={() => {
+                        const storeScopeKey = accountScanStoreFilter === "all" ? undefined : accountScanStoreFilter
+                        void dianxiaomiAccountScanImporter.mutateAsync({
+                          jobId: latestCompletedAccountScanJob.id,
+                          linkIds: selectedAccountScanLinkIds,
+                          storeScopeKey
+                        })
+                      }}
+                      disabled={dianxiaomiAccountScanImporter.isPending || selectedAccountScanLinkIds.length === 0}
+                    >
+                      {dianxiaomiAccountScanImporter.isPending ? "importing..." : `导入已选 ${selectedAccountScanLinkIds.length} 个到队列`}
+                    </button>
+                    <button
+                      className="ghost-button small-button"
+                      onClick={() => {
+                        const selectedLinks = latestCompletedAccountScanJob.result?.stores
+                          .flatMap((store) => store.links)
+                          .filter((link) => selectedAccountScanLinkIds.includes(link.id)) ?? []
+                        setSelectedQueueProductScopeMode("item-urls")
+                        setSelectedItemUrlsText(selectedLinks.map((link) => link.editUrl).join("\n"))
+                      }}
+                      disabled={selectedAccountScanLinkIds.length === 0}
+                    >
+                      用已选链接作为运行范围
+                    </button>
+                  </div>
+                </>
               ) : null}
               <div className="report-list">
                 {selectorConfigValidation ? (

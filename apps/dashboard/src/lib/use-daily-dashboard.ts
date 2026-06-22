@@ -11,6 +11,7 @@ import type {
 } from "@temu-ai-ops/shared"
 
 import {
+  canRunBrowserRecovery,
   getAutomaticPassRate,
   getDailyTrialGate,
   getErrorMessage,
@@ -39,23 +40,7 @@ export const useDailyDashboard = (input: {
 
   const readyWorkItems = dianxiaomiProductWorkItems.filter((item) => item.status === "ready-for-automation")
   const blockedWorkItems = dianxiaomiProductWorkItems.filter((item) => item.status === "blocked")
-  const browserRecoveryCandidateCount = blockedWorkItems.filter((item) =>
-    item.repairPlan?.status === "auto-ready"
-    && item.repairPlan.canAutoRepair
-    && item.repairPlan.actions.length > 0
-    && item.repairPlan.actions.some((action) =>
-      action.automation === "auto"
-      && ["fill-single-field", "fill-attributes", "fill-sku-pricing", "run-media-tool"].includes(action.payload?.writer ?? "")
-    )
-    && item.repairPlan.actions.every((action) =>
-      action.automation === "auto"
-      && (
-        action.payload?.writer
-          ? ["fill-single-field", "fill-attributes", "fill-sku-pricing", "run-media-tool"].includes(action.payload.writer)
-          : action.required === false
-      )
-    )
-  ).length
+  const browserRecoveryCandidateCount = blockedWorkItems.filter((item) => canRunBrowserRecovery(item)).length
   const directSafeRetryCandidateCount = automationQueueDaemonHealth?.workItems.autoRetryCandidates ?? 0
   const releasedBrowserRecoveryCandidateCount = automationQueueDaemonHealth?.workItems.releasedBrowserRecoveryCandidates ?? 0
   const displayedBrowserRecoveryCandidateCount = automationQueueDaemonHealth
