@@ -2,6 +2,7 @@ const ROOT_ID = "temu-ai-root"
 
 const panelState = {
   busy: false,
+  collapsed: false,
   task: null,
   notice: "正在等待控制台同步任务...",
   report: [],
@@ -15,7 +16,8 @@ const panelState = {
   admission: {
     workItem: null,
     checkedAt: null
-  }
+  },
+  lastPageContextSignature: null
 }
 
 const FIELD_SELECTORS = {
@@ -213,6 +215,428 @@ const ensureRoot = () => {
 }
 
 const normalizeText = (value) => (value ?? "").replace(/\s+/g, " ").trim().toLowerCase()
+
+const normalizeStoreValue = (value) => {
+  const normalized = String(value ?? "").replace(/\s+/g, " ").trim()
+  return normalized || null
+}
+
+const isAllStoresValue = (value) => {
+  const normalized = normalizeStoreValue(value)
+  if (!normalized) {
+    return false
+  }
+
+  const compact = normalized.replace(/\s+/g, "")
+  return compact === "全部" || compact === "全部店铺" || compact.toLowerCase() === "all" || compact.toLowerCase() === "allstores"
+}
+
+const looksLikeStoreName = (value) => {
+  const normalized = normalizeStoreValue(value)
+  if (!normalized || isAllStoresValue(normalized)) {
+    return false
+  }
+
+  if (normalized.length > 80) {
+    return false
+  }
+
+  if (/^(店铺账号|店铺帐号|店铺|账号|站点|搜索|搜索内容|搜索类型|排序方式)$/i.test(normalized)) {
+    return false
+  }
+
+  return true
+}
+
+const normalizeStoreSectionTitle = (value) => normalizeStoreValue(value).replace(/\s+/g, "")
+
+const isStoreAccountSectionTitle = (value) => {
+  const compact = normalizeStoreSectionTitle(value)
+  return compact === "店铺账号:" || compact === "店铺账号" || compact === "店铺帐号:" || compact === "店铺帐号"
+}
+
+const findStoreSectionContainers = () => {
+  const sections = Array.from(document.querySelectorAll(".in-screen-single"))
+    .filter((section) => {
+      const titleText = normalizeStoreValue(section.querySelector(".title")?.textContent)
+      return Boolean(titleText) && isStoreAccountSectionTitle(titleText)
+    })
+
+  if (sections.length > 0) {
+    return sections
+  }
+
+  return findStoreFilterContainers()
+}
+
+const findStoreFilterContainers = () => {
+  const labelNodes = Array.from(document.querySelectorAll("label, span, div, td, th, strong"))
+    .filter((element) => {
+      const text = normalizeStoreValue(element.textContent)
+      return Boolean(text) && /^店铺账?号[:：]?$/.test(String(text).replace(/\s+/g, ""))
+    })
+    .slice(0, 8)
+
+  const containers = new Set()
+  labelNodes.forEach((node) => {
+    if (!(node instanceof HTMLElement)) {
+      return
+    }
+
+    ;[
+      node.nextElementSibling,
+      node.parentElement,
+      node.parentElement?.nextElementSibling,
+      node.closest("tr, li, [class*='row' i], [class*='item' i], [class*='group' i], [class*='filter' i], .in-screen-single")
+    ].forEach((container) => {
+      if (container instanceof HTMLElement) {
+        containers.add(container)
+      }
+    })
+  })
+
+  return Array.from(containers)
+}
+
+const collectStoreTagsFromContainer = (container) => {
+  if (!(container instanceof HTMLElement)) {
+    return []
+  }
+
+  return Array.from(container.querySelectorAll(".d-tag-group-item"))
+    .filter((element) => element instanceof HTMLElement && isVisible(element))
+    .map((element) => {
+      const storeName = normalizeStoreValue(element.textContent)
+      if (!looksLikeStoreName(storeName)) {
+        return null
+      }
+
+      const storeId = extractShopIdFromUrl(element.getAttribute("href"))
+        || normalizeStoreValue(element.getAttribute("data-shop-id") || element.getAttribute("data-store-id") || element.getAttribute("data-shopid"))
+        || undefined
+
+      return {
+        storeName,
+        storeId,
+        element
+      }
+    })
+    .filter(Boolean)
+}
+
+const collectStoreFilterOptions = () => {
+  const optionMap = new Map()
+
+  const containers = findStoreSectionContainers()
+  containers.forEach((container) => {
+    collectStoreTagsFromContainer(container).forEach((option) => {
+      if (!option) {
+        return
+      }
+
+      const key = (option.storeId || option.storeName).toLowerCase()
+      const current = optionMap.get(key)
+
+      if (!current || (!current.storeId && option.storeId)) {
+        optionMap.set(key, option)
+      }
+    })
+  })
+
+  if (optionMap.size === 0) {
+    findStoreFilterContainers().forEach((container) => {
+      Array.from(container.querySelectorAll("a, button, span, div, li")).slice(0, 80).forEach((element) => {
+        if (!(element instanceof HTMLElement) || !isVisible(element)) {
+          return
+        }
+
+        const storeName = normalizeStoreValue(element.textContent)
+        if (!looksLikeStoreName(storeName)) {
+          return
+        }
+
+        const storeId = extractShopIdFromUrl(element.getAttribute("href"))
+          || normalizeStoreValue(element.getAttribute("data-shop-id") || element.getAttribute("data-store-id") || element.getAttribute("data-shopid"))
+          || undefined
+        const key = (storeId || storeName).toLowerCase()
+        const current = optionMap.get(key)
+
+        if (!current || (!current.storeId && storeId)) {
+          optionMap.set(key, {
+            storeName,
+            storeId,
+            element
+          })
+        }
+      })
+    })
+  }
+
+  return Array.from(optionMap.values())
+}
+
+const sortStoreOptions = (stores) =>
+  [...stores].sort((left, right) => {
+    const leftKey = (normalizeStoreValue(left.storeId) || normalizeStoreValue(left.storeName) || "").toLowerCase()
+    const rightKey = (normalizeStoreValue(right.storeId) || normalizeStoreValue(right.storeName) || "").toLowerCase()
+    return leftKey.localeCompare(rightKey, "zh-CN")
+  })
+
+const extractShopIdFromUrl = (value) => {
+  try {
+    const url = new URL(value, window.location.origin)
+    const direct = normalizeStoreValue(url.searchParams.get("shopId"))
+    if (direct && direct !== "-1") {
+      return direct
+    }
+  } catch {
+    // ignore invalid url
+  }
+
+  const matched = String(value ?? "").match(/(?:shopId|shopid)[=/:](-?\d+)/i)
+  if (!matched?.[1] || matched[1] === "-1") {
+    return null
+  }
+  return matched[1]
+}
+
+const scoreStoreSelectionElement = (element) => {
+  if (!(element instanceof HTMLElement) || !isVisible(element)) {
+    return -1
+  }
+
+  const storeName = normalizeStoreValue(element.textContent)
+  if (!looksLikeStoreName(storeName)) {
+    return -1
+  }
+
+  const classText = [
+    element.className,
+    element.parentElement?.className,
+    element.getAttribute("data-state"),
+    element.getAttribute("data-status")
+  ].filter(Boolean).join(" ").toLowerCase()
+  const style = window.getComputedStyle(element)
+  const fontWeight = Number(style.fontWeight)
+  const backgroundColor = style.backgroundColor?.replace(/\s+/g, "") ?? ""
+  const textColor = style.color?.replace(/\s+/g, "") ?? ""
+  let score = 0
+
+  if (/(active|selected|current|cur|checked|on)/.test(classText)) {
+    score += 5
+  }
+  if (element.getAttribute("aria-selected") === "true" || element.getAttribute("aria-pressed") === "true") {
+    score += 5
+  }
+  if (style.cursor === "pointer") {
+    score += 1
+  }
+  if (Number.isFinite(fontWeight) && fontWeight >= 600) {
+    score += 1
+  }
+  if (backgroundColor && backgroundColor !== "rgba(0,0,0,0)" && backgroundColor !== "transparent") {
+    score += 2
+  }
+  if (textColor.startsWith("rgb(255,255,255")) {
+    score += 1
+  }
+  if (/^(A|BUTTON)$/i.test(element.tagName)) {
+    score += 1
+  }
+
+  return score
+}
+
+const extractSelectedStoreCandidate = () => {
+  const rankedCandidates = []
+  collectStoreFilterOptions().forEach(({ storeName, storeId, element }) => {
+    const score = scoreStoreSelectionElement(element)
+    if (score < 2) {
+      return
+    }
+
+    rankedCandidates.push({
+      storeName,
+      storeId: storeId ?? null,
+      source: "selected-filter",
+      score
+    })
+  })
+
+  rankedCandidates.sort((left, right) => right.score - left.score)
+  return rankedCandidates[0] ?? null
+}
+
+const collectAvailableStores = () =>
+  sortStoreOptions(collectStoreFilterOptions())
+    .map(({ storeId, storeName }) => ({
+      storeId: storeId ?? undefined,
+      storeName
+    }))
+
+const extractDominantStoreCandidateFromRows = () => {
+  const counts = new Map()
+  Array.from(document.querySelectorAll("table td, table span, table div, table p")).slice(0, 240).forEach((element) => {
+    const text = normalizeStoreValue(element.textContent)
+    const matched = text?.match(/\[([^\[\]]{2,60})\]/)
+    const storeName = normalizeStoreValue(matched?.[1])
+    if (!looksLikeStoreName(storeName) || /[0-9￥¥]/.test(String(storeName))) {
+      return
+    }
+
+    counts.set(storeName, (counts.get(storeName) ?? 0) + 1)
+  })
+
+  const [storeName] = Array.from(counts.entries()).sort((left, right) => right[1] - left[1])[0] ?? []
+  return storeName ? {
+    storeName,
+    storeId: null,
+    source: "product-row"
+  } : null
+}
+
+const collectStoreCandidates = () => {
+  const candidates = []
+  const pageText = document.body?.innerText ?? ""
+  const titleText = document.title ?? ""
+
+  const pushCandidate = (storeName, source, storeId = null) => {
+    const normalizedStoreName = normalizeStoreValue(storeName)
+    const normalizedStoreId = normalizeStoreValue(storeId)
+    if (!normalizedStoreName && !normalizedStoreId) {
+      return
+    }
+
+    candidates.push({
+      storeName: normalizedStoreName,
+      storeId: normalizedStoreId,
+      source
+    })
+  }
+
+  const selectedStoreCandidate = extractSelectedStoreCandidate()
+  if (selectedStoreCandidate) {
+    pushCandidate(selectedStoreCandidate.storeName, selectedStoreCandidate.source, selectedStoreCandidate.storeId)
+  }
+
+  const dominantStoreCandidate = extractDominantStoreCandidateFromRows()
+  if (dominantStoreCandidate) {
+    pushCandidate(dominantStoreCandidate.storeName, dominantStoreCandidate.source, dominantStoreCandidate.storeId)
+  }
+
+  const fromUrlShopId = extractShopIdFromUrl(window.location.href)
+  if (fromUrlShopId) {
+    pushCandidate(null, "page-url", fromUrlShopId)
+  }
+
+  Array.from(document.querySelectorAll("[data-shop-id], [data-store-id], [data-shopid]")).slice(0, 20).forEach((element) => {
+    pushCandidate(
+      element.getAttribute("data-store-name") || element.getAttribute("title") || element.textContent,
+      "data-attr",
+      element.getAttribute("data-shop-id") || element.getAttribute("data-store-id") || element.getAttribute("data-shopid")
+    )
+  })
+
+  Array.from(document.querySelectorAll("a[href*='shopId='], a[href*='shopid='], [href*='/shop/']")).slice(0, 20).forEach((element) => {
+    pushCandidate(element.textContent, "shop-link", extractShopIdFromUrl(element.getAttribute("href")))
+  })
+
+  ;[
+    /店铺账号[:：]\s*([^\n]+)/i,
+    /店铺[:：]\s*([^\n]+)/i,
+    /账号[:：]\s*([^\n]+)/i
+  ].forEach((pattern, index) => {
+    const matched = pageText.match(pattern) || titleText.match(pattern)
+    if (matched?.[1]) {
+      pushCandidate(matched[1].split(/[|｜]/)[0], `text-pattern-${index + 1}`)
+    }
+  })
+
+  Array.from(document.querySelectorAll(".d-tag-group-item, .el-tag, .ant-tag, .tag")).slice(0, 40).forEach((element) => {
+    const text = normalizeStoreValue(element.textContent)
+    if (!looksLikeStoreName(text)) {
+      return
+    }
+    pushCandidate(text, "tag")
+  })
+
+  return candidates
+}
+
+const scoreStoreCandidate = (candidate) => {
+  const sourceWeight = {
+    "selected-filter": 50,
+    "product-row": 40,
+    "data-attr": 30,
+    "shop-link": 20,
+    tag: 10,
+    "text-pattern-1": 5,
+    "text-pattern-2": 4,
+    "text-pattern-3": 3,
+    "page-url": 1
+  }
+
+  return (sourceWeight[candidate.source] ?? 0)
+    + (candidate.storeId ? 5 : 0)
+    + (candidate.storeName ? 3 : 0)
+}
+
+const buildPageContextSignature = (context) => JSON.stringify({
+  storeId: context?.storeId ?? "",
+  storeName: context?.storeName ?? "",
+  availableStores: sortStoreOptions(context?.availableStores ?? []).map((item) => `${item.storeName}::${item.storeId ?? ""}`),
+  siteName: context?.siteName ?? "",
+  pageUrl: context?.pageUrl ?? "",
+  pageProfile: context?.pageProfile ?? ""
+})
+
+const waitForStoreContextChange = async (previousSignature, timeoutMs = 8000) => {
+  const startedAt = Date.now()
+  let lastContext = getCurrentPageContext()
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const currentContext = getCurrentPageContext()
+    if (currentContext) {
+      const nextSignature = buildPageContextSignature(currentContext)
+      if (nextSignature !== previousSignature) {
+        return currentContext
+      }
+      lastContext = currentContext
+    }
+
+    await delay(250)
+  }
+
+  return lastContext
+}
+
+const inferSiteName = () => {
+  const pageText = document.body?.innerText ?? ""
+  const matched = pageText.match(/(?:站点|站点名称|平台站点)[:：]\s*([^\n]+)/i)
+  return normalizeStoreValue(matched?.[1]?.split(/[|｜]/)[0]) || null
+}
+
+const getCurrentPageContext = () => {
+  const siteContext = getSiteContext()
+  if (siteContext.platform !== "dianxiaomi") {
+    return null
+  }
+
+  const pageProfile = panelState.pageProfile ?? getPageProfile()
+  const candidates = collectStoreCandidates()
+  const bestCandidate = [...candidates].sort((left, right) => scoreStoreCandidate(right) - scoreStoreCandidate(left))[0] ?? null
+
+  return {
+    storeId: bestCandidate?.storeId || undefined,
+    storeName: bestCandidate?.storeName || undefined,
+    availableStores: collectAvailableStores(),
+    siteName: inferSiteName() || undefined,
+    pageUrl: window.location.href,
+    pageTitle: document.title || undefined,
+    pageProfile: pageProfile?.label || undefined,
+    updatedAt: new Date().toISOString()
+  }
+}
 
 const isVisible = (element) => {
   if (!(element instanceof HTMLElement)) {
@@ -1269,89 +1693,183 @@ const renderPanel = () => {
         </div>
       `).join("")
     : "<div class='report-item'><strong>尚未执行</strong><span>点击“执行自动填充”后会显示详细结果。</span></div>"
+  const compactReportItems = panelState.report.length > 0
+    ? panelState.report.slice(-2).map((item) => `
+        <div class="report-item ${item.status}">
+          <strong>${escapeHtml(item.title)}</strong>
+          <span>${escapeHtml(item.detail)}</span>
+        </div>
+      `).join("")
+    : ""
   const alertItems = alerts.length > 0
     ? alerts.map((alert) => `<div class="alert-item">${escapeHtml(alert)}</div>`).join("")
     : "<div class='alert-item ok'>暂无需要处理的告警。</div>"
   const repairActionGate = getRepairActionGate(activeAdmissionWorkItem)
   const defaultActionDisabled = panelState.busy || repairActionGate.blocked
+  const collectActionLabel = activeAdmissionWorkItem ? "刷新准入" : "加入队列"
+  const collectActionDisabled = panelState.busy || repairActionGate.blocked
+  const pageSummary = `${siteContext.label} / ${pageProfile.label}`
+  const pageTone = siteContext.platform === "dianxiaomi" ? "ok" : siteContext.platform === "local-lab" ? "warn" : "bad"
+  const panelTone = panelState.busy
+    ? "warn"
+    : repairActionGate.blocked
+      ? repairActionGate.tone
+      : activeAdmissionWorkItem
+        ? getAdmissionTone(activeAdmissionWorkItem)
+        : getDaemonTone(panelState.unattended.status)
+  const heroTitle = task?.product.title ?? activeAdmissionWorkItem?.title ?? "等待店小秘页面同步任务"
+  const heroStatus = panelState.busy
+    ? "正在执行"
+    : repairActionGate.blocked
+      ? "需先处理"
+      : activeAdmissionWorkItem
+        ? getAdmissionLabel(activeAdmissionWorkItem)
+        : "待加入队列"
+  const heroChip = panelState.busy ? "执行中" : repairActionGate.blocked ? "待处理" : "可继续"
+  const nextStepText = siteContext.platform !== "dianxiaomi" && siteContext.platform !== "local-lab"
+    ? "请切回店小秘商品编辑页，再让页内插件接管动作。"
+    : panelState.busy
+      ? "正在驱动店小秘页面执行默认流程，请保持当前商品编辑页打开。"
+      : repairActionGate.blocked
+        ? "当前商品已被分类为需要改造，先按店小秘图片检测或改造计划处理，再继续默认动作。"
+        : !activeAdmissionWorkItem
+          ? "当前页面还没进入自动队列，先点击“加入队列”，再由系统继续跑。"
+          : activeAdmissionWorkItem.status === "ready-for-automation"
+            ? "当前商品已通过准入，可以直接点击“执行默认动作”。"
+            : activeAdmissionWorkItem.status === "edited"
+              ? "当前商品已进入核价或后续阶段，继续看运行结果即可。"
+              : "先刷新准入或按页面提示修正字段，再继续默认动作。"
+
+  if (panelState.collapsed) {
+    root.innerHTML = `
+      <div class="temu-ai-shell collapsed">
+        <button id="temu-ai-toggle" class="temu-ai-launcher ${panelTone}">
+          <span>店小秘插件</span>
+          <strong>${escapeHtml(heroChip)}</strong>
+          <small>${escapeHtml(pageProfile.label)}</small>
+        </button>
+      </div>
+    `
+
+    root.querySelector("#temu-ai-toggle")?.addEventListener("click", () => {
+      panelState.collapsed = false
+      renderPanel()
+    })
+    return
+  }
 
   root.innerHTML = `
-    <div class="temu-ai-panel">
-      <header>
-        <strong>无人值守上品</strong>
-        <span>${escapeHtml(task ? task.product.title : "等待控制台任务")}</span>
-      </header>
-      <div class="body">
-        <div class="notice">${escapeHtml(panelState.notice)}</div>
+    <div class="temu-ai-shell">
+      <div class="temu-ai-panel ${panelTone}">
+        <header>
+          <div class="header-copy">
+            <div class="header-meta">
+              <span class="panel-badge">店小秘插件</span>
+              <span class="panel-badge subtle">${escapeHtml(pageProfile.label)}</span>
+            </div>
+            <strong>${escapeHtml(heroTitle)}</strong>
+            <span>${escapeHtml(pageSummary)}</span>
+          </div>
+          <button id="temu-ai-toggle" class="panel-toggle secondary">收起</button>
+        </header>
+        <div class="body">
+          <div class="plugin-hero ${panelTone}">
+            <div class="plugin-hero-head">
+              <div>
+                <label>当前页面正在做什么</label>
+                <strong>${escapeHtml(heroStatus)}</strong>
+              </div>
+              <span class="hero-chip ${panelTone}">${escapeHtml(heroChip)}</span>
+            </div>
+            <p>${escapeHtml(nextStepText)}</p>
+          </div>
 
-        <div class="panel-group">
-          <label>状态</label>
-          ${renderStatusRow("守护进程", getDaemonLabel(panelState.unattended.status), getDaemonTone(panelState.unattended.status))}
-          ${renderStatusRow("队列", getQueueSummary(panelState.unattended.status), panelState.unattended.status ? "ok" : "warn")}
-          ${renderStatusRow("当前商品", getCurrentWorkItemLabel(panelState.unattended.status), getCurrentWorkItemTone(panelState.unattended.status))}
-          ${renderStatusRow("准入", getAdmissionLabel(activeAdmissionWorkItem), getAdmissionTone(activeAdmissionWorkItem))}
-          ${renderStatusRow("改造", getRepairPlanLabel(activeAdmissionWorkItem), getRepairPlanTone(activeAdmissionWorkItem))}
-          ${renderStatusRow("字段", summarizeScan(scan), scan ? "ok" : "warn")}
-        </div>
+          <div class="notice">${escapeHtml(panelState.notice)}</div>
 
-        <div class="panel-group">
-          <label>告警</label>
-          <div class="alert-list">${alertItems}</div>
-        </div>
+          <div class="panel-group">
+            <label>状态</label>
+            ${renderStatusRow("守护进程", getDaemonLabel(panelState.unattended.status), getDaemonTone(panelState.unattended.status))}
+            ${renderStatusRow("队列", getQueueSummary(panelState.unattended.status), panelState.unattended.status ? "ok" : "warn")}
+            ${renderStatusRow("当前页面", pageSummary, pageTone)}
+            ${renderStatusRow("当前商品", getCurrentWorkItemLabel(panelState.unattended.status), getCurrentWorkItemTone(panelState.unattended.status))}
+            ${renderStatusRow("准入", getAdmissionLabel(activeAdmissionWorkItem), getAdmissionTone(activeAdmissionWorkItem))}
+            ${renderStatusRow("改造", getRepairPlanLabel(activeAdmissionWorkItem), getRepairPlanTone(activeAdmissionWorkItem))}
+            ${renderStatusRow("字段", summarizeScan(scan), scan ? "ok" : "warn")}
+          </div>
 
-        <div class="panel-group">
-          <label>动作</label>
-          ${repairActionGate.blocked ? `
-            <div class="action-gate ${escapeHtml(repairActionGate.tone)}">
-              <strong>默认动作已暂停</strong>
-              <span>${escapeHtml(repairActionGate.message)}</span>
+          <div class="panel-group">
+            <label>告警</label>
+            <div class="alert-list">${alertItems}</div>
+          </div>
+
+          <div class="panel-group">
+            <label>动作</label>
+            ${repairActionGate.blocked ? `
+              <div class="action-gate ${escapeHtml(repairActionGate.tone)}">
+                <strong>默认动作已暂停</strong>
+                <span>${escapeHtml(repairActionGate.message)}</span>
+              </div>
+            ` : ""}
+            <div class="actions">
+              <button id="temu-ai-run" ${defaultActionDisabled ? "disabled" : ""}>${panelState.busy ? "执行中..." : repairActionGate.blocked ? "先处理改造" : "执行默认动作"}</button>
+              <button id="temu-ai-collect" class="secondary" ${collectActionDisabled ? "disabled" : ""}>${escapeHtml(collectActionLabel)}</button>
+              <button id="temu-ai-refresh" class="secondary" ${panelState.busy ? "disabled" : ""}>刷新状态</button>
+            </div>
+            <div class="sub-actions">
+              <button id="temu-ai-scan" class="secondary" ${panelState.busy ? "disabled" : ""}>重新扫描页面</button>
+            </div>
+          </div>
+
+          ${compactReportItems ? `
+            <div class="panel-group">
+              <label>当前执行反馈</label>
+              <div class="report-list compact">${compactReportItems}</div>
             </div>
           ` : ""}
-          <div class="actions">
-            <button id="temu-ai-run" ${defaultActionDisabled ? "disabled" : ""}>${panelState.busy ? "执行中..." : repairActionGate.blocked ? "先处理改造" : "执行自动填充"}</button>
-            <button id="temu-ai-collect" class="secondary" ${defaultActionDisabled ? "disabled" : ""}>${repairActionGate.blocked ? "已入队待处理" : "加入队列"}</button>
-            <button id="temu-ai-refresh" class="secondary" ${panelState.busy ? "disabled" : ""}>刷新</button>
-            <button id="temu-ai-scan" class="secondary" ${panelState.busy ? "disabled" : ""}>扫描</button>
-          </div>
-        </div>
 
-        <details class="advanced-panel">
-          <summary>高级信息</summary>
-          <div class="section">
-            <label>AI 标题</label>
-            <div>${escapeHtml(task?.draft?.listingTitle ?? "暂无数据")}</div>
-          </div>
-          <div class="section">
-            <label>任务与页面</label>
-            <div class="mini-detail">任务：${escapeHtml(task ? "已同步" : "等待中")}</div>
-            <div class="mini-detail">页面：${escapeHtml(`${siteContext.label} / ${pageProfile.label}`)}</div>
-            <div class="mini-detail">SKU：${escapeHtml(String(task?.draft?.skuPricing?.length ?? 0))}</div>
-          </div>
-          <div class="section">
-            <label>准入结果</label>
-            ${renderAdmissionDetails(activeAdmissionWorkItem)}
-          </div>
-          <div class="section">
-            <label>改造计划</label>
-            ${renderRepairPlanDetails(activeAdmissionWorkItem)}
-          </div>
-          <div class="section">
-            <label>页面扫描</label>
-            ${renderScanSummary()}
-          </div>
-          <div class="section">
-            <label>执行步骤</label>
-            ${stepItems || "<div class='step'>暂无步骤</div>"}
-          </div>
-          <div class="section">
-            <label>执行反馈</label>
-            <div class="report-list">${reportItems}</div>
-          </div>
-          <button id="temu-ai-debug" class="secondary wide-action" ${panelState.busy ? "disabled" : ""}>上传调试快照</button>
-        </details>
+          <details class="advanced-panel">
+            <summary>高级信息</summary>
+            <div class="section">
+              <label>AI 标题</label>
+              <div>${escapeHtml(task?.draft?.listingTitle ?? "暂无数据")}</div>
+            </div>
+            <div class="section">
+              <label>任务与页面</label>
+              <div class="mini-detail">任务：${escapeHtml(task ? "已同步" : "等待中")}</div>
+              <div class="mini-detail">页面：${escapeHtml(pageSummary)}</div>
+              <div class="mini-detail">SKU：${escapeHtml(String(task?.draft?.skuPricing?.length ?? 0))}</div>
+            </div>
+            <div class="section">
+              <label>准入结果</label>
+              ${renderAdmissionDetails(activeAdmissionWorkItem)}
+            </div>
+            <div class="section">
+              <label>改造计划</label>
+              ${renderRepairPlanDetails(activeAdmissionWorkItem)}
+            </div>
+            <div class="section">
+              <label>页面扫描</label>
+              ${renderScanSummary()}
+            </div>
+            <div class="section">
+              <label>执行步骤</label>
+              ${stepItems || "<div class='step'>暂无步骤</div>"}
+            </div>
+            <div class="section">
+              <label>执行反馈</label>
+              <div class="report-list">${reportItems}</div>
+            </div>
+            <button id="temu-ai-debug" class="secondary wide-action" ${panelState.busy ? "disabled" : ""}>上传调试快照</button>
+          </details>
+        </div>
       </div>
     </div>
   `
+
+  root.querySelector("#temu-ai-toggle")?.addEventListener("click", () => {
+    panelState.collapsed = true
+    renderPanel()
+  })
 
   root.querySelector("#temu-ai-refresh")?.addEventListener("click", () => {
     void refreshTask()
@@ -1387,18 +1905,16 @@ const renderPanel = () => {
   })
 
   root.querySelector("#temu-ai-collect")?.addEventListener("click", async () => {
-    if (panelState.busy) {
-      return
-    }
-    const repairActionGate = getRepairActionGate(getActiveAdmissionWorkItem(panelState.unattended.status, panelState.admission))
-    if (repairActionGate.blocked) {
-      panelState.notice = repairActionGate.message
-      renderPanel()
+    if (panelState.busy || repairActionGate.blocked) {
       return
     }
 
+    const isRefreshingAdmission = Boolean(getActiveAdmissionWorkItem(panelState.unattended.status, panelState.admission))
+
     panelState.busy = true
-    panelState.notice = "正在把当前店小秘商品加入上架改造队列..."
+    panelState.notice = isRefreshingAdmission
+      ? "正在重新采样当前店小秘商品并刷新准入..."
+      : "正在把当前店小秘商品加入上架改造队列..."
     renderPanel()
 
     try {
@@ -1411,8 +1927,8 @@ const renderPanel = () => {
       }
       await refreshUnattendedStatus({ render: false })
       panelState.notice = response?.ok
-        ? describeAdmissionNotice(response.workItem)
-        : "加入改造队列失败。"
+        ? describeAdmissionNotice(response.workItem, { refreshed: isRefreshingAdmission })
+        : isRefreshingAdmission ? "刷新准入失败。" : "加入改造队列失败。"
     } catch (error) {
       panelState.notice = error instanceof Error ? error.message : String(error)
     } finally {
@@ -1425,15 +1941,15 @@ const renderPanel = () => {
     if (panelState.busy) {
       return
     }
-    const repairActionGate = getRepairActionGate(getActiveAdmissionWorkItem(panelState.unattended.status, panelState.admission))
-    if (repairActionGate.blocked) {
-      panelState.notice = repairActionGate.message
+    const latestRepairActionGate = getRepairActionGate(getActiveAdmissionWorkItem(panelState.unattended.status, panelState.admission))
+    if (latestRepairActionGate.blocked) {
+      panelState.notice = latestRepairActionGate.message
       renderPanel()
       return
     }
 
     panelState.busy = true
-    panelState.notice = "正在执行自动填充，请不要频繁切换页面。"
+    panelState.notice = "正在执行默认动作，请不要频繁切换页面。"
     renderPanel()
 
     const result = await applyTaskToPage(panelState.task)
@@ -1827,9 +2343,161 @@ const sendRuntimeMessage = (type, payload) => new Promise((resolve, reject) => {
   })
 })
 
+const switchDianxiaomiStore = async ({ storeId, storeName }) => {
+  const siteContext = getSiteContext()
+  if (siteContext.platform !== "dianxiaomi") {
+    return {
+      ok: false,
+      message: "当前页不是店小秘页面"
+    }
+  }
+
+  const normalizedTargetStoreName = normalizeStoreValue(storeName)
+  const normalizedTargetStoreId = normalizeStoreValue(storeId)
+  if (!normalizedTargetStoreName && !normalizedTargetStoreId) {
+    return {
+      ok: false,
+      message: "缺少店铺信息"
+    }
+  }
+
+  const currentContext = getCurrentPageContext()
+  const alreadySelected = (normalizedTargetStoreId && currentContext?.storeId === normalizedTargetStoreId)
+    || (normalizedTargetStoreName && normalizeText(currentContext?.storeName) === normalizeText(normalizedTargetStoreName))
+  if (alreadySelected) {
+    return {
+      ok: true,
+      changed: false,
+      context: currentContext
+    }
+  }
+
+  const matchedOption = collectStoreFilterOptions().find((option) =>
+    (normalizedTargetStoreId && option.storeId === normalizedTargetStoreId)
+    || (normalizedTargetStoreName && normalizeText(option.storeName) === normalizeText(normalizedTargetStoreName))
+  )
+
+  if (!matchedOption?.element) {
+    return {
+      ok: false,
+      message: `未找到店铺：${normalizedTargetStoreName || normalizedTargetStoreId}`
+    }
+  }
+
+  const previousSignature = buildPageContextSignature(currentContext)
+  matchedOption.element.scrollIntoView({ block: "center", inline: "center" })
+  matchedOption.element.click()
+  const switchedContext = await waitForStoreContextChange(previousSignature)
+  panelState.lastPageContextSignature = null
+  const syncResponse = await syncCurrentPageContext({ force: true })
+  await refreshTask()
+
+  return {
+    ok: true,
+    changed: true,
+    context: syncResponse?.context ?? switchedContext ?? getCurrentPageContext()
+  }
+}
+
+const syncCurrentPageContext = async ({ force = false } = {}) => {
+  const context = getCurrentPageContext()
+  if (!context) {
+    return null
+  }
+
+  const signature = buildPageContextSignature(context)
+
+  if (!force && panelState.lastPageContextSignature === signature) {
+    return null
+  }
+
+  panelState.lastPageContextSignature = signature
+  try {
+    return await sendRuntimeMessage("temu-ai/upload-page-context", context)
+  } catch (error) {
+    console.warn("[Temu AI Plugin] page context sync failed", error)
+    return null
+  }
+}
+
 renderPanel()
 panelState.scan = scanPage()
+void syncCurrentPageContext({ force: true })
 void refreshTask()
 window.setInterval(() => {
   void refreshUnattendedStatus()
 }, 30000)
+window.setInterval(() => {
+  void syncCurrentPageContext()
+}, 5000)
+window.addEventListener("message", (event) => {
+  if (event.source !== window) {
+    return
+  }
+
+  if (event.data?.type !== "temu-ai/dashboard-command") {
+    return
+  }
+
+  if (event.data?.payload?.action !== "switch-dianxiaomi-store") {
+    return
+  }
+
+  void sendRuntimeMessage("temu-ai/switch-dianxiaomi-store", event.data.payload)
+    .then((result) => {
+      window.postMessage({
+        type: "temu-ai/dashboard-command-result",
+        payload: {
+          action: event.data.payload.action,
+          result: {
+            ok: true,
+            ...(result?.result ?? {}),
+            payload: event.data.payload
+          }
+        }
+      }, window.location.origin)
+    })
+    .catch((error) => {
+      window.postMessage({
+        type: "temu-ai/dashboard-command-result",
+        payload: {
+          action: event.data.payload.action,
+          result: {
+            ok: false,
+            message: error instanceof Error ? error.message : String(error),
+            payload: event.data.payload
+          }
+        }
+      }, window.location.origin)
+    })
+})
+window.addEventListener("hashchange", () => {
+  void syncCurrentPageContext({ force: true })
+})
+window.addEventListener("popstate", () => {
+  void syncCurrentPageContext({ force: true })
+})
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== "temu-ai/switch-dianxiaomi-store") {
+    return false
+  }
+
+  switchDianxiaomiStore(message.payload ?? {})
+    .then((result) => {
+      sendResponse({
+        ok: result.ok,
+        changed: result.changed ?? false,
+        context: result.context ?? null,
+        message: result.message
+      })
+    })
+    .catch((error) => {
+      sendResponse({
+        ok: false,
+        message: error instanceof Error ? error.message : String(error)
+      })
+    })
+
+  return true
+})
