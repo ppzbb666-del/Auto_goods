@@ -4,7 +4,11 @@ import {
   defaultPricingRules,
   generateContentRisks,
   generateListingDraft,
+  hashPricingRules,
+  matchesAutomationItemScope,
   mockProducts,
+  sanitizeMarketplaceEnglishText,
+  type AutomationDryRunStartInput,
   type AutomationExecutionReport,
   type AutomationManualStepBudgetRelease,
   type AutomationTaskFileLaunchStatus,
@@ -17,6 +21,8 @@ import {
   type DianxiaomiCollectedProductImportResult,
   type DianxiaomiListingRequirementCheck,
   type DianxiaomiListingRequirementRules,
+  type DianxiaomiPageContext,
+  type DianxiaomiStoreMetrics,
   type DianxiaomiPublishOutcome,
   type DianxiaomiProductSuggestedEdit,
   type DianxiaomiProductRepairAction,
@@ -84,7 +90,19 @@ type DianxiaomiCollectedProductInput =
   Omit<DianxiaomiCollectedProduct, "id" | "collectedAt" | "quality"> &
   Partial<Pick<DianxiaomiCollectedProduct, "id" | "collectedAt" | "quality">>
 
-type WorkItemQualityInput = Pick<DianxiaomiProductWorkItemInput, "title" | "snapshot" | "rawTextSample">
+type WorkItemQualityInput = Pick<DianxiaomiProductWorkItemInput, "title" | "snapshot" | "rawTextSample"> & {
+  // P1-3: optional category hint. When provided, the per-category override
+  // in `rules.categoryRules` takes precedence over the global listingMetadata
+  // defaults. Callers that don't know the category (e.g. preview-only flow)
+  // simply omit it.
+  category?: string
+}
+
+// P0-A: fallback caps for non-Dianxiaomi sources. Dianxiaomi sources already
+// get title-length and other rule-driven checks through the requirements
+// pipeline, so these only apply when `task.product.source !== "dianxiaomi"`.
+export const PUBLISH_CHECK_TITLE_MAX_LENGTH_FALLBACK = 250
+export const PUBLISH_CHECK_STOCK_MAX = 99999
 
 export const defaultDianxiaomiRequirementRules: DianxiaomiListingRequirementRules = {
   presetName: "temu-basic-listing-readiness",
@@ -109,7 +127,14 @@ export const defaultDianxiaomiRequirementRules: DianxiaomiListingRequirementRule
     maxWidthPx: 3000,
     maxHeightPx: 3000,
     maxSizeMb: 5,
-    dianxiaomiTools: ["image translation", "white background", "Xiaomi image editor", "batch resize"]
+    dianxiaomiTools: ["image translation", "white background", "Xiaomi image editor", "batch resize"],
+    // P1-12: Temu carousel/description images accept 0.5–2 width/height.
+    minAspectRatio: 0.5,
+    maxAspectRatio: 2,
+    // P1-11: require an English-only / watermark-free confirmation. Soft by
+    // default (recommended when unconfirmed) so it doesn't block the
+    // unattended path until a real image-check signal exists.
+    requireEnglishOnlyImages: true
   },
   sku: {
     required: true,
@@ -131,7 +156,62 @@ export const defaultDianxiaomiRequirementRules: DianxiaomiListingRequirementRule
   compliance: {
     required: true,
     blockedTerms: ["brand", "logo", "patent", "copyright", "trademark"]
+  },
+  // P1-3: per-category requirement overrides. Categories not in this map
+  // fall back to the global `listingMetadata` defaults. Names are lowercased
+  // before lookup so case-sensitive operator input still matches.
+  categoryRules: {
+    clothing: { requireSizeChart: true, requiredAttributes: ["color", "size", "material"] },
+    shoes: { requireSizeChart: true, requiredAttributes: ["color", "size"] },
+    electronics: { requireManualDocument: true, requiredAttributes: ["material", "power"] },
+    "home & garden": { requiredAttributes: ["color", "material"] },
+    toys: { requiredAttributes: ["color", "material"] },
+    sports: { requiredAttributes: ["color", "size"] }
   }
+}
+
+// P1-10: store-mode presets. The default above is semi-managed-friendly.
+// These two derive from it and only override the fields that actually
+// differ per store mode. `selectDianxiaomiRequirementPreset` picks one by
+// hint so the queue can score local / full-managed items correctly.
+export const temuLocalDianxiaomiRequirementRules: DianxiaomiListingRequirementRules = {
+  ...defaultDianxiaomiRequirementRules,
+  presetName: "temu-local-listing-readiness",
+  title: {
+    ...defaultDianxiaomiRequirementRules.title,
+    // Temu local allows a 500-char title vs the 250 semi-managed cap.
+    maxLength: 500
+  }
+}
+
+export const temuFullManagedDianxiaomiRequirementRules: DianxiaomiListingRequirementRules = {
+  ...defaultDianxiaomiRequirementRules,
+  presetName: "temu-full-managed-listing-readiness",
+  // Full-managed listings hand fulfillment to Temu, so seller-side stock is
+  // not an editable field (the warehouse manages it). Stock stays
+  // recommended only.
+  stock: {
+    ...defaultDianxiaomiRequirementRules.stock,
+    required: false
+  }
+}
+
+// P1-10: choose a requirement preset from page/profile/text hints. Defaults
+// to the semi-managed preset; local and full-managed are opt-in by hint.
+export const selectDianxiaomiRequirementPreset = (
+  hints: { pageUrl?: string; pageProfile?: string; rawTextSample?: string; title?: string } = {}
+): DianxiaomiListingRequirementRules => {
+  const haystack = [hints.pageUrl, hints.pageProfile, hints.rawTextSample, hints.title]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+  if (/temu\s*local|local listing|contribution sku|本地|本对本/.test(haystack)) {
+    return temuLocalDianxiaomiRequirementRules
+  }
+  if (/full[\s-]*managed|全托管|全托|fully managed/.test(haystack)) {
+    return temuFullManagedDianxiaomiRequirementRules
+  }
+  return dianxiaomiRequirementRules
 }
 
 type DianxiaomiRequirementRulesInput = Partial<{
@@ -144,7 +224,27 @@ type DianxiaomiRequirementRulesInput = Partial<{
   stock: Partial<DianxiaomiListingRequirementRules["stock"]>
   attributes: Partial<DianxiaomiListingRequirementRules["attributes"]>
   compliance: Partial<DianxiaomiListingRequirementRules["compliance"]>
+  categoryRules: Record<string, NonNullable<DianxiaomiListingRequirementRules["categoryRules"]>[string]>
 }>
+
+// P1-3: per-category override lookup. Categories not in the map fall back to
+// an empty object (i.e. use the global listingMetadata defaults). Category
+// names are lowercased so operator input like "Clothing" still matches the
+// default "clothing" entry.
+export const getDianxiaomiCategoryRule = (
+  rules: DianxiaomiListingRequirementRules,
+  category: string | undefined | null
+): NonNullable<DianxiaomiListingRequirementRules["categoryRules"]>[string] => {
+  if (!category) {
+    return {} as any
+  }
+  const key = category.trim().toLowerCase()
+  if (!key) {
+    return {} as any
+  }
+  const overrides = rules.categoryRules ?? {}
+  return (overrides[key] ?? {}) as any
+}
 
 const normalizeBoolean = (value: unknown, fallback: boolean) =>
   typeof value === "boolean" ? value : fallback
@@ -192,7 +292,11 @@ const normalizeDianxiaomiRequirementRules = (
       maxWidthPx: normalizeInteger(input.media?.maxWidthPx, defaultDianxiaomiRequirementRules.media.maxWidthPx, 1),
       maxHeightPx: normalizeInteger(input.media?.maxHeightPx, defaultDianxiaomiRequirementRules.media.maxHeightPx, 1),
       maxSizeMb: Math.max(0, Number(input.media?.maxSizeMb ?? defaultDianxiaomiRequirementRules.media.maxSizeMb)),
-      dianxiaomiTools: normalizeStringList(input.media?.dianxiaomiTools, defaultDianxiaomiRequirementRules.media.dianxiaomiTools)
+      dianxiaomiTools: normalizeStringList(input.media?.dianxiaomiTools, defaultDianxiaomiRequirementRules.media.dianxiaomiTools),
+      // P1-11 / P1-12: preserve image-check + aspect-ratio rule fields.
+      minAspectRatio: Math.max(0, Number(input.media?.minAspectRatio ?? defaultDianxiaomiRequirementRules.media.minAspectRatio)),
+      maxAspectRatio: Math.max(0, Number(input.media?.maxAspectRatio ?? defaultDianxiaomiRequirementRules.media.maxAspectRatio)),
+      requireEnglishOnlyImages: normalizeBoolean(input.media?.requireEnglishOnlyImages, defaultDianxiaomiRequirementRules.media.requireEnglishOnlyImages ?? false)
     },
     sku: {
       required: normalizeBoolean(input.sku?.required, defaultDianxiaomiRequirementRules.sku.required),
@@ -265,6 +369,11 @@ const mergeAttributes = (...items: Array<Record<string, string> | undefined>) =>
     ...(item ?? {})
   }), {})
 
+const buildAttributeSummary = (attributes: Record<string, string>) =>
+  Object.entries(attributes)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(" / ")
+
 const createDraftVersion = (source: DraftVersion["source"], label: string, draft: ListingDraft): DraftVersion => ({
   id: `draft-${source}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   source,
@@ -336,6 +445,24 @@ const buildDianxiaomiRequirementChecks = (
     && ((imageStats?.minWidthPx ?? 0) < rules.media.minWidthPx || (imageStats?.minHeightPx ?? 0) < rules.media.minHeightPx)
   const imageSizeTooLarge = Boolean(imageStats)
     && ((imageStats?.maxWidthPx ?? 0) > rules.media.maxWidthPx || (imageStats?.maxHeightPx ?? 0) > rules.media.maxHeightPx)
+  // P1-12: aspect-ratio range check. Only applies when both the rule bounds
+  // and the snapshot's per-image ratios are present.
+  const aspectRulesReady = typeof rules.media.minAspectRatio === "number" && typeof rules.media.maxAspectRatio === "number"
+  const aspectStatsReady = typeof imageStats?.minAspectRatio === "number" && typeof imageStats?.maxAspectRatio === "number"
+  const aspectOutOfRange = aspectRulesReady && aspectStatsReady
+    && ((imageStats!.minAspectRatio as number) < (rules.media.minAspectRatio as number)
+      || (imageStats!.maxAspectRatio as number) > (rules.media.maxAspectRatio as number))
+  // P1-11: english-only / watermark-free image check. Satisfied by an
+  // explicit Dianxiaomi 图片检测 pass or an image-check media signal.
+  const imageCheckIssues = Array.isArray((input.snapshot as { imageCheck?: { issues?: Array<{ category?: string; issue?: string; detail?: string }> } }).imageCheck?.issues)
+    ? ((input.snapshot as { imageCheck?: { issues?: Array<{ category?: string; issue?: string; detail?: string }> } }).imageCheck?.issues ?? [])
+        .filter((issue) => Boolean(issue?.category) && Boolean(issue?.issue))
+    : []
+  const imageCheckPassed = (input.snapshot as { imageCheck?: { passed?: boolean } }).imageCheck?.passed === true
+    || hasMediaSignal(["image check", "图片检测", "检测通过"])
+  const explicitImageCheckPassed = (input.snapshot as { imageCheck?: { passed?: boolean } }).imageCheck?.passed
+  const imageCheckFailed = explicitImageCheckPassed === false || imageCheckIssues.length > 0
+  const imageCheckSatisfied = imageCheckFailed ? false : imageCheckPassed
   const blockedTerms = rules.compliance.blockedTerms
     .map((term) => term.trim().toLowerCase())
     .filter(Boolean)
@@ -381,6 +508,39 @@ const buildDianxiaomiRequirementChecks = (
         : "image dimensions not available",
       recommendation: `Use Dianxiaomi batch resize or image editor to normalize images to ${rules.media.minWidthPx}-${rules.media.maxWidthPx}px wide and ${rules.media.minHeightPx}-${rules.media.maxHeightPx}px high.`
     },
+    // P1-12: aspect-ratio range. Recommended-level so missing ratio data
+    // doesn't block; only an in-range failure flags. Skipped entirely when
+    // the rule has no aspect bounds configured.
+    ...(aspectRulesReady
+      ? [{
+          id: "media-aspect-ratio",
+          level: "recommended" as const,
+          ok: !aspectStatsReady || !aspectOutOfRange,
+          message: aspectStatsReady
+            ? `image aspect ratio ${imageStats!.minAspectRatio}–${imageStats!.maxAspectRatio} (allowed ${rules.media.minAspectRatio}–${rules.media.maxAspectRatio})`
+            : "image aspect ratio not available",
+          recommendation: `Keep listing images between ${rules.media.minAspectRatio} and ${rules.media.maxAspectRatio} width/height ratio (use Dianxiaomi batch resize).`
+        }]
+      : []),
+    // P1-11: english-only / watermark-free image check. Recommended-level
+    // so an unconfirmed image check doesn't block the unattended path until
+    // a real Dianxiaomi 图片检测 signal exists; it surfaces as a warning the
+    // operator can act on.
+    ...(rules.media.requireEnglishOnlyImages
+        ? [{
+          id: "media-english-only-images",
+          level: imageCheckFailed ? "required" as const : "recommended" as const,
+          ok: imageCheckSatisfied,
+          message: imageCheckSatisfied
+            ? "Dianxiaomi image check passed (no non-English text / watermark)"
+            : imageCheckIssues.length > 0
+              ? `image check found issues: ${imageCheckIssues.slice(0, 4).map((issue) => `${issue.category} ${issue.issue}`).join(", ")}`
+              : explicitImageCheckPassed === false
+                ? "image check failed"
+                : "image check not confirmed; listing images may contain non-English text or watermarks",
+          recommendation: "Run Dianxiaomi 图片检测 (image check) and image translation so listing images are English-only and watermark-free."
+        }]
+      : []),
     {
       id: "media-white-background",
       level: requiredLevel(rules.media.required && rules.media.requireWhiteBackground),
@@ -429,7 +589,75 @@ const buildDianxiaomiRequirementChecks = (
       ok: matchedBlockedTerms.length === 0,
       message: matchedBlockedTerms.length > 0 ? `blocked terms found: ${matchedBlockedTerms.join(", ")}` : "basic infringement keyword screen",
       recommendation: `Review restricted claims before automation: ${rules.compliance.blockedTerms.join(", ")}.`
-    }
+    },
+    // P1-3: per-category overrides. When the work item carries a category
+    // hint and the rules have a matching entry, raise the bar on the
+    // required metadata (size chart, manual document, video) and surface
+    // required attribute keys.
+    ...(function () {
+      const override = getDianxiaomiCategoryRule(rules, (input as { category?: string }).category)
+      if (!Object.keys(override).length) {
+        return [] as DianxiaomiListingRequirementCheck[]
+      }
+      // The current snapshot shape doesn't always carry these optional
+      // metadata fields; access them through a loose view so the category
+      // checks degrade to "missing" when the collector hasn't supplied them.
+      const snap = snapshot as {
+        sizeChart?: { present?: boolean }
+        manualDocument?: { present?: boolean }
+        video?: { present?: boolean }
+        attributeKeys?: string[]
+      }
+      const categoryKey = (input as { category?: string }).category?.trim().toLowerCase() ?? ""
+      const checks: DianxiaomiListingRequirementCheck[] = []
+      if (override.requireSizeChart === true) {
+        checks.push({
+          id: `category-${categoryKey}-size-chart-required`,
+          level: "required",
+          ok: Boolean(snap.sizeChart?.present),
+          message: snap.sizeChart?.present
+            ? `size chart asset present for ${categoryKey}`
+            : `size chart asset missing for ${categoryKey}`,
+          recommendation: `Category "${categoryKey}" requires a size chart. Upload one in the Dianxiaomi listing editor before unattended publish.`
+        })
+      }
+      if (override.requireManualDocument === true) {
+        checks.push({
+          id: `category-${categoryKey}-manual-required`,
+          level: "required",
+          ok: Boolean(snap.manualDocument?.present),
+          message: snap.manualDocument?.present
+            ? `manual document present for ${categoryKey}`
+            : `manual document missing for ${categoryKey}`,
+          recommendation: `Category "${categoryKey}" requires a PDF manual. Upload it in the Dianxiaomi listing editor before unattended publish.`
+        })
+      }
+      if (override.requireVideo === true) {
+        checks.push({
+          id: `category-${categoryKey}-video-required`,
+          level: "required",
+          ok: Boolean(snap.video?.present),
+          message: snap.video?.present
+            ? `video present for ${categoryKey}`
+            : `video missing for ${categoryKey}`,
+          recommendation: `Category "${categoryKey}" requires a product video. Upload it in the Dianxiaomi listing editor before unattended publish.`
+        })
+      }
+      if (Array.isArray(override.requiredAttributes) && override.requiredAttributes.length > 0) {
+        const present = new Set(snap.attributeKeys ?? [])
+        const missing = override.requiredAttributes.filter((key) => !present.has(key))
+        checks.push({
+          id: `category-${categoryKey}-required-attributes`,
+          level: "required",
+          ok: missing.length === 0,
+          message: missing.length === 0
+            ? `all required attributes present for ${categoryKey}`
+            : `missing required attributes for ${categoryKey}: ${missing.join(", ")}`,
+          recommendation: `Category "${categoryKey}" requires these attributes: ${override.requiredAttributes.join(", ")}.`
+        })
+      }
+      return checks
+    })()
   ]
 }
 
@@ -683,7 +911,22 @@ const buildFailureDiagnosisRepairActions = (
   }
 
   if (diagnosis.category === "media-processing") {
-    if (metadata.failureKind === "transient" || diagnosis.retryable) {
+    if (metadata.failureKind === "storage-quota") {
+      addAction({
+        id: "repair-dianxiaomi-image-space",
+        type: "review-image",
+        label: "释放店小秘图片空间",
+        detail: "店小秘返回图片空间不足。需要先删除无用图片、购买/扩容图片空间，或确认一条不生成新图片空间素材的图片替代路径后再重跑。",
+        automation: "manual",
+        required: true,
+        field: "image",
+        tool: metadata.tool || undefined,
+        payload: {
+          writer: "manual",
+          reasonCode: "storage-quota"
+        }
+      })
+    } else if (metadata.failureKind === "transient" || diagnosis.retryable) {
       addAction({
         id: "repair-retry-transient-media",
         type: "retry-transient",
@@ -832,23 +1075,140 @@ const buildFailureDiagnosisRepairActions = (
   return { actions, blockers }
 }
 
+const inferImageRepairTool = (detail: string | undefined | null): NonNullable<DianxiaomiProductRepairAction["payload"]>["mediaTool"] => {
+  const normalized = (detail ?? "").toLowerCase()
+  if (/(尺寸|比例|宽高|像素|size|ratio|aspect|resolution)/i.test(normalized)) {
+    return "batchResize"
+  }
+  if (/(非英文|中文|language|english|translate|翻译)/i.test(normalized)) {
+    return "imageTranslation"
+  }
+  if (/(水印|背景|white background|remove background)/i.test(normalized)) {
+    return "whiteBackground"
+  }
+  return "imageManagement"
+}
+
+const getRepairActionPriority = (action: DianxiaomiProductRepairAction) => {
+  const mediaTool = action.payload?.mediaTool
+  if (mediaTool === "batchResize") {
+    return 0
+  }
+  if (mediaTool === "imageManagement") {
+    return 10
+  }
+  if (mediaTool === "imageTranslation") {
+    return 20
+  }
+  if (mediaTool === "whiteBackground" || mediaTool === "imageEditor") {
+    return 30
+  }
+  return 100
+}
+
+const isGenericSaveDraftValidationFailure = (
+  failureDiagnosis: Pick<DianxiaomiProductWorkItem, "failureDiagnosis">["failureDiagnosis"] | null | undefined,
+  publishOutcome: Pick<DianxiaomiProductWorkItem, "publishOutcome">["publishOutcome"] | null | undefined
+) => {
+  const haystack = [
+    failureDiagnosis?.message,
+    publishOutcome?.failureReason,
+    publishOutcome?.message
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join(" ")
+    .toLowerCase()
+
+  if (!haystack) {
+    return false
+  }
+
+  return [
+    "save-draft",
+    "save draft",
+    "产品信息中有错误",
+    "product information",
+    "请检查"
+  ].some((pattern) => haystack.includes(pattern))
+}
+
 const buildDianxiaomiRepairPlan = (
   item: Pick<DianxiaomiProductWorkItem, "collectedProductId" | "title" | "suggestedEdits" | "requirements" | "failureDiagnosis" | "status" | "publishOutcome">
 ): DianxiaomiProductRepairPlan | null => {
   const actions: DianxiaomiProductRepairAction[] = []
   const blockers: string[] = []
-  const requirementActions = item.suggestedEdits.filter((edit) => edit.priority === "required").map((edit): DianxiaomiProductRepairAction => ({
-    id: `repair-${edit.id}`,
-    type: edit.field === "image" ? "apply-media-tool" : "fix-field",
-    label: edit.field === "image" ? "处理商品图片" : `修复${edit.field}字段`,
-    detail: edit.suggestedValue || edit.reason,
-    automation: edit.field === "image" ? "auto" : "assisted",
-    required: true,
-    field: edit.field
-  }))
-  actions.push(...requirementActions)
+  const requirementActions = item.suggestedEdits.filter((edit) => edit.priority === "required").flatMap((edit): DianxiaomiProductRepairAction[] => {
+    if (edit.field !== "image") {
+      return [{
+        id: `repair-${edit.id}`,
+        type: "fix-field",
+        label: `修复${edit.field}字段`,
+        detail: edit.suggestedValue || edit.reason,
+        automation: "assisted",
+        required: true,
+        field: edit.field
+      }]
+    }
 
-  if (item.failureDiagnosis) {
+    const imageIssueMatches = Array.from((edit.reason || "").matchAll(/(轮播图|产品图|详情图|主图|sku图|颜色图|属性图)\s*(尺寸|比例|宽高|非英文|中文|水印|模糊|像素|大小|格式)/gi))
+    if (imageIssueMatches.length === 0) {
+      return [{
+        id: `repair-${edit.id}`,
+        type: "apply-media-tool",
+        label: "处理商品图片",
+        detail: edit.suggestedValue || edit.reason,
+        automation: "auto",
+        required: true,
+        field: edit.field,
+        payload: {
+          writer: "run-media-tool",
+          selectorGroup: "mediaTools",
+          selectorKey: "imageManagement",
+          mediaTool: "imageManagement",
+          expectedValue: edit.reason,
+          reasonCode: "requirement-image"
+        }
+      }]
+    }
+
+    return imageIssueMatches.map((match, index) => {
+      const category = match[1]
+      const issue = match[2]
+      const detail = `${category} ${issue}`
+      const mediaTool = inferImageRepairTool(detail)
+      return {
+        id: `repair-${edit.id}-${index + 1}`,
+        type: "apply-media-tool",
+        label: `处理图片问题：${detail}`,
+        detail,
+        automation: "auto",
+        required: true,
+        field: "image" as const,
+        target: category,
+        tool: mediaTool,
+        payload: {
+          writer: "run-media-tool",
+          selectorGroup: "mediaTools",
+          selectorKey: mediaTool,
+          mediaTool,
+          expectedValue: detail,
+          reasonCode: "requirement-image-check"
+        }
+      }
+    })
+  })
+  actions.push(...requirementActions.sort((left, right) => getRepairActionPriority(left) - getRepairActionPriority(right)))
+
+  const hasAutomaticImageCheckRepair = requirementActions.some((action) =>
+    action.automation === "auto"
+    && action.type === "apply-media-tool"
+    && action.payload?.writer === "run-media-tool"
+    && action.payload?.reasonCode === "requirement-image-check"
+  )
+  const deferFailureDiagnosisUntilImageRepair = hasAutomaticImageCheckRepair
+    && isGenericSaveDraftValidationFailure(item.failureDiagnosis, item.publishOutcome)
+
+  if (item.failureDiagnosis && !deferFailureDiagnosisUntilImageRepair) {
     const diagnosisPlan = buildFailureDiagnosisRepairActions(item, item.failureDiagnosis)
     actions.push(...diagnosisPlan.actions)
     blockers.push(...diagnosisPlan.blockers)
@@ -1022,6 +1382,25 @@ const rebuildDianxiaomiProductWorkItem = (
   })
 }
 
+// P1-6: dedupe key computed from the canonical page URL + the page
+// title + a snapshot signature. Same product admitted twice yields the
+// same key, so `saveDianxiaomiProductWorkItem` can dedupe and update
+// the original work item instead of creating a new one.
+export const computeDianxiaomiDedupeKey = (
+  input: Pick<DianxiaomiProductWorkItemInput, "pageUrl" | "snapshot" | "title">
+): string => {
+  const url = normalizeDianxiaomiPageUrl(input.pageUrl)
+  const titleToken = (input.title ?? "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 80)
+  const imageToken = (input.snapshot?.attributeKeys ?? []).join(",").toLowerCase()
+  const hash = createHash("sha1")
+    .update(url)
+    .update("|")
+    .update(titleToken)
+    .update("|")
+    .update(imageToken)
+  return `dxm-dedupe:${hash.digest("hex").slice(0, 16)}`
+}
+
 const normalizeDianxiaomiPageUrl = (pageUrl: string) => {
   try {
     const parsed = new URL(pageUrl)
@@ -1066,7 +1445,21 @@ const dianxiaomiUrlBlockReason = (pageUrl: string) => {
     return "URL host is not Dianxiaomi"
   }
 
-  if (parsed.pathname === "/" || !/product|listing|goods|item|publish|edit/i.test(parsed.pathname)) {
+  if (host === "help.dianxiaomi.com" || host.startsWith("help.")) {
+    return "Dianxiaomi help-center URL is not a product listing edit page"
+  }
+
+  if (parsed.pathname === "/" && !parsed.search) {
+    return "Dianxiaomi home URL is not a product listing edit page"
+  }
+
+  const normalizedPath = parsed.pathname.toLowerCase()
+  const isKnownEditSurface =
+    normalizedPath === "/web/poptemu/edit"
+    || /\/(product|listing|goods|item)\/edit\b/i.test(parsed.pathname)
+    || /\/web\/poptemu\/edit\b/i.test(parsed.pathname)
+
+  if (!isKnownEditSurface) {
     return "Dianxiaomi URL does not look like a product listing edit page"
   }
 
@@ -1077,6 +1470,17 @@ export const validateDianxiaomiAutomationPageUrl = (pageUrl: string) => ({
   valid: !dianxiaomiUrlBlockReason(pageUrl),
   reason: dianxiaomiUrlBlockReason(pageUrl)
 })
+
+// P1-9: validate a BCP-47-ish locale token. Accepts "en", "en-US",
+// "zh-Hans-CN" etc. Empty / invalid values fall back to "en".
+const VALID_LOCALE_PATTERN = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/
+export const normalizeDianxiaomiTargetLanguage = (input: string | undefined | null): string => {
+  const trimmed = (input ?? "").trim()
+  if (!trimmed) {
+    return "en"
+  }
+  return VALID_LOCALE_PATTERN.test(trimmed) ? trimmed : "en"
+}
 
 const createProductSkus = (
   productId: string,
@@ -1189,9 +1593,10 @@ const dianxiaomiProductWorkItems = new Map<string, DianxiaomiProductWorkItem>(
 const dianxiaomiProductWorkItemIdByPageUrl = new Map<string, string>(
   Array.from(dianxiaomiProductWorkItems.values()).map((item) => [normalizeDianxiaomiPageUrl(item.pageUrl), item.id])
 )
+let dianxiaomiPageContext: DianxiaomiPageContext | null = persistedState?.dianxiaomiPageContext ?? null
 let lastSyncedReportId: string | null = null
 
-const persistPlannerState = () => {
+export const persistPlannerState = () => {
   const persistedTaskIds = new Set(persistedState?.tasks.map((task) => task.id) ?? [])
   const persistedTaskList = Array.from(taskStore.values()).filter((task) =>
     task.product.source === "csv" || task.product.source === "manual" || task.product.source === "dianxiaomi" || persistedTaskIds.has(task.id)
@@ -1205,6 +1610,7 @@ const persistPlannerState = () => {
     tasks: persistedTaskList,
     dianxiaomiCollectedProducts,
     dianxiaomiProductWorkItems: Array.from(dianxiaomiProductWorkItems.values()),
+    dianxiaomiPageContext,
     dianxiaomiRequirementRules,
     activeTaskId,
     pricingRules
@@ -1217,6 +1623,9 @@ const DIANXIAOMI_TASK_META_ATTRIBUTE_KEYS = new Set([
   "dianxiaomiRequirementPreset",
   "dianxiaomiCollectedProductId"
 ])
+
+const DIANXIAOMI_DEFAULT_DECLARED_PRICE_USD = 999
+const DIANXIAOMI_DEFAULT_STOCK = 20
 
 const isSyntheticDianxiaomiDraftAttributeKey = (key: string) =>
   DIANXIAOMI_TASK_META_ATTRIBUTE_KEYS.has(key) || key.startsWith("dxm-")
@@ -1414,6 +1823,23 @@ export const listTasks = () => {
 export const getTaskById = (taskId: string) => {
   syncTasksWithReports()
   return taskStore.get(taskId) ?? null
+}
+
+// P1-4: find an existing task for a Dianxiaomi work item WITHOUT creating one.
+// Tasks store the originating work item id in
+// `product.attributes.dianxiaomiWorkItemId`. Returns null when no task has
+// been created yet (so the pricing-refresh pass stays read-only and never
+// mutates / re-touches work items that have no task).
+export const findTaskByDianxiaomiWorkItemId = (workItemId: string): PublishTask | null => {
+  if (!workItemId) {
+    return null
+  }
+  for (const task of taskStore.values()) {
+    if (task.product.attributes.dianxiaomiWorkItemId === workItemId) {
+      return task
+    }
+  }
+  return null
 }
 
 export const getActiveTask = (options: { requireApproved?: boolean } = {}) => {
@@ -1727,6 +2153,11 @@ const readExportedTaskSnapshot = (absolutePath: string): PublishTask | null => {
 const objectKeys = (...items: Array<Record<string, unknown> | undefined>) =>
   Array.from(new Set(items.flatMap((item) => Object.keys(item ?? {})))).sort()
 
+const TASK_FILE_STALE_IGNORED_PATHS = new Set([
+  "task.status",
+  "task.updatedAt"
+])
+
 export const getTaskFileExportDiff = (exportId: string): AutomationTaskSnapshotDiffResult | null => {
   const exportRecord = readTaskExportHistory().find((item) => item.exportId === exportId)
   if (!exportRecord) {
@@ -1812,13 +2243,16 @@ export const getTaskFileExportDiff = (exportId: string): AutomationTaskSnapshotD
       addEntry(`risks.removed.${risk.id || index}.message`, `Removed risk ${risk.id || index} message`, undefined, risk.message)
     })
 
+  const staleRelevantEntries = entries.filter((entry) =>
+    entry.status !== "unchanged" && !TASK_FILE_STALE_IGNORED_PATHS.has(entry.path)
+  )
   const summary = {
     totalCount: entries.length,
     changedCount: entries.filter((entry) => entry.status === "changed").length,
     addedCount: entries.filter((entry) => entry.status === "added").length,
     removedCount: entries.filter((entry) => entry.status === "removed").length,
     unchangedCount: entries.filter((entry) => entry.status === "unchanged").length,
-    stale: entries.some((entry) => entry.status !== "unchanged")
+    stale: staleRelevantEntries.length > 0
   }
 
   return {
@@ -1888,7 +2322,9 @@ export const getTaskFileExportSnapshotStatus = (taskFile: string | undefined) =>
     }
   }
 
-  const changedEntries = diff.entries.filter((entry) => entry.status !== "unchanged")
+  const changedEntries = diff.entries.filter((entry) =>
+    entry.status !== "unchanged" && !TASK_FILE_STALE_IGNORED_PATHS.has(entry.path)
+  )
   return {
     tracked: true,
     ready: !diff.summary.stale,
@@ -2012,6 +2448,7 @@ export const saveDianxiaomiCollectedProduct = (input: DianxiaomiCollectedProduct
       attributes: sku.attributes ?? {},
       rowText: sku.rowText ?? ""
     })),
+    sourceBucket: input.sourceBucket,
     rawTextSample: input.rawTextSample?.slice(0, 2000) ?? "",
     notes: (input.notes ?? []).slice(0, 20)
   }
@@ -2030,18 +2467,136 @@ export const listDianxiaomiCollectedProducts = (limit = 20) =>
     .sort((left, right) => right.collectedAt.localeCompare(left.collectedAt))
     .slice(0, limit)
 
+const normalizeDianxiaomiStoreMetricValue = (value?: string | null) => value?.trim() || undefined
+
+const createDianxiaomiStoreMetricNameKey = (storeName?: string) =>
+  normalizeDianxiaomiStoreMetricValue(storeName)?.toLowerCase() ?? null
+
+const createDianxiaomiStoreMetricKey = (storeId?: string, storeName?: string) =>
+  normalizeDianxiaomiStoreMetricValue(storeId)
+    ? `id:${normalizeDianxiaomiStoreMetricValue(storeId)!.toLowerCase()}`
+    : createDianxiaomiStoreMetricNameKey(storeName)
+      ? `name:${createDianxiaomiStoreMetricNameKey(storeName)}`
+      : null
+
+const buildDianxiaomiStoreMetricNameIndex = (
+  entries: Array<{
+    storeId?: string
+    storeName?: string
+  }>
+) => {
+  const nameIndex = new Map<string, Set<string>>()
+
+  for (const entry of entries) {
+    const normalizedStoreId = normalizeDianxiaomiStoreMetricValue(entry.storeId)
+    const nameKey = createDianxiaomiStoreMetricNameKey(entry.storeName)
+    if (!normalizedStoreId || !nameKey) {
+      continue
+    }
+
+    const ids = nameIndex.get(nameKey) ?? new Set<string>()
+    ids.add(normalizedStoreId)
+    nameIndex.set(nameKey, ids)
+  }
+
+  return nameIndex
+}
+
+const resolveDianxiaomiStoreMetricIdentity = (
+  nameIndex: Map<string, Set<string>>,
+  storeId?: string,
+  storeName?: string
+) => {
+  const normalizedStoreId = normalizeDianxiaomiStoreMetricValue(storeId)
+  const normalizedStoreName = normalizeDianxiaomiStoreMetricValue(storeName)
+  if (normalizedStoreId) {
+    return {
+      key: createDianxiaomiStoreMetricKey(normalizedStoreId, normalizedStoreName),
+      storeId: normalizedStoreId,
+      storeName: normalizedStoreName
+    }
+  }
+
+  const nameKey = createDianxiaomiStoreMetricNameKey(normalizedStoreName)
+  if (!nameKey || !normalizedStoreName) {
+    return null
+  }
+
+  const matchedStoreIds = nameIndex.get(nameKey)
+  if (matchedStoreIds?.size === 1) {
+    const [resolvedStoreId] = Array.from(matchedStoreIds)
+    return {
+      key: createDianxiaomiStoreMetricKey(resolvedStoreId, normalizedStoreName),
+      storeId: resolvedStoreId,
+      storeName: normalizedStoreName
+    }
+  }
+
+  return {
+    key: createDianxiaomiStoreMetricKey(undefined, normalizedStoreName),
+    storeName: normalizedStoreName
+  }
+}
+
+const createEmptyDianxiaomiStoreMetrics = (storeId?: string, storeName?: string): DianxiaomiStoreMetrics => ({
+  storeId,
+  storeName,
+  workItemCount: 0,
+  readyCount: 0,
+  collectedCount: 0,
+  blockedCount: 0,
+  needsRevisionCount: 0,
+  editedCount: 0
+})
+
+const ensureDianxiaomiStoreMetrics = (
+  metricsMap: Map<string, DianxiaomiStoreMetrics>,
+  nameIndex: Map<string, Set<string>>,
+  storeId?: string,
+  storeName?: string
+) => {
+  const identity = resolveDianxiaomiStoreMetricIdentity(nameIndex, storeId, storeName)
+  if (!identity?.key) {
+    return null
+  }
+
+  const current = metricsMap.get(identity.key) ?? createEmptyDianxiaomiStoreMetrics(identity.storeId, identity.storeName)
+  if (!current.storeId && identity.storeId) {
+    current.storeId = identity.storeId
+  }
+  if (!current.storeName && identity.storeName) {
+    current.storeName = identity.storeName
+  }
+  metricsMap.set(identity.key, current)
+  return current
+}
+
 export const saveDianxiaomiProductWorkItem = (input: DianxiaomiProductWorkItemInput): DianxiaomiProductWorkItem => {
   const now = new Date().toISOString()
   const normalizedPageUrl = normalizeDianxiaomiPageUrl(input.pageUrl)
+  // P1-6: dedupe admission. If a caller supplied a dedupeKey, look it up
+  // first. When a match exists, prefer its id (instead of the pageUrl id)
+  // so we update the original work item rather than create a duplicate.
+  const inputDedupeKey = computeDianxiaomiDedupeKey(input)
+  const existingIdByDedupeKey = inputDedupeKey
+    ? Array.from(dianxiaomiProductWorkItems.values()).find(
+        (item) => item.dedupeKey && item.dedupeKey === inputDedupeKey && item.id
+      )?.id
+    : null
   const existingIdByPageUrl = dianxiaomiProductWorkItemIdByPageUrl.get(normalizedPageUrl)
-  const id = existingIdByPageUrl || input.id?.trim() || `dxm-work-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const id = existingIdByDedupeKey
+    || existingIdByPageUrl
+    || input.id?.trim()
+    || `dxm-work-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const existing = dianxiaomiProductWorkItems.get(id)
   const normalizedInput = {
     ...input,
     collectedProductId: input.collectedProductId?.trim() || existing?.collectedProductId,
     title: input.title?.trim() || input.pageTitle || "Dianxiaomi product",
+    sourceBucket: input.sourceBucket ?? existing?.sourceBucket,
     notes: input.notes ?? [],
     rawTextSample: input.rawTextSample ?? "",
+    dedupeKey: inputDedupeKey ?? existing?.dedupeKey,
     snapshot: {
       hasTitle: input.snapshot?.hasTitle ?? Boolean(input.title?.trim()),
       imageCount: input.snapshot?.imageCount ?? 0,
@@ -2050,10 +2605,23 @@ export const saveDianxiaomiProductWorkItem = (input: DianxiaomiProductWorkItemIn
       stockFieldCount: input.snapshot?.stockFieldCount ?? 0,
       attributeKeys: input.snapshot?.attributeKeys ?? [],
       imageStats: input.snapshot?.imageStats,
-      mediaToolSignals: input.snapshot?.mediaToolSignals ?? []
+      imageCheck: input.snapshot?.imageCheck ?? existing?.snapshot.imageCheck,
+      mediaToolSignals: input.snapshot?.mediaToolSignals ?? [],
+      // P1-9: normalize the target language so the snapshot always
+      // carries a valid BCP-47 token (defaulting to "en" when missing).
+      targetLanguage: normalizeDianxiaomiTargetLanguage(input.snapshot?.targetLanguage ?? existing?.snapshot.targetLanguage)
     }
   }
-  const requirements = buildDianxiaomiWorkRequirements(normalizedInput)
+  // P1-10: pick the store-mode requirement preset from page/profile/text hints
+  // so local (500-char title) and full-managed (stock optional) items score
+  // against the right rules instead of always using semi-managed defaults.
+  const selectedPreset = selectDianxiaomiRequirementPreset({
+    pageUrl: input.pageUrl,
+    pageProfile: input.pageProfile,
+    rawTextSample: normalizedInput.rawTextSample,
+    title: normalizedInput.title
+  })
+  const requirements = buildDianxiaomiWorkRequirements(normalizedInput, selectedPreset)
   const suggestedEdits = input.suggestedEdits?.length
     ? input.suggestedEdits
     : buildDianxiaomiSuggestedEdits(requirements.checks)
@@ -2068,6 +2636,7 @@ export const saveDianxiaomiProductWorkItem = (input: DianxiaomiProductWorkItemIn
     source: "dianxiaomi",
     queuedAt: input.queuedAt ?? existing?.queuedAt ?? now,
     updatedAt: now,
+    sourceBucket: normalizedInput.sourceBucket,
     pageProfile: input.pageProfile ?? existing?.pageProfile,
     requirements,
     suggestedEdits: urlBlockReason
@@ -2146,10 +2715,146 @@ const createProductFromDianxiaomiCollectedProduct = (
   }
 }
 
-export const listDianxiaomiProductWorkItems = (limit = 20) =>
+const normalizeDianxiaomiWorkScopeValue = (value?: string | null) => value?.trim() || undefined
+
+const matchesDianxiaomiProductWorkStoreScope = (
+  item: Pick<DianxiaomiProductWorkItem, "storeId" | "storeName">,
+  input: Pick<AutomationDryRunStartInput, "storeId" | "storeName"> = {}
+) => {
+  const requestedStoreId = normalizeDianxiaomiWorkScopeValue(input.storeId)
+  const requestedStoreName = normalizeDianxiaomiWorkScopeValue(input.storeName)
+  if (!requestedStoreId && !requestedStoreName) {
+    return true
+  }
+
+  const itemStoreId = normalizeDianxiaomiWorkScopeValue(item.storeId)
+  const itemStoreName = normalizeDianxiaomiWorkScopeValue(item.storeName)
+  if (requestedStoreId) {
+    return itemStoreId === requestedStoreId
+  }
+
+  return itemStoreName === requestedStoreName
+}
+
+export const listDianxiaomiProductWorkItems = (
+  limit = 20,
+  input: Pick<AutomationDryRunStartInput, "storeId" | "storeName" | "itemUrls" | "sourceBuckets"> = {}
+) =>
   Array.from(dianxiaomiProductWorkItems.values())
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .filter((item) =>
+      matchesDianxiaomiProductWorkStoreScope(item, input)
+      && matchesAutomationItemScope(item, input)
+    )
     .slice(0, limit)
+
+export const listDianxiaomiStoreMetrics = (): DianxiaomiStoreMetrics[] => {
+  const metricsMap = new Map<string, DianxiaomiStoreMetrics>()
+  const storeNameIndex = buildDianxiaomiStoreMetricNameIndex([
+    ...Array.from(dianxiaomiProductWorkItems.values()).map((item) => ({
+      storeId: item.storeId,
+      storeName: item.storeName
+    })),
+    ...dianxiaomiCollectedProducts.map((item) => ({
+      storeId: item.storeId,
+      storeName: item.storeName
+    })),
+    ...(dianxiaomiPageContext?.availableStores ?? []),
+    {
+      storeId: dianxiaomiPageContext?.storeId,
+      storeName: dianxiaomiPageContext?.storeName
+    }
+  ])
+
+  for (const item of dianxiaomiProductWorkItems.values()) {
+    const metrics = ensureDianxiaomiStoreMetrics(metricsMap, storeNameIndex, item.storeId, item.storeName)
+    if (!metrics) {
+      continue
+    }
+
+    metrics.workItemCount += 1
+    if (item.status === "ready-for-automation") {
+      metrics.readyCount += 1
+    } else if (item.status === "blocked") {
+      metrics.blockedCount += 1
+    } else if (item.status === "needs-revision") {
+      metrics.needsRevisionCount += 1
+    } else if (item.status === "edited") {
+      metrics.editedCount += 1
+    }
+  }
+
+  for (const item of dianxiaomiCollectedProducts) {
+    const metrics = ensureDianxiaomiStoreMetrics(metricsMap, storeNameIndex, item.storeId, item.storeName)
+    if (!metrics) {
+      continue
+    }
+
+    metrics.collectedCount += 1
+  }
+
+  for (const store of dianxiaomiPageContext?.availableStores ?? []) {
+    ensureDianxiaomiStoreMetrics(metricsMap, storeNameIndex, store.storeId, store.storeName)
+  }
+
+  ensureDianxiaomiStoreMetrics(metricsMap, storeNameIndex, dianxiaomiPageContext?.storeId, dianxiaomiPageContext?.storeName)
+
+  return Array.from(metricsMap.values())
+    .sort((left, right) => (left.storeName ?? left.storeId ?? "").localeCompare(right.storeName ?? right.storeId ?? "", "zh-CN"))
+}
+
+export const getDianxiaomiPageContext = () => dianxiaomiPageContext
+
+export const saveDianxiaomiPageContext = (input: Omit<DianxiaomiPageContext, "updatedAt"> & Partial<Pick<DianxiaomiPageContext, "updatedAt">>) => {
+  const normalizedStoreId = input.storeId?.trim() || undefined
+  const normalizedStoreName = input.storeName?.trim() || undefined
+  const normalizedAvailableStoreEntries = (input.availableStores ?? [])
+    .map((item) => ({
+      storeId: item.storeId?.trim() || undefined,
+      storeName: item.storeName?.trim() || ""
+    }))
+    .filter((item) => item.storeName)
+  const availableStoreNameIndex = buildDianxiaomiStoreMetricNameIndex(normalizedAvailableStoreEntries)
+  const normalizedAvailableStores = Array.from(
+    normalizedAvailableStoreEntries.reduce((storeMap, item) => {
+      const identity = resolveDianxiaomiStoreMetricIdentity(availableStoreNameIndex, item.storeId, item.storeName)
+      if (!identity?.key || !identity.storeName) {
+        return storeMap
+      }
+
+      const current = storeMap.get(identity.key)
+      const nextStore = {
+        storeId: identity.storeId,
+        storeName: identity.storeName
+      }
+      if (!current || (!current.storeId && nextStore.storeId)) {
+        storeMap.set(identity.key, nextStore)
+      }
+      return storeMap
+    }, new Map<string, { storeId?: string; storeName: string }>())
+      .values()
+  )
+  const normalizedSiteName = input.siteName?.trim() || undefined
+  const normalizedPageUrl = input.pageUrl?.trim()
+
+  if (!normalizedPageUrl) {
+    throw new Error("dianxiaomi page context pageUrl is required")
+  }
+
+  dianxiaomiPageContext = {
+    storeId: normalizedStoreId,
+    storeName: normalizedStoreName,
+    availableStores: normalizedAvailableStores,
+    siteName: normalizedSiteName,
+    pageUrl: normalizedPageUrl,
+    pageTitle: input.pageTitle?.trim() || undefined,
+    pageProfile: input.pageProfile?.trim() || undefined,
+    updatedAt: input.updatedAt?.trim() || new Date().toISOString()
+  }
+
+  persistPlannerState()
+  return dianxiaomiPageContext
+}
 
 export const getDianxiaomiProductWorkQueueSummary = () => {
   const items = Array.from(dianxiaomiProductWorkItems.values())
@@ -2164,6 +2869,81 @@ export const getDianxiaomiProductWorkQueueSummary = () => {
 
 export const getDianxiaomiProductWorkItem = (id: string) =>
   dianxiaomiProductWorkItems.get(id) ?? null
+
+export const mergeDianxiaomiProductWorkItemSnapshot = (
+  id: string,
+  snapshotPatch: Partial<DianxiaomiProductWorkItem["snapshot"]>,
+  note?: string
+): DianxiaomiProductWorkItem | null => {
+  const current = getDianxiaomiProductWorkItem(id)
+  if (!current) {
+    return null
+  }
+
+  const mergedSnapshot: DianxiaomiProductWorkItem["snapshot"] = {
+    ...current.snapshot,
+    hasTitle: snapshotPatch.hasTitle ?? current.snapshot.hasTitle,
+    imageCount: snapshotPatch.imageCount ?? current.snapshot.imageCount,
+    skuCount: snapshotPatch.skuCount ?? current.snapshot.skuCount,
+    priceFieldCount: snapshotPatch.priceFieldCount ?? current.snapshot.priceFieldCount,
+    stockFieldCount: snapshotPatch.stockFieldCount ?? current.snapshot.stockFieldCount,
+    attributeKeys: snapshotPatch.attributeKeys ?? current.snapshot.attributeKeys,
+    imageStats: snapshotPatch.imageStats ?? current.snapshot.imageStats,
+    imageCheck: snapshotPatch.imageCheck ?? current.snapshot.imageCheck,
+    mediaToolSignals: normalizeStringList([
+      ...(current.snapshot.mediaToolSignals ?? []),
+      ...(snapshotPatch.mediaToolSignals ?? [])
+    ]),
+    targetLanguage: normalizeDianxiaomiTargetLanguage(snapshotPatch.targetLanguage ?? current.snapshot.targetLanguage)
+  }
+
+  const selectedPreset = selectDianxiaomiRequirementPreset({
+    pageUrl: current.pageUrl,
+    pageProfile: current.pageProfile,
+    rawTextSample: current.rawTextSample,
+    title: current.title
+  })
+  const requirements = buildDianxiaomiWorkRequirements({
+    ...current,
+    snapshot: mergedSnapshot
+  }, selectedPreset)
+  const suggestedEdits = buildDianxiaomiSuggestedEdits(requirements.checks)
+  const urlBlockReason = dianxiaomiUrlBlockReason(current.pageUrl)
+  const mergedStatus = urlBlockReason
+    ? "blocked"
+    : current.status === "blocked" || current.status === "edited"
+      ? current.status
+      : requirements.summary.ready ? "ready-for-automation" : "needs-revision"
+  const updatedBase: DianxiaomiProductWorkItem = {
+    ...current,
+    status: mergedStatus,
+    updatedAt: new Date().toISOString(),
+    snapshot: mergedSnapshot,
+    requirements,
+    suggestedEdits: urlBlockReason
+      ? [
+          ...suggestedEdits,
+          {
+            id: "edit-page-url-real-dianxiaomi",
+            field: "compliance",
+            priority: "required",
+            reason: urlBlockReason,
+            currentValue: current.pageUrl
+          }
+        ]
+      : suggestedEdits,
+    notes: note ? [...current.notes, note] : current.notes
+  }
+  const repairPlan = buildDianxiaomiRepairPlan(updatedBase)
+  const updated: DianxiaomiProductWorkItem = withDianxiaomiRepairActionGate({
+    ...updatedBase,
+    repairPlan
+  })
+
+  dianxiaomiProductWorkItems.set(id, updated)
+  persistPlannerState()
+  return updated
+}
 
 export const updateDianxiaomiProductWorkItemStatus = (
   id: string,
@@ -2387,21 +3167,39 @@ export const createTaskFromDianxiaomiProductWorkItem = (workItemId: string): Dia
 const buildTaskFromDianxiaomiProductWorkItem = (workItem: DianxiaomiProductWorkItem): PublishTask => {
   const product = createProductFromWorkItem(workItem)
   const task = buildTaskForProduct(product)
-  const suggestedRequirements = workItem.suggestedEdits.reduce<Record<string, string>>((attributes, edit) => ({
-    ...attributes,
-    [`dxm-${edit.field}-${edit.priority}`]: edit.suggestedValue || edit.reason
-  }), {})
+  const draftAttributes = {
+    ...withoutDianxiaomiTaskMetaAttributes(product.attributes),
+    dianxiaomiWorkItemId: workItem.id,
+    dianxiaomiPageUrl: workItem.pageUrl,
+    dianxiaomiRequirementPreset: workItem.requirements.presetName,
+    ...(workItem.collectedProductId ? { dianxiaomiCollectedProductId: workItem.collectedProductId } : {})
+  }
+  const productSkuById = new Map(product.skus.map((sku) => [sku.skuId, sku]))
   const updatedTask: PublishTask = {
     ...task,
     draft: {
       ...task.draft,
-      listingTitle: workItem.title,
-      description: [
+      description: sanitizeMarketplaceEnglishText([
         task.draft.description,
         "Dianxiaomi source item needs requirement-based edits before Temu listing.",
         ...workItem.suggestedEdits.slice(0, 6).map((edit) => `${edit.field}: ${edit.suggestedValue || edit.reason}`)
-      ].filter(Boolean).join("\n\n"),
-      attributes: mergeAttributes(task.draft.attributes, suggestedRequirements)
+      ].filter(Boolean).join("\n\n")),
+      attributes: draftAttributes,
+      skuPricing: task.draft.skuPricing.map((sku, index) => {
+        const productSku = productSkuById.get(sku.skuId) ?? product.skus[index]
+        const skuAttributes = mergeAttributes(
+          draftAttributes,
+          withoutDianxiaomiTaskMetaAttributes(productSku?.attributes)
+        )
+
+        return {
+          ...sku,
+          salePriceUsd: DIANXIAOMI_DEFAULT_DECLARED_PRICE_USD,
+          stock: DIANXIAOMI_DEFAULT_STOCK,
+          attributes: skuAttributes,
+          attributeSummary: buildAttributeSummary(skuAttributes)
+        }
+      })
     },
     risks: [
       ...workItem.requirements.checks
@@ -2722,6 +3520,36 @@ export const getPublishCheck = (taskId: string): PublishCheckResult | null => {
           level: "high" as const,
           message: "存在无效 SKU 售价"
         }
+      : null,
+    // P0-A: catch over-long titles for non-Dianxiaomi sources. Dianxiaomi
+    // sources already get `title-length` from dianxiaomiRequirementIssues below.
+    task.product.source !== "dianxiaomi"
+      && task.draft.listingTitle.trim().length > PUBLISH_CHECK_TITLE_MAX_LENGTH_FALLBACK
+      ? {
+          id: "title-too-long",
+          level: "high" as const,
+          message: `草稿标题 ${task.draft.listingTitle.trim().length} 字符，超过非店小秘来源上限 ${PUBLISH_CHECK_TITLE_MAX_LENGTH_FALLBACK}`
+        }
+      : null,
+    // P0-A: SKU stock sanity (negative or absurdly large). Catches the silent
+    // case where fill-draft wrote a stock that the page silently truncated
+    // or where the import pipeline produced a bad number.
+    task.draft.skuPricing.some((sku) => sku.stock < 0 || sku.stock > PUBLISH_CHECK_STOCK_MAX)
+      ? {
+          id: "stock-out-of-range",
+          level: "high" as const,
+          message: `SKU 库存超出允许范围 [0, ${PUBLISH_CHECK_STOCK_MAX}]`
+        }
+      : null,
+    // P0-A: price floor guard for non-Dianxiaomi sources. Uses the shared
+    // defaultPricingRules.minimumSuggestedPriceUsd as the floor.
+    task.product.source !== "dianxiaomi"
+      && task.draft.skuPricing.some((sku) => sku.salePriceUsd < defaultPricingRules.minimumSuggestedPriceUsd)
+      ? {
+          id: "price-below-minimum",
+          level: "high" as const,
+          message: `SKU 售价低于最低售价 $${defaultPricingRules.minimumSuggestedPriceUsd.toFixed(2)}`
+        }
       : null
   ].filter((issue): issue is NonNullable<typeof issue> => Boolean(issue))
   const dianxiaomiRequirementIssues = dianxiaomiWorkItem?.requirements.checks
@@ -2745,6 +3573,50 @@ export const getPublishChecks = (taskIds: string[]) =>
   taskIds
     .map((taskId) => getPublishCheck(taskId))
     .filter((result): result is PublishCheckResult => Boolean(result))
+
+// P1-4: re-derive the listing draft's pricing analysis when the operator
+// changed pricing rules (rulesHash mismatch) or when the last computation
+// is older than `maxAgeMs`. Returns true when a recompute actually ran.
+// The caller is expected to persist the updated task afterwards.
+const PRICING_RECOMPUTE_MAX_AGE_MS = 6 * 60 * 60 * 1000 // 6 hours
+
+export const recomputeDraftPricingIfStale = (
+  task: PublishTask,
+  options: { maxAgeMs?: number; rules?: PricingRules } = {}
+): { recomputed: boolean; reason: "rules-changed" | "stale" | "fresh" | "no-pricing" } => {
+  const analysis = task.pricing
+  if (!analysis) {
+    return { recomputed: false, reason: "no-pricing" }
+  }
+  const rules = options.rules ?? getPricingRules()
+  const currentHash = hashPricingRules(rules)
+  // P1-4: re-price the draft in place, preserving any operator edits to
+  // non-price draft fields (title, selling points, etc.). Only the SKU
+  // salePriceUsd values are refreshed from the new suggested price.
+  const reprice = (reason: "rules-changed" | "stale") => {
+    const updated = calculatePricing(task.product, rules)
+    task.pricing = updated
+    task.draft = {
+      ...task.draft,
+      skuPricing: task.draft.skuPricing.map((sku) => ({
+        ...sku,
+        salePriceUsd: updated.suggestedPriceUsd
+      }))
+    }
+    return { recomputed: true as const, reason }
+  }
+  if (analysis.rulesHash && analysis.rulesHash !== currentHash) {
+    return reprice("rules-changed")
+  }
+  const maxAgeMs = options.maxAgeMs ?? PRICING_RECOMPUTE_MAX_AGE_MS
+  if (analysis.computedAt) {
+    const ageMs = Date.now() - new Date(analysis.computedAt).getTime()
+    if (Number.isFinite(ageMs) && ageMs > maxAgeMs) {
+      return reprice("stale")
+    }
+  }
+  return { recomputed: false, reason: "fresh" }
+}
 
 export const getPricingRules = () => pricingRules
 
@@ -2794,18 +3666,17 @@ export const saveDebugSnapshot = (snapshot: PageDebugSnapshot) => {
 export const listAutomationReports = (limit = 20): AutomationExecutionReport[] => {
   const currentFile = fileURLToPath(import.meta.url)
   const repoRoot = path.resolve(path.dirname(currentFile), "../../..")
-  const reportDir = path.join(repoRoot, "output/playwright")
-
-  if (!existsSync(reportDir)) {
-    return []
-  }
-
-  return readdirSync(reportDir)
-    .filter((fileName) => /^dianxiaomi-(run|dry-run|repair-preview|error)-.*\.json$/.test(fileName))
-    .map((fileName) => {
-      const filePath = path.join(reportDir, fileName)
-      return JSON.parse(readFileSync(filePath, "utf8")) as AutomationExecutionReport
+  const reportPaths = [
+    ...listFilesRecursive(path.join(repoRoot, "output/playwright"), {
+      fileNamePattern: /^dianxiaomi-(run|dry-run|repair-preview|error)-.*\.json$/
+    }),
+    ...listFilesRecursive(path.join(repoRoot, ".runtime/automation-artifacts"), {
+      fileNamePattern: /^dianxiaomi-(run|dry-run|repair-preview|error)-.*\.json$/
     })
+  ]
+
+  return Array.from(new Set(reportPaths))
+    .map((filePath) => JSON.parse(readFileSync(filePath, "utf8")) as AutomationExecutionReport)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, limit)
 }
@@ -3023,9 +3894,20 @@ const summarizeSelectorConfig = (config: DianxiaomiSelectorConfig | null) => ({
   skuRowSelectorCount: config?.skuRows.length ?? 0
 })
 
+// P1: selector entries that must not be made empty by a config change. Title /
+// price / stock / save are hard requirements for filling a Dianxiaomi
+// listing. Description is intentionally excluded — Dianxiaomi's real Temu
+// edit page may use a module / image description preview with no direct
+// text field, and `validateSelectorConfig` already treats that as a
+// "preserved" warning rather than a hard error. Blocking a restore over an
+// empty `fields.description` would force operators to keep a stub selector
+// just to satisfy the safety gate.
+const BLOCKING_CRITICAL_SELECTOR_FIELDS = ["title", "price", "stock"]
+const BLOCKING_CRITICAL_SELECTOR_BUTTONS = ["save"]
+
 const criticalSelectorEntry = (entry: SelectorConfigDiffEntry) =>
-  (entry.group === "fields" && REQUIRED_SELECTOR_FIELDS.includes(entry.key))
-    || (entry.group === "buttons" && REQUIRED_SELECTOR_BUTTONS.includes(entry.key))
+  (entry.group === "fields" && BLOCKING_CRITICAL_SELECTOR_FIELDS.includes(entry.key))
+    || (entry.group === "buttons" && BLOCKING_CRITICAL_SELECTOR_BUTTONS.includes(entry.key))
 
 const diffSelectorList = (
   group: SelectorConfigDiffEntry["group"],
@@ -3395,11 +4277,32 @@ export const validateSelectorConfig = (selectorConfigPath?: string): SelectorCon
 
   for (const field of REQUIRED_SELECTOR_FIELDS) {
     if (!hasSelector(status.config, "fields", field)) {
-      issues.push({
-        id: `field-${field}-missing`,
-        level: "error",
-        message: `field selector missing: ${field}`
-      })
+      // P1: description can legitimately have no direct text selector when
+      // Dianxiaomi renders it as a module/image preview. We only downgrade
+      // "missing" to a "preserved" warning when there is POSITIVE evidence:
+      // a diagnosis exists and recognized the description field (ok=true)
+      // without a candidate selector. With no diagnosis, or an unrecognized
+      // field, a missing required selector stays a hard error so genuinely
+      // broken configs are still blocked.
+      const diagnosisField = latestDiagnosis?.fields?.[field]
+      const diagnosisFieldCandidates = diagnosisField?.candidates ?? []
+      const descriptionRecognizedAsPreview = field === "description"
+        && Boolean(latestDiagnosis)
+        && diagnosisField?.ok === true
+        && diagnosisFieldCandidates.length === 0
+      if (descriptionRecognizedAsPreview) {
+        issues.push({
+          id: `field-${field}-preserved`,
+          level: "warning",
+          message: `field selector missing but the latest diagnosis recognized ${field} as a module/image preview; the field will be preserved`
+        })
+      } else {
+        issues.push({
+          id: `field-${field}-missing`,
+          level: "error",
+          message: `field selector missing: ${field}`
+        })
+      }
       continue
     }
 

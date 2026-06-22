@@ -1,5 +1,6 @@
 import type {
   DianxiaomiCollectedProduct,
+  DianxiaomiPageContext,
   DianxiaomiListingRequirementRules,
   DianxiaomiProductWorkItem,
   PricingRules,
@@ -15,6 +16,7 @@ export type PersistedPlannerState = {
   tasks: PublishTask[]
   dianxiaomiCollectedProducts?: DianxiaomiCollectedProduct[]
   dianxiaomiProductWorkItems?: DianxiaomiProductWorkItem[]
+  dianxiaomiPageContext?: DianxiaomiPageContext | null
   dianxiaomiRequirementRules?: DianxiaomiListingRequirementRules
   activeTaskId: string | null
   pricingRules?: PricingRules

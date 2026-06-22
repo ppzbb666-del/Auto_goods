@@ -26,6 +26,8 @@ import {
   importCsvProducts,
   importExcelProducts,
   listDianxiaomiCollectedProducts,
+  getDianxiaomiPageContext,
+  listDianxiaomiStoreMetrics,
   listDianxiaomiProductWorkItems,
   listAutomationReports,
   listDebugSnapshots,
@@ -41,6 +43,7 @@ import {
   restoreSelectorConfigVersion,
   saveDebugSnapshot,
   saveDianxiaomiCollectedProduct,
+  saveDianxiaomiPageContext,
   saveDianxiaomiProductWorkItem,
   saveSelectorConfig,
   SelectorConfigChangeRiskError,
@@ -100,7 +103,10 @@ import {
   startDianxiaomiSubmitListing,
   pauseDianxiaomiQueueDaemon,
   restoreDianxiaomiQueueDaemon,
-  tickDianxiaomiQueueDaemon
+  tickDianxiaomiQueueDaemon,
+  // P1-7: alert webhook config
+  getAlertWebhookConfig,
+  setAlertWebhookConfig
 } from "./automation-runner"
 import { getAutomationPreflight } from "./automation-preflight"
 import {
@@ -109,6 +115,19 @@ import {
   listAutomationLaunchPresets,
   updateAutomationLaunchPreset
 } from "./automation-presets"
+import {
+  getDianxiaomiAccountScanJob,
+  getDianxiaomiAccountScanJobLog,
+  listDianxiaomiAccountScanLinks,
+  listDianxiaomiAccountScanJobs,
+  startDianxiaomiAccountScan
+} from "./dianxiaomi-account-scan-runner"
+import {
+  getDianxiaomiImageCheckJob,
+  getDianxiaomiImageCheckJobLog,
+  listDianxiaomiImageCheckJobs,
+  startDianxiaomiImageCheck
+} from "./dianxiaomi-image-check-runner"
 import {
   getSelectorCalibrationJob,
   getSelectorCalibrationJobLog,
@@ -236,10 +255,16 @@ const productInputShape = {
   images: z.array(z.string()).optional()
 }
 
+const automationSourceBucketSchema = z.enum(["collection-box", "pending-publish", "listing-draft"])
+
 const automationDryRunSchema = z.object({
   url: z.string().optional(),
   taskFile: z.string().optional(),
   repairPlanFile: z.string().optional(),
+  storeId: z.string().optional(),
+  storeName: z.string().optional(),
+  itemUrls: z.array(z.string()).optional(),
+  sourceBuckets: z.array(automationSourceBucketSchema).optional(),
   headed: z.boolean().optional(),
   profile: z.string().optional(),
   screenshots: z.string().optional(),
@@ -313,17 +338,29 @@ const queryBooleanSchema = z.preprocess((value) => {
   return value
 }, z.boolean())
 
+const queryStringArraySchema = z.array(z.string()).or(z.string()).optional().transform((value) =>
+  Array.isArray(value) ? value : value ? [value] : undefined
+)
+
 const automationReadinessSchema = z.object({
   url: z.string().optional(),
   taskFile: z.string().optional(),
   repairPlanFile: z.string().optional(),
+  storeId: z.string().optional(),
+  storeName: z.string().optional(),
+  itemUrls: queryStringArraySchema,
+  sourceBuckets: queryStringArraySchema.transform((value) =>
+    value?.filter((item): item is z.infer<typeof automationSourceBucketSchema> =>
+      ["collection-box", "pending-publish", "listing-draft"].includes(item)
+    )
+  ),
   profile: z.string().optional(),
   screenshots: z.string().optional(),
   selectorConfig: z.string().optional(),
   mediaAutomationMode: z.enum(["plan-only", "unattended-open", "unattended-apply"]).optional(),
   submitAfterSave: queryBooleanSchema.optional(),
   submitMaxAttempts: z.coerce.number().int().positive().max(10).optional(),
-  mediaAutomationTools: z.array(z.string()).or(z.string()).optional().transform((value) => Array.isArray(value) ? value : value ? [value] : undefined)
+  mediaAutomationTools: queryStringArraySchema
 })
 
 const automationPresetInputSchema = z.object({
@@ -342,6 +379,9 @@ const automationTaskFileExportSchema = z.object({
 
 const dianxiaomiCollectedProductSchema = z.object({
   id: z.string().optional(),
+  storeId: z.string().optional(),
+  storeName: z.string().optional(),
+  sourceBucket: automationSourceBucketSchema.optional(),
   pageUrl: z.string(),
   pageTitle: z.string(),
   collectedAt: z.string().optional(),
@@ -377,6 +417,9 @@ const dianxiaomiCollectedProductSchema = z.object({
 const dianxiaomiProductWorkItemSchema = z.object({
   id: z.string().optional(),
   source: z.literal("dianxiaomi").optional(),
+  storeId: z.string().optional(),
+  storeName: z.string().optional(),
+  sourceBucket: automationSourceBucketSchema.optional(),
   collectedProductId: z.string().optional(),
   pageUrl: z.string(),
   pageTitle: z.string(),
@@ -398,9 +441,15 @@ const dianxiaomiProductWorkItemSchema = z.object({
       minHeightPx: z.number().int().nonnegative(),
       maxWidthPx: z.number().int().nonnegative(),
       maxHeightPx: z.number().int().nonnegative(),
-      unknownDimensionCount: z.number().int().nonnegative()
+      unknownDimensionCount: z.number().int().nonnegative(),
+      minAspectRatio: z.number().nonnegative().optional(),
+      maxAspectRatio: z.number().nonnegative().optional()
     }).optional(),
-    mediaToolSignals: z.array(z.string()).default([])
+    imageCheck: z.object({
+      passed: z.boolean()
+    }).optional(),
+    mediaToolSignals: z.array(z.string()).default([]),
+    targetLanguage: z.string().optional()
   }),
   status: z.enum(["needs-revision", "ready-for-automation", "blocked", "edited"]).optional(),
   requirements: z.object({
@@ -500,6 +549,20 @@ const dianxiaomiProductWorkItemSchema = z.object({
   }).nullable().optional()
 })
 
+const dianxiaomiPageContextSchema = z.object({
+  storeId: z.string().optional(),
+  storeName: z.string().optional(),
+  availableStores: z.array(z.object({
+    storeId: z.string().optional(),
+    storeName: z.string().min(1)
+  })).optional(),
+  siteName: z.string().optional(),
+  pageUrl: z.string().min(1),
+  pageTitle: z.string().optional(),
+  pageProfile: z.string().optional(),
+  updatedAt: z.string().optional()
+})
+
 const selectorConfigValidationSchema = z.object({
   selectorConfig: z.string().optional()
 })
@@ -511,6 +574,40 @@ const selectorCalibrationSchema = z.object({
   screenshots: z.string().optional(),
   sampleMediaActions: z.boolean().optional(),
   mediaAutomationTools: z.array(z.string()).optional()
+})
+
+const dianxiaomiAccountScanSchema = z.object({
+  headed: z.boolean().optional(),
+  profile: z.string().optional(),
+  screenshots: z.string().optional(),
+  sourceBuckets: z.array(automationSourceBucketSchema).optional(),
+  maxPages: z.number().int().positive().max(100).optional(),
+  storeId: z.string().optional(),
+  storeName: z.string().optional()
+})
+
+const dianxiaomiImageCheckSchema = z.object({
+  workItemId: z.string().optional(),
+  url: z.string().optional(),
+  headed: z.boolean().optional(),
+  profile: z.string().optional(),
+  screenshots: z.string().optional()
+})
+
+const dianxiaomiAccountScanImportSchema = z.object({
+  linkIds: z.array(z.string()).optional(),
+  editUrls: z.array(z.string()).optional(),
+  storeId: z.string().optional(),
+  storeName: z.string().optional(),
+  sourceBuckets: z.array(automationSourceBucketSchema).optional()
+}).refine((value) =>
+  (value.linkIds?.length ?? 0) > 0
+  || (value.editUrls?.length ?? 0) > 0
+  || Boolean(value.storeId?.trim())
+  || Boolean(value.storeName?.trim())
+  || (value.sourceBuckets?.length ?? 0) > 0,
+{
+  message: "at least one link id, edit url, store, or source bucket is required"
 })
 
 const selectorConfigSchema = z.object({
@@ -611,7 +708,7 @@ app.get("/automation/presets", async () => listAutomationLaunchPresets())
 
 app.post("/automation/presets", async (request) => {
   const body = automationPresetInputSchema.parse(request.body)
-  return createAutomationLaunchPreset(body)
+  return createAutomationLaunchPreset(body as any)
 })
 
 app.put("/automation/presets/:id", async (request, reply) => {
@@ -948,7 +1045,18 @@ app.get("/automation/recovery-runs/:id", async (request, reply) => {
 
 app.get("/automation/queue-daemon", async () => getDianxiaomiQueueDaemonState())
 
-app.get("/automation/queue-daemon/health", async () => getDianxiaomiQueueDaemonHealth())
+app.get("/automation/queue-daemon/health", async (request) => {
+  const query = automationReadinessSchema.parse(request.query ?? {})
+  return getDianxiaomiQueueDaemonHealth(query)
+})
+
+// P1-7: alert webhook config. Empty url disables the webhook; any
+// http(s):// endpoint gets a POST on every "block" audit decision.
+app.get("/automation/alert-webhook", async () => getAlertWebhookConfig())
+app.put("/automation/alert-webhook", async (request) => {
+  const body = z.object({ url: z.string().optional() }).parse(request.body)
+  return setAlertWebhookConfig(body)
+})
 
 app.get("/automation/profile-locks/archive-readiness", async (request) => {
   const query = automationReadinessSchema.parse(request.query)
@@ -1130,6 +1238,222 @@ app.post("/selector-calibration", async (request) => {
   return startSelectorCalibration(body)
 })
 
+app.post("/dianxiaomi/account-scan", async (request) => {
+  const body = dianxiaomiAccountScanSchema.default({}).parse(request.body ?? {})
+  return startDianxiaomiAccountScan(body)
+})
+
+app.post("/dianxiaomi/image-check", async (request) => {
+  const body = dianxiaomiImageCheckSchema.parse(request.body ?? {})
+  return startDianxiaomiImageCheck(body)
+})
+
+app.get("/dianxiaomi/image-check/jobs", async (request) => {
+  const query = z.object({
+    limit: z.coerce.number().int().positive().max(100).default(20)
+  }).parse(request.query)
+
+  return listDianxiaomiImageCheckJobs(query.limit)
+})
+
+app.get("/dianxiaomi/image-check/jobs/:id", async (request, reply) => {
+  const params = z.object({
+    id: z.string()
+  }).parse(request.params)
+  const job = getDianxiaomiImageCheckJob(params.id)
+
+  if (!job) {
+    reply.code(404)
+    return {
+      message: "dianxiaomi image check job not found"
+    }
+  }
+
+  return job
+})
+
+app.get("/dianxiaomi/image-check/jobs/:id/logs", async (request, reply) => {
+  const params = z.object({
+    id: z.string()
+  }).parse(request.params)
+  const query = z.object({
+    maxChars: z.coerce.number().int().positive().max(20000).default(4000)
+  }).parse(request.query)
+  const log = getDianxiaomiImageCheckJobLog(params.id, query.maxChars)
+
+  if (!log) {
+    reply.code(404)
+    return {
+      message: "dianxiaomi image check job log not found"
+    }
+  }
+
+  return log
+})
+
+app.get("/dianxiaomi/account-scan/jobs", async (request) => {
+  const query = z.object({
+    limit: z.coerce.number().int().positive().max(100).default(20)
+  }).parse(request.query)
+
+  return listDianxiaomiAccountScanJobs(query.limit)
+})
+
+app.get("/dianxiaomi/account-scan/jobs/:id", async (request, reply) => {
+  const params = z.object({
+    id: z.string()
+  }).parse(request.params)
+  const job = getDianxiaomiAccountScanJob(params.id)
+
+  if (!job) {
+    reply.code(404)
+    return {
+      message: "dianxiaomi account scan job not found"
+    }
+  }
+
+  return job
+})
+
+app.get("/dianxiaomi/account-scan/jobs/:id/logs", async (request, reply) => {
+  const params = z.object({
+    id: z.string()
+  }).parse(request.params)
+  const query = z.object({
+    maxChars: z.coerce.number().int().positive().max(20000).default(4000)
+  }).parse(request.query)
+  const log = getDianxiaomiAccountScanJobLog(params.id, query.maxChars)
+
+  if (!log) {
+    reply.code(404)
+    return {
+      message: "dianxiaomi account scan job log not found"
+    }
+  }
+
+  return log
+})
+
+app.post("/dianxiaomi/account-scan/jobs/:id/import", async (request, reply) => {
+  const params = z.object({
+    id: z.string()
+  }).parse(request.params)
+  const body = dianxiaomiAccountScanImportSchema.parse(request.body ?? {})
+  const job = getDianxiaomiAccountScanJob(params.id)
+
+  if (!job) {
+    reply.code(404)
+    return {
+      message: "dianxiaomi account scan job not found"
+    }
+  }
+
+  if (!job.result) {
+    reply.code(409)
+    return {
+      message: "dianxiaomi account scan result is not ready"
+    }
+  }
+
+  const selectedLinkIds = new Set((body.linkIds ?? []).map((item) => item.trim()).filter(Boolean))
+  const selectedEditUrls = new Set((body.editUrls ?? []).map((item) => item.trim().toLowerCase()).filter(Boolean))
+  const normalizedStoreId = body.storeId?.trim() || ""
+  const normalizedStoreName = body.storeName?.trim() || ""
+  const selectedSourceBuckets = new Set(body.sourceBuckets ?? [])
+  const requested = selectedLinkIds.size
+    + selectedEditUrls.size
+    + (normalizedStoreId ? 1 : 0)
+    + (normalizedStoreName ? 1 : 0)
+    + selectedSourceBuckets.size
+  const selectedLinks = listDianxiaomiAccountScanLinks(params.id).filter((link) => {
+    const matchesExplicitSelection = selectedLinkIds.has(link.id) || selectedEditUrls.has(link.editUrl.trim().toLowerCase())
+    if (matchesExplicitSelection) {
+      return true
+    }
+
+    const matchesStoreId = normalizedStoreId ? (link.shopId?.trim() || "") === normalizedStoreId : true
+    const matchesStoreName = normalizedStoreName ? link.storeName.trim() === normalizedStoreName : true
+    const matchesSourceBucket = selectedSourceBuckets.size > 0 ? selectedSourceBuckets.has(link.sourceBucket) : true
+    const hasScopedFilter = Boolean(normalizedStoreId || normalizedStoreName || selectedSourceBuckets.size > 0)
+
+    return hasScopedFilter && matchesStoreId && matchesStoreName && matchesSourceBucket
+  })
+  const importedAt = new Date().toISOString()
+  const importedWorkItemIds = new Set<string>()
+  const skipped: Array<{ id: string; reason: string }> = []
+  let readyCount = 0
+  let needsRevisionCount = 0
+
+  for (const link of selectedLinks) {
+    const title = link.title?.trim() || link.storeName || "Dianxiaomi account scan"
+    const workItem = saveDianxiaomiProductWorkItem({
+      storeId: link.shopId?.trim() || undefined,
+      storeName: link.storeName,
+      sourceBucket: link.sourceBucket,
+      pageUrl: link.editUrl,
+      pageTitle: title,
+      pageProfile: "Dianxiaomi account scan",
+      title,
+      rawTextSample: [link.title, link.siteLabel, link.sourcePlatform].filter(Boolean).join(" | "),
+      notes: [
+        `imported from account scan job ${params.id}`,
+        `source bucket: ${link.sourceBucket}`,
+        ...(link.sourceUrl ? [`source url: ${link.sourceUrl}`] : [])
+      ],
+      snapshot: {
+        hasTitle: Boolean(title),
+        imageCount: 1,
+        skuCount: 1,
+        priceFieldCount: 1,
+        stockFieldCount: 1,
+        attributeKeys: [],
+        mediaToolSignals: [],
+        targetLanguage: "en"
+      }
+    })
+
+    importedWorkItemIds.add(workItem.id)
+    if (workItem.status === "ready-for-automation") {
+      readyCount += 1
+    } else {
+      needsRevisionCount += 1
+      skipped.push({
+        id: link.id,
+        reason: `imported as ${workItem.status}`
+      })
+    }
+  }
+
+  for (const id of selectedLinkIds) {
+    if (!selectedLinks.some((link) => link.id === id)) {
+      skipped.push({
+        id,
+        reason: "link id not found in scan result"
+      })
+    }
+  }
+
+  for (const url of selectedEditUrls) {
+    if (!selectedLinks.some((link) => link.editUrl.trim().toLowerCase() === url)) {
+      skipped.push({
+        id: url,
+        reason: "edit url not found in scan result"
+      })
+    }
+  }
+
+  return {
+    jobId: params.id,
+    importedAt,
+    requested,
+    importedCount: importedWorkItemIds.size,
+    readyCount,
+    needsRevisionCount,
+    importedWorkItemIds: Array.from(importedWorkItemIds),
+    skipped
+  }
+})
+
 app.get("/selector-calibration/jobs", async (request) => {
   const query = z.object({
     limit: z.coerce.number().int().positive().max(100).default(20)
@@ -1177,7 +1501,7 @@ app.get("/selector-config", async () => getSelectorConfigStatus())
 
 app.put("/selector-config", async (request) => {
   const body = selectorConfigSaveSchema.parse(request.body)
-  return saveSelectorConfig(body)
+  return saveSelectorConfig(body as any)
 })
 
 app.post("/selector-config/diff", async (request) => {
@@ -1185,7 +1509,7 @@ app.post("/selector-config/diff", async (request) => {
     config: selectorConfigSchema
   }).parse(request.body)
 
-  return getSelectorConfigDiff(body.config)
+  return getSelectorConfigDiff(body.config as any)
 })
 
 app.get("/selector-config/versions", async (request) => {
@@ -1268,14 +1592,14 @@ app.put("/pricing-rules", async (request) => {
     minimumSuggestedPriceUsd: z.number().nonnegative()
   }).parse(request.body)
 
-  return updatePricingRules(body)
+  return updatePricingRules(body as any)
 })
 
 app.get("/dianxiaomi/requirement-rules", async () => getDianxiaomiRequirementRules())
 
 app.put("/dianxiaomi/requirement-rules", async (request) => {
   const body = dianxiaomiRequirementRulesSchema.parse(request.body)
-  return updateDianxiaomiRequirementRules(body)
+  return updateDianxiaomiRequirementRules(body as any)
 })
 
 app.get("/imports/csv-template", async (_request, reply) => {
@@ -1336,7 +1660,7 @@ app.post("/debug-snapshots", async (request) => {
     notes: z.array(z.string())
   }).parse(request.body)
 
-  return saveDebugSnapshot(body)
+  return saveDebugSnapshot(body as any)
 })
 
 app.get("/dianxiaomi/collected-products", async (request) => {
@@ -1349,15 +1673,23 @@ app.get("/dianxiaomi/collected-products", async (request) => {
 
 app.get("/dianxiaomi/product-work-items", async (request) => {
   const query = z.object({
-    limit: z.coerce.number().int().positive().max(100).default(20)
+    limit: z.coerce.number().int().positive().max(1000).default(20),
+    storeId: z.string().optional(),
+    storeName: z.string().optional(),
+    itemUrls: queryStringArraySchema,
+    sourceBuckets: queryStringArraySchema.transform((value) =>
+      value?.filter((item): item is z.infer<typeof automationSourceBucketSchema> =>
+        ["collection-box", "pending-publish", "listing-draft"].includes(item)
+      )
+    )
   }).parse(request.query)
 
-  return listDianxiaomiProductWorkItems(query.limit)
+  return listDianxiaomiProductWorkItems(query.limit, query)
 })
 
 app.post("/dianxiaomi/product-work-items", async (request) => {
   const body = dianxiaomiProductWorkItemSchema.parse(request.body)
-  return saveDianxiaomiProductWorkItem(body)
+  return saveDianxiaomiProductWorkItem(body as any)
 })
 
 app.post("/dianxiaomi/product-work-items/:id/task", async (request, reply) => {
@@ -1396,9 +1728,41 @@ app.post("/dianxiaomi/product-work-items/:id/retry-after-fix", async (request, r
   return result
 })
 
+app.post("/dianxiaomi/product-work-items/:id/image-check", async (request) => {
+  const params = z.object({
+    id: z.string()
+  }).parse(request.params)
+  const body = dianxiaomiImageCheckSchema.default({}).parse(request.body ?? {})
+  return startDianxiaomiImageCheck({
+    ...body,
+    workItemId: params.id
+  })
+})
+
+app.get("/dianxiaomi/page-context", async () => getDianxiaomiPageContext())
+
+app.get("/dianxiaomi/store-metrics", async () => listDianxiaomiStoreMetrics())
+
+app.post("/dianxiaomi/page-context", async (request) => {
+  const body = dianxiaomiPageContextSchema.parse(request.body)
+  return saveDianxiaomiPageContext({
+    pageUrl: body.pageUrl,
+    storeId: body.storeId,
+    storeName: body.storeName,
+    availableStores: body.availableStores?.map((item) => ({
+      storeId: item.storeId,
+      storeName: item.storeName
+    })),
+    siteName: body.siteName,
+    pageTitle: body.pageTitle,
+    pageProfile: body.pageProfile,
+    updatedAt: body.updatedAt
+  })
+})
+
 app.post("/dianxiaomi/collected-products", async (request) => {
   const body = dianxiaomiCollectedProductSchema.parse(request.body)
-  return saveDianxiaomiCollectedProduct(body)
+  return saveDianxiaomiCollectedProduct(body as any)
 })
 
 app.post("/dianxiaomi/collected-products/:id/task", async (request, reply) => {
@@ -1441,7 +1805,7 @@ app.post("/imports/excel", async (request, reply) => {
 
 app.post("/products/manual", async (request) => {
   const body = z.object(productInputShape).parse(request.body)
-  return createManualProductTask(body)
+  return createManualProductTask(body as any)
 })
 
 app.get("/tasks/:taskId", async (request, reply) => {
@@ -1519,7 +1883,7 @@ app.patch("/tasks/:taskId/product", async (request, reply) => {
     images: z.array(z.string()).optional()
   }).parse(request.body)
 
-  const task = updateTaskProduct(params.taskId, body)
+  const task = updateTaskProduct(params.taskId, body as any)
   if (!task) {
     reply.code(404)
     return {
@@ -1543,7 +1907,7 @@ app.patch("/tasks/:taskId/draft", async (request, reply) => {
     skuPricing: z.array(draftSkuPricingSchema).optional()
   }).parse(request.body)
 
-  const task = updateTaskDraft(params.taskId, body)
+  const task = updateTaskDraft(params.taskId, body as any)
   if (!task) {
     reply.code(404)
     return {

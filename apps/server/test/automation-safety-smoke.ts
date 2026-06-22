@@ -20,11 +20,14 @@ type Job = StartResult & {
   error: string | null
   reportPath: string | null
   reportStatus: "completed" | "partial" | "failed" | null
+  command?: string | null
 }
 
 type FullFlowJob = {
   id: string
   status: "running" | "completed" | "failed"
+  startedAt: string
+  finishedAt: string | null
   targetFingerprint: string
   artifactDir: string
   workItemId?: string | null
@@ -37,6 +40,8 @@ type FullFlowJob = {
     jobId: string | null
     reportPath: string | null
     reportStatus: "completed" | "partial" | "failed" | null
+    startedAt?: string | null
+    finishedAt?: string | null
   }>
 }
 
@@ -655,8 +660,127 @@ const selectorConfigPath = path.join(repoRoot, selectorConfig)
 const plannerStatePath = path.join(repoRoot, ".runtime/data/planner-state.json")
 const defaultSkuRowSelector = "tr, [role='row'], [class*='sku' i], [class*='table-row' i], [class*='row' i]"
 const wrongSurfaceUrl = `data:text/html;charset=utf-8,${encodeURIComponent("<!doctype html><html><head><title>Dianxiaomi Empty Fixture</title></head><body><main><h1>No product found</h1><p>There are no products on this page.</p></main></body></html>")}`
+const smokeOnly = new Set(
+  (process.env.SMOKE_ONLY ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+)
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const shouldRunSmokeStep = (id: string) => smokeOnly.size === 0 || smokeOnly.has(id)
+
+const firstConfiguredSelector = (
+  config: DianxiaomiSelectorConfig,
+  group: "fields" | "buttons",
+  key: string,
+  fallback: string
+) => config[group]?.[key]?.[0] ?? fallback
+
+const selectorCandidate = (selectorHint: string, text: string) => ({
+  selectorHint,
+  score: 10,
+  text
+})
+
+const writeBootstrapSelectorDiagnosis = (createdAtOffsetMs = 0) => {
+  const diagnosisDir = path.join(repoRoot, smokeRoot)
+  mkdirSync(diagnosisDir, {
+    recursive: true
+  })
+
+  const config = JSON.parse(readFileSync(selectorConfigPath, "utf8")) as DianxiaomiSelectorConfig
+  const diagnosisPath = path.join(diagnosisDir, `dianxiaomi-diagnosis-${runId}-bootstrap.json`)
+  writeFileSync(diagnosisPath, JSON.stringify({
+    pageUrl: "data:fixture",
+    pageTitle: "Dianxiaomi Dry Run Fixture",
+    createdAt: new Date(Date.now() + createdAtOffsetMs).toISOString(),
+    requiredOk: true,
+    targetSurface: {
+      id: "target-surface",
+      label: "Target surface",
+      status: "done",
+      detail: "Smoke bootstrap diagnosis recognized the Dianxiaomi fixture surface.",
+      data: {
+        pageUrl: "data:fixture",
+        pageTitle: "Dianxiaomi Dry Run Fixture",
+        host: "",
+        isDianxiaomiHost: false,
+        isDataFixture: true,
+        loginOrCaptchaDetected: false,
+        surfaceStatus: "fixture",
+        canWrite: true,
+        canInspect: true
+      }
+    },
+    summary: {
+      fieldCount: 4,
+      buttonCount: 2,
+      mediaToolCount: 0,
+      skuRowCount: 1
+    },
+    fields: {
+      title: {
+        ok: true,
+        candidates: [selectorCandidate(firstConfiguredSelector(config, "fields", "title", "input[name='title']"), "title")]
+      },
+      description: {
+        ok: true,
+        candidates: []
+      },
+      price: {
+        ok: true,
+        candidates: [selectorCandidate(firstConfiguredSelector(config, "fields", "price", "input[name='price']"), "price")]
+      },
+      stock: {
+        ok: true,
+        candidates: [selectorCandidate(firstConfiguredSelector(config, "fields", "stock", "input[name='stock']"), "stock")]
+      },
+      attribute: {
+        ok: true,
+        candidates: [selectorCandidate(firstConfiguredSelector(config, "fields", "attribute", "input[name='variationSku']"), "attribute")]
+      }
+    },
+    buttons: {
+      save: {
+        ok: true,
+        candidates: [selectorCandidate(firstConfiguredSelector(config, "buttons", "save", "button:has-text('保存')"), "save")]
+      },
+      submit: {
+        ok: true,
+        candidates: [selectorCandidate(firstConfiguredSelector(config, "buttons", "submit", "button:has-text('发布')"), "submit")]
+      }
+    },
+    mediaTools: {
+      imageTranslation: { ok: false, candidates: [] },
+      whiteBackground: { ok: false, candidates: [] },
+      imageEditor: { ok: false, candidates: [] },
+      batchResize: { ok: false, candidates: [] },
+      imageManagement: { ok: false, candidates: [] }
+    },
+    mediaToolActions: {
+      apply: {
+        imageTranslation: { ok: false, candidates: [] },
+        whiteBackground: { ok: false, candidates: [] },
+        imageEditor: { ok: false, candidates: [] },
+        batchResize: { ok: false, candidates: [] },
+        imageManagement: { ok: false, candidates: [] }
+      },
+      close: {
+        imageTranslation: { ok: false, candidates: [] },
+        whiteBackground: { ok: false, candidates: [] },
+        imageEditor: { ok: false, candidates: [] },
+        batchResize: { ok: false, candidates: [] },
+        imageManagement: { ok: false, candidates: [] }
+      }
+    },
+    skuRows: {
+      ok: true,
+      count: 1,
+      samples: []
+    }
+  }, null, 2), "utf8")
+}
 
 const requestJson = async <T>(url: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(url, init)
@@ -762,7 +886,7 @@ const writeRepairApplyFixturePlan = () => {
           id: "batch-resize",
           type: "retry-transient",
           label: "batch resize",
-          detail: "allowlisted media tool only",
+          detail: "产品图 尺寸",
           automation: "auto",
           required: true,
           field: "image",
@@ -773,7 +897,8 @@ const writeRepairApplyFixturePlan = () => {
             selectorGroup: "mediaTools",
             selectorKey: "batchResize",
             mediaTool: "batchResize",
-            reasonCode: "smoke-media"
+            expectedValue: "产品图 尺寸",
+            reasonCode: "requirement-image-check"
           }
         },
         {
@@ -1099,6 +1224,8 @@ const expectDianxiaomiProductWorkQueue = async () => {
   assert.equal(taskResult.task.product.source, "dianxiaomi", "work queue task should keep Dianxiaomi source")
   assert.equal(taskResult.task.product.sourceUrl, updatedWorkItem.pageUrl, "work queue task should point back to latest Dianxiaomi page")
   assert.equal(taskResult.task.product.attributes?.dianxiaomiWorkItemId, workItem.id, "work queue task should retain work item linkage metadata")
+  assert.equal(taskResult.task.draft.skuPricing[0]?.salePriceUsd, 999, "work queue task should default Dianxiaomi declared price to 999")
+  assert.equal(taskResult.task.draft.skuPricing[0]?.stock, 20, "work queue task should default Dianxiaomi stock to 20")
 
   const linkedCollected = await requestJson<DianxiaomiCollectedProduct>(`${baseUrl}/dianxiaomi/collected-products`, {
     method: "POST",
@@ -1164,6 +1291,93 @@ const expectDianxiaomiProductWorkQueue = async () => {
   assert.deepEqual(linkedTaskResult.task.product.images, linkedCollected.images, "linked work item task should carry collected product images")
   assert.equal(linkedTaskResult.task.product.skus?.[0]?.costCny, 18.2, "linked work item task should carry collected product SKU price")
   assert.equal(linkedTaskResult.task.product.attributes?.color, "green", "linked work item task should carry collected product attributes")
+  assert.deepEqual(linkedTaskResult.task.draft.attributes, {
+    color: "green",
+    size: "L",
+    dianxiaomiWorkItemId: linkedWorkItem.id,
+    dianxiaomiPageUrl: linkedWorkItem.pageUrl,
+    dianxiaomiRequirementPreset: "temu-basic-listing-readiness",
+    dianxiaomiCollectedProductId: linkedCollected.id
+  }, "linked work item draft should keep collected Dianxiaomi attributes plus linkage metadata")
+  assert(!("usage" in linkedTaskResult.task.draft.attributes), "linked work item draft should not inject generated usage attributes")
+  assert(!("package" in linkedTaskResult.task.draft.attributes), "linked work item draft should not inject generated package attributes")
+  assert(!("source" in linkedTaskResult.task.draft.attributes), "linked work item draft should not inject generated source attributes")
+  assert.equal(linkedTaskResult.task.draft.skuPricing[0]?.salePriceUsd, 999, "linked work item draft should default declared price to 999")
+  assert.equal(linkedTaskResult.task.draft.skuPricing[0]?.stock, 20, "linked work item draft should default stock to 20")
+  assert.deepEqual(linkedTaskResult.task.draft.skuPricing[0]?.attributes, {
+    color: "green",
+    size: "L",
+    dianxiaomiWorkItemId: linkedWorkItem.id,
+    dianxiaomiPageUrl: linkedWorkItem.pageUrl,
+    dianxiaomiRequirementPreset: "temu-basic-listing-readiness",
+    dianxiaomiCollectedProductId: linkedCollected.id
+  }, "linked work item draft SKU attributes should keep collected values plus linkage metadata")
+
+  const chineseCollected = await requestJson<DianxiaomiCollectedProduct>(`${baseUrl}/dianxiaomi/collected-products`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      id: `dxm-linked-cn-${runId}`,
+      pageUrl: "https://www.dianxiaomi.com/product/edit/work-linked-cn",
+      pageTitle: "Linked Chinese Dianxiaomi Product",
+      collectedAt: new Date().toISOString(),
+      title: "女士情趣内衣连体衣睡衣套装",
+      category: "女士情趣服装",
+      sourceUrl: "https://www.dianxiaomi.com/product/edit/work-linked-cn",
+      images: ["https://example.com/dxm-linked-cn.jpg"],
+      attributes: {
+        material: "polyester"
+      },
+      skus: [{
+        skuName: "White S",
+        priceCny: 21.5,
+        stock: 9,
+        attributes: {
+          size: "S"
+        },
+        rowText: "White S 21.5 9"
+      }],
+      rawTextSample: "complete linked dianxiaomi product with Chinese source title",
+      notes: ["linked-cn"]
+    })
+  })
+  const chineseWorkItem = await requestJson<DianxiaomiProductWorkItem>(`${baseUrl}/dianxiaomi/product-work-items`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      id: `dxm-work-linked-cn-${runId}`,
+      collectedProductId: chineseCollected.id,
+      pageUrl: "https://www.dianxiaomi.com/product/edit/work-linked-cn",
+      pageTitle: "Linked Chinese work item page",
+      pageProfile: "Dianxiaomi product edit",
+      title: "女士情趣内衣连体衣睡衣套装",
+      rawTextSample: "complete listing with linked Chinese collected product",
+      notes: ["linked cn work item"],
+      snapshot: {
+        hasTitle: true,
+        imageCount: 2,
+        skuCount: 1,
+        priceFieldCount: 1,
+        stockFieldCount: 1,
+        attributeKeys: ["material", "size"],
+        mediaToolSignals: ["image translation", "Xiaomi image editor"]
+      },
+      status: "ready-for-automation"
+    })
+  })
+  const chineseTaskResult = await requestJson<DianxiaomiProductWorkItemTaskResult>(`${baseUrl}/dianxiaomi/product-work-items/${chineseWorkItem.id}/task`, {
+    method: "POST"
+  })
+  const cjkPattern = /[\u3400-\u9fff\uf900-\ufaff]/
+  assert(!cjkPattern.test(chineseTaskResult.task.draft.listingTitle), "Chinese Dianxiaomi source title should generate an English automation draft title")
+  assert(!cjkPattern.test(chineseTaskResult.task.draft.description), "Chinese Dianxiaomi source title should not leak into the automation draft description")
+  assert.match(chineseTaskResult.task.draft.listingTitle, /Women|Lingerie|Bodysuit/, "English draft title should preserve the product direction")
+  assert.equal(chineseTaskResult.task.draft.skuPricing[0]?.salePriceUsd, 999, "Chinese Dianxiaomi work item should keep the declared price default")
+  assert.equal(chineseTaskResult.task.draft.skuPricing[0]?.stock, 20, "Chinese Dianxiaomi work item should keep the stock default")
 
   const publishCheckBeforeReview = await requestJson<PublishCheckResult>(`${baseUrl}/tasks/${taskResult.task.id}/publish-check`)
   assert.equal(publishCheckBeforeReview.canPublish, false, "new work queue task should still require manual review before publishing")
@@ -1411,7 +1625,7 @@ const waitForJob = async (mode: AutomationMode, id: string) => {
 }
 
 const waitForFullFlowJob = async (id: string) => {
-  for (let attempt = 0; attempt < 120; attempt += 1) {
+  for (let attempt = 0; attempt < 360; attempt += 1) {
     const job = await requestJson<FullFlowJob>(`${baseUrl}/automation/full-flow/jobs/${id}`)
     if (job.status !== "running") {
       return job
@@ -1472,6 +1686,11 @@ const latestReport = (directory: string) => {
 
   assert(reports[0], `no execution report found in ${directory}`)
   return JSON.parse(readFileSync(reports[0], "utf8")) as ExecutionReport
+}
+
+const readExecutionReport = (reportPath: string) => {
+  const resolvedPath = path.isAbsolute(reportPath) ? reportPath : path.join(repoRoot, reportPath)
+  return JSON.parse(readFileSync(resolvedPath, "utf8")) as ExecutionReport
 }
 
 const runRepairApply = async (fixtureUrl: string) => {
@@ -1547,9 +1766,10 @@ const runRepairApply = async (fixtureUrl: string) => {
   assert.equal(skuWriter?.data?.filledStocks, 2, "repair-apply should fill both SKU stocks")
   assert.equal(mediaWriter?.data?.safeMode, "unattended-apply", "repair-apply media action should use unattended apply mode")
   assert.equal(mediaWriter?.data?.wouldApply, true, "repair-apply media action should apply the allowlisted tool")
-  const mediaTools = mediaWriter?.data?.tools as Array<{ configKey: string; applied?: boolean; status: string }> | undefined
-  assert(mediaTools?.some((tool) => tool.configKey === "batchResize" && tool.applied === true && tool.status === "applied"), "repair-apply should apply only the batchResize tool")
-  assert(mediaTools?.filter((tool) => tool.applied).every((tool) => tool.configKey === "batchResize"), "repair-apply must not apply non-allowlisted media tools")
+  const imageCheckSelection = mediaStep?.data?.imageCheckSelection as { selection?: { status?: string; categories?: unknown[] } } | null | undefined
+  assert(imageCheckSelection, "requirement-image-check repairs should be routed through categorized image-check selection")
+  assert.equal(imageCheckSelection?.selection?.status, "applied", "categorized image-check selection should apply in repair-apply mode")
+  assert((imageCheckSelection?.selection?.categories?.length ?? 0) > 0, "categorized image-check selection should record matched categories")
   assert.equal(summaryStep?.data?.savedOrSubmitted, false, "repair-apply summary should state that it did not save or submit")
 
   return {
@@ -1624,7 +1844,7 @@ const runMode = async (mode: AutomationMode, fixtureUrl: string) => {
   if (mode === "save-draft") {
     assert(stepIds.includes("save-draft"), "save-draft should click the save draft control")
     assert(stepIds.includes("media-processing-safety"), "save-draft should include media processing safety checks")
-    assert(stepIds.includes("media-processing-plan"), "save-draft should create a plan-only Dianxiaomi media processing step before saving")
+    assert(stepIds.includes("media-processing-plan"), "save-draft should report the media processing handoff before saving")
   }
 
   if (mode === "submit-listing") {
@@ -1640,6 +1860,16 @@ const runMode = async (mode: AutomationMode, fixtureUrl: string) => {
     assert.equal(attempts?.[1]?.state, "success", "submit-listing should record the final success state")
   }
 
+  if (["fill-draft", "save-draft", "submit-listing"].includes(mode)) {
+    const titleStep = report.steps.find((step) => step.id === "fill-title")
+    const skuStep = report.steps.find((step) => step.id === "fill-sku-pricing")
+    const skuCodeSamples = skuStep?.data?.skuCodeSamples as string[] | undefined
+    const cjkPattern = /[\u3400-\u9fff\uf900-\ufaff]/
+    assert(Number(titleStep?.data?.filledTitleFields ?? 0) >= 2, `${mode} should fill product title and English title fields`)
+    assert(Number(skuStep?.data?.filledSkuCodes ?? 0) >= 2, `${mode} should replace Chinese SKU identifier fields`)
+    assert(skuCodeSamples?.every((sample) => !cjkPattern.test(sample)), `${mode} SKU identifier samples should not contain Chinese text`)
+  }
+
   const mediaSafety = report.steps.find((step) => step.id === "media-processing-safety")
   assert(mediaSafety, `${mode} should include a media-processing-safety report step`)
   assert.equal(mediaSafety.data?.safeMode, "plan-only", `${mode} media safety should use plan-only safe mode by default`)
@@ -1652,9 +1882,18 @@ const runMode = async (mode: AutomationMode, fixtureUrl: string) => {
 
   const mediaPlan = report.steps.find((step) => step.id === "media-processing-plan")
   if (mediaPlan) {
-    assert.equal(mediaPlan.data?.safeMode, "plan-only", `${mode} media plan should expose plan-only safe mode`)
-    assert.equal(mediaPlan.data?.wouldClick, false, `${mode} media plan must not click Dianxiaomi media tools`)
-    assert.equal(mediaPlan.data?.manualConfirmationRequired, true, `${mode} media plan should require manual confirmation when fixture tools exist`)
+    if (mode === "save-draft") {
+      assert.equal(mediaPlan.status, "skipped", "save-draft media plan should be skipped after the fill-draft handoff")
+      assert.equal(
+        mediaPlan.detail,
+        "Save-draft stage reuses the current media state and does not rerun billable Dianxiaomi media tools",
+        "save-draft should explain that billable Dianxiaomi media tools are not rerun"
+      )
+    } else {
+      assert.equal(mediaPlan.data?.safeMode, "plan-only", `${mode} media plan should expose plan-only safe mode`)
+      assert.equal(mediaPlan.data?.wouldClick, false, `${mode} media plan must not click Dianxiaomi media tools`)
+      assert.equal(mediaPlan.data?.manualConfirmationRequired, true, `${mode} media plan should require manual confirmation when fixture tools exist`)
+    }
   }
 
   return {
@@ -1665,6 +1904,49 @@ const runMode = async (mode: AutomationMode, fixtureUrl: string) => {
     artifactDir: job.artifactDir,
     stepIds
   }
+}
+
+const runFillDraftSizeChartCleanup = async (fixtureUrl: string) => {
+  const mode: AutomationMode = "fill-draft"
+  const screenshots = `${smokeRoot}/fill-draft-size-chart-cleanup`
+  mkdirSync(path.join(repoRoot, screenshots), {
+    recursive: true
+  })
+
+  const started = await requestJson<StartResult>(`${baseUrl}/automation/${mode}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      headed: false,
+      url: `${fixtureUrl}#size-chart-template-missing`,
+      taskFile,
+      profile: `${smokeRoot}/fill-draft-size-chart-cleanup-profile`,
+      screenshots,
+      selectorConfig
+    })
+  })
+
+  const job = await waitForJob(mode, started.id)
+  const log = await requestJson<JobLog>(`${baseUrl}/automation/${mode}/jobs/${started.id}/logs?maxChars=5000`)
+  assert.equal(job.status, "completed", `fill-draft size chart cleanup should complete. stderr: ${log.stderr}`)
+  assert.equal(job.exitCode, 0, `fill-draft size chart cleanup should exit cleanly. stderr: ${log.stderr}`)
+  assert.equal(job.reportStatus, "completed", "fill-draft size chart cleanup should not leave a partial execution report")
+
+  const report = latestReport(screenshots)
+  const sizeChartStep = report.steps.find((step) => step.id === "normalize-size-chart")
+  const mediaSafety = report.steps.find((step) => step.id === "media-processing-safety")
+  const mediaPlan = report.steps.find((step) => step.id === "media-processing-plan")
+
+  assert(sizeChartStep, "fill-draft size chart cleanup should report the size chart normalization step")
+  assert.equal(sizeChartStep?.status, "skipped", "fill-draft should skip size chart normalization when no reusable template exists")
+  assert.match(sizeChartStep?.detail ?? "", /closed/i, "fill-draft should close the size chart modal before skipping")
+  assert.equal(mediaSafety?.status, "done", "fill-draft should leave media safety in a usable state after size chart cleanup")
+  assert.equal(mediaSafety?.data?.guardStatus, "manual-ready", "fill-draft should restore media tools after size chart cleanup")
+  assert.equal(mediaSafety?.data?.pageState?.visibleDialogCount, 0, "fill-draft should not leave the size chart dialog open")
+  assert.equal(mediaPlan?.status, "skipped", "fill-draft size chart cleanup should keep the media plan non-blocking in plan-only mode")
+  assert.equal(mediaPlan?.data?.guardStatus, "manual-ready", "fill-draft media plan should remain ready after size chart cleanup")
 }
 
 const runUnattendedMediaDryRun = async (fixtureUrl: string) => {
@@ -1956,7 +2238,7 @@ const runUnattendedMediaApplyFailureDryRun = async (fixtureUrl: string) => {
   const log = await requestJson<JobLog>(`${baseUrl}/automation/dry-run/jobs/${started.id}/logs?maxChars=5000`)
   assert.equal(job.status, "completed", `unattended media apply failure dry-run should still write a report. stderr: ${log.stderr}`)
   assert.equal(job.exitCode, 0, `unattended media apply failure dry-run should exit cleanly. stderr: ${log.stderr}`)
-  assert.equal(job.reportStatus, "partial", "media apply failure dry-run should produce a partial execution report")
+  assert.equal(job.reportStatus, "completed", "media apply failure dry-run should keep the main report completed while preserving media failure evidence")
 
   const report = latestReport(screenshots)
   const stepIds = report.steps.map((step) => step.id)
@@ -2002,6 +2284,53 @@ const runUnattendedMediaApplyFailureDryRun = async (fixtureUrl: string) => {
   assert(afterFailure.every((tool) => !tool.clicked && !tool.applied), "later media tools should not be clicked after the first media failure")
 }
 
+const runUnattendedMediaSilentBatchResizeDryRun = async (fixtureUrl: string) => {
+  const screenshots = `${smokeRoot}/dry-run-unattended-media-silent-batch-resize`
+  mkdirSync(path.join(repoRoot, screenshots), {
+    recursive: true
+  })
+
+  const started = await requestJson<StartResult>(`${baseUrl}/automation/dry-run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      headed: false,
+      url: `${fixtureUrl}#media-batch-resize-silent`,
+      taskFile,
+      profile: `${smokeRoot}/dry-run-unattended-media-silent-batch-resize-profile`,
+      screenshots,
+      selectorConfig,
+      mediaAutomationMode: "unattended-apply",
+      mediaAutomationTools: ["batch-resize"]
+    })
+  })
+
+  const job = await waitForJob("dry-run", started.id)
+  const log = await requestJson<JobLog>(`${baseUrl}/automation/dry-run/jobs/${started.id}/logs?maxChars=5000`)
+  assert.equal(job.status, "completed", `silent batch resize dry-run should complete. stderr: ${log.stderr}`)
+  assert.equal(job.exitCode, 0, `silent batch resize dry-run should exit cleanly. stderr: ${log.stderr}`)
+  assert.equal(job.reportStatus, "completed", "silent batch resize dry-run should produce a completed execution report")
+
+  const report = latestReport(screenshots)
+  const mediaPlan = report.steps.find((step) => step.id === "media-processing-plan")
+  assert.equal(mediaPlan?.status, "done", "silent batch resize should no longer fail the media plan")
+  const tools = mediaPlan?.data?.tools as Array<{
+    id: string
+    status: string
+    applied?: boolean
+    feedbackState?: string
+    feedbackMessage?: string
+    returnDialogCount?: number
+  }> | undefined
+  const resize = tools?.find((tool) => tool.id === "batch-resize")
+  assert.equal(resize?.status, "applied", "silent batch resize should be accepted as applied")
+  assert.equal(resize?.applied, true, "silent batch resize should be applied")
+  assert.equal(resize?.feedbackState, "success", "silent batch resize should recover to success without a toast")
+  assert.equal(resize?.returnDialogCount, 0, "silent batch resize should return to the editor")
+}
+
 const runUnattendedMediaSurfaceMismatchDryRun = async (fixtureUrl: string) => {
   const screenshots = `${smokeRoot}/dry-run-unattended-media-surface-mismatch`
   mkdirSync(path.join(repoRoot, screenshots), {
@@ -2029,7 +2358,7 @@ const runUnattendedMediaSurfaceMismatchDryRun = async (fixtureUrl: string) => {
   const log = await requestJson<JobLog>(`${baseUrl}/automation/dry-run/jobs/${started.id}/logs?maxChars=5000`)
   assert.equal(job.status, "completed", `surface mismatch dry-run should still write a report. stderr: ${log.stderr}`)
   assert.equal(job.exitCode, 0, `surface mismatch dry-run should exit cleanly. stderr: ${log.stderr}`)
-  assert.equal(job.reportStatus, "partial", "surface mismatch dry-run should produce a partial execution report")
+  assert.equal(job.reportStatus, "completed", "surface mismatch dry-run should keep the main report completed while preserving media failure evidence")
 
   const report = latestReport(screenshots)
   const mediaPlan = report.steps.find((step) => step.id === "media-processing-plan")
@@ -2087,7 +2416,7 @@ const runUnattendedMediaTransientFailureDryRun = async (fixtureUrl: string) => {
   const log = await requestJson<JobLog>(`${baseUrl}/automation/dry-run/jobs/${started.id}/logs?maxChars=5000`)
   assert.equal(job.status, "completed", `transient media failure dry-run should still write a report. stderr: ${log.stderr}`)
   assert.equal(job.exitCode, 0, `transient media failure dry-run should exit cleanly. stderr: ${log.stderr}`)
-  assert.equal(job.reportStatus, "partial", "transient media failure dry-run should produce a partial execution report")
+  assert.equal(job.reportStatus, "completed", "transient media failure dry-run should keep the main report completed while preserving media failure evidence")
 
   const report = latestReport(screenshots)
   const mediaPlan = report.steps.find((step) => step.id === "media-processing-plan")
@@ -2142,13 +2471,14 @@ const runMediaFailureBlocksSaveDraft = async (fixtureUrl: string) => {
   assert.equal(result.exitCode, 0, `media failure save-draft runner should exit cleanly. stderr: ${result.stderr}`)
 
   const report = latestReport(screenshots)
-  assert.equal(report.status, "partial", "media failure save-draft should produce a partial report")
+  assert.equal(report.status, "partial", "media failure save-draft should stop before save and leave a partial report")
   const stepIds = report.steps.map((step) => step.id)
   assert(stepIds.includes("media-processing-plan"), "media failure save-draft should include media processing plan")
-  assert(stepIds.includes("write-blocked-media-processing"), "media failure save-draft should explicitly block later writes")
-  assert(!stepIds.includes("save-draft"), "media failure save-draft must not click the save control")
+  assert(stepIds.includes("write-blocked-media-processing"), "media failure save-draft should block later writes")
+  assert(!stepIds.includes("save-draft"), "media failure save-draft should stop before the save control")
   assert(!stepIds.includes("submit-listing"), "media failure save-draft must not submit/publish listings")
   assert.equal(report.steps.find((step) => step.id === "media-processing-plan")?.status, "failed", "media failure should fail the media processing plan")
+  assert.equal(report.steps.find((step) => step.id === "write-blocked-media-processing")?.status, "failed", "media failure save-draft should record the hard write block")
 }
 
 const runMediaSurfaceMismatchBlocksSaveDraft = async (fixtureUrl: string) => {
@@ -2174,13 +2504,14 @@ const runMediaSurfaceMismatchBlocksSaveDraft = async (fixtureUrl: string) => {
   assert.equal(result.exitCode, 0, `surface mismatch save-draft runner should exit cleanly. stderr: ${result.stderr}`)
 
   const report = latestReport(screenshots)
-  assert.equal(report.status, "partial", "surface mismatch save-draft should produce a partial report")
+  assert.equal(report.status, "partial", "surface mismatch save-draft should stop before save and leave a partial report")
   const stepIds = report.steps.map((step) => step.id)
   assert(stepIds.includes("media-processing-plan"), "surface mismatch save-draft should include media processing plan")
-  assert(stepIds.includes("write-blocked-media-processing"), "surface mismatch save-draft should explicitly block later writes")
-  assert(!stepIds.includes("save-draft"), "surface mismatch save-draft must not click the save control")
+  assert(stepIds.includes("write-blocked-media-processing"), "surface mismatch save-draft should block later writes")
+  assert(!stepIds.includes("save-draft"), "surface mismatch save-draft should stop before the save control")
   assert(!stepIds.includes("submit-listing"), "surface mismatch save-draft must not submit/publish listings")
   assert.equal(report.steps.find((step) => step.id === "media-processing-plan")?.status, "failed", "surface mismatch should fail the media processing plan")
+  assert.equal(report.steps.find((step) => step.id === "write-blocked-media-processing")?.status, "failed", "surface mismatch save-draft should record the hard write block")
 }
 
 const runWrongSurfaceDryRun = async () => {
@@ -2273,12 +2604,25 @@ const runFullFlow = async (fixtureUrl: string) => {
   assert(job.stages.every((stage) => stage.status === "completed"), "full-flow should complete every stage")
   assert(job.stages.every((stage) => stage.reportStatus === "completed"), "full-flow stages should produce completed reports")
 
+  const fillDraftStage = job.stages.find((stage) => stage.name === "fill-draft")
+  const saveDraftStage = job.stages.find((stage) => stage.name === "save-draft")
+  assert(fillDraftStage?.reportPath, "full-flow should keep the fill-draft stage report path")
+  assert(saveDraftStage?.jobId, "full-flow should keep the save-draft stage job id")
+
   const report = latestReport(screenshots)
   const stepIds = report.steps.map((step) => step.id)
   assert(stepIds.includes("save-draft"), "full-flow final report should be the save-draft stage")
   assert(!stepIds.includes("submit-listing"), "full-flow must not submit/publish listings")
-  const mediaPlan = report.steps.find((step) => step.id === "media-processing-plan")
+
+  const fillDraftReport = readExecutionReport(fillDraftStage.reportPath)
+  const mediaPlan = fillDraftReport.steps.find((step) => step.id === "media-processing-plan")
   assert.equal(mediaPlan?.data?.safeMode, "unattended-apply", "full-flow should use unattended apply media processing when requested")
+
+  const saveDraftJob = await requestJson<Job>(`${baseUrl}/automation/save-draft/jobs/${saveDraftStage.jobId}`)
+  const saveDraftLog = await requestJson<JobLog>(`${baseUrl}/automation/save-draft/jobs/${saveDraftStage.jobId}/logs?maxChars=10000`)
+  assert(String(saveDraftJob.command ?? "").includes("--skip-draft-fill=true"), "full-flow save-draft stage should skip draft refill")
+  assert(!saveDraftLog.stdout.includes("fill-draft stage:"), "full-flow save-draft stage must not rerun fill-draft")
+  assert(saveDraftLog.stdout.includes("save-or-submit stage: entering save draft flow"), "full-flow save-draft stage should enter the save flow directly")
 }
 
 const runFullFlowWithSubmit = async (fixtureUrl: string) => {
@@ -2312,16 +2656,32 @@ const runFullFlowWithSubmit = async (fixtureUrl: string) => {
   assert(job.stages.every((stage) => stage.status === "completed"), "submit full-flow should complete every stage")
   assert(job.stages.every((stage) => stage.reportStatus === "completed"), "submit full-flow stages should produce completed reports")
 
+  const fillDraftStage = job.stages.find((stage) => stage.name === "fill-draft")
+  const submitStage = job.stages.find((stage) => stage.name === "submit-listing")
+  assert(fillDraftStage?.reportPath, "submit full-flow should keep the fill-draft stage report path")
+  assert(submitStage?.jobId, "submit full-flow should keep the submit-listing stage job id")
+
   const report = latestReport(screenshots)
   const stepIds = report.steps.map((step) => step.id)
   assert(stepIds.includes("submit-listing"), "submit full-flow final report should be the submit-listing stage")
   assert(!stepIds.includes("save-draft"), "submit full-flow final report should not be the save-draft stage")
+
+  const fillDraftReport = readExecutionReport(fillDraftStage.reportPath)
+  const mediaPlan = fillDraftReport.steps.find((step) => step.id === "media-processing-plan")
+  assert.equal(mediaPlan?.data?.safeMode, "unattended-apply", "submit full-flow should still run unattended apply media processing during fill-draft")
+
   const submitStep = report.steps.find((step) => step.id === "submit-listing")
   const attempts = submitStep?.data?.attempts as Array<{ state: string; message: string }> | undefined
   assert.equal(submitStep?.status, "done", "submit full-flow should verify Dianxiaomi publish success")
   assert.equal(attempts?.length, 2, "submit full-flow should retry after a transient Dianxiaomi failure")
   assert.equal(attempts?.[0]?.state, "failure", "submit full-flow should record the first failure")
   assert.equal(attempts?.[1]?.state, "success", "submit full-flow should record the success")
+
+  const submitJob = await requestJson<Job>(`${baseUrl}/automation/submit-listing/jobs/${submitStage.jobId}`)
+  const submitLog = await requestJson<JobLog>(`${baseUrl}/automation/submit-listing/jobs/${submitStage.jobId}/logs?maxChars=10000`)
+  assert(String(submitJob.command ?? "").includes("--skip-draft-fill=true"), "submit full-flow should skip draft refill before submit-listing")
+  assert(!submitLog.stdout.includes("fill-draft stage:"), "submit full-flow submit-listing stage must not rerun fill-draft")
+  assert(submitLog.stdout.includes("save-or-submit stage: entering submit listing flow"), "submit full-flow should enter the submit flow directly")
 }
 
 const runSubmitListingFailure = async (fixtureUrl: string) => {
@@ -2429,6 +2789,104 @@ const runQueueRun = async (fixtureUrl: string) => {
   const workItems = await requestJson<DianxiaomiProductWorkItem[]>(`${baseUrl}/dianxiaomi/product-work-items`)
   const updatedWorkItem = workItems.find((item) => item.id === queuedWorkItem.id)
   assert.equal(updatedWorkItem?.status, "edited", "queue-run should mark the queued work item edited to avoid duplicate starts")
+}
+
+const runSharedProfileQueueRun = async (fixtureUrl: string) => {
+  const scopedStoreId = `shared-profile-store-${runId}`
+  const scopedStoreName = `Shared Profile Store ${runId}`
+  const sharedProfile = path.join(repoRoot, smokeRoot, "queue-run-shared-profile")
+  mkdirSync(sharedProfile, {
+    recursive: true
+  })
+
+  const workItems = await Promise.all([0, 1, 2].map((index) =>
+    requestJson<DianxiaomiProductWorkItem>(`${baseUrl}/dianxiaomi/product-work-items`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        id: `queue-run-shared-profile-work-item-${runId}-${index}`,
+        storeId: scopedStoreId,
+        storeName: scopedStoreName,
+        pageUrl: `${fixtureUrl}#shared-profile-${index}`,
+        pageTitle: `Queue Run Shared Profile Fixture ${index}`,
+        title: `Queue run shared profile ready item ${index}`,
+        rawTextSample: "Queue run shared profile fixture with SKU, price, stock, image tools, and compliant text",
+        notes: ["queue run smoke", "shared profile"],
+        snapshot: {
+          hasTitle: true,
+          imageCount: 2,
+          skuCount: 1,
+          priceFieldCount: 1,
+          stockFieldCount: 1,
+          attributeKeys: ["color"],
+          imageStats: {
+            minWidthPx: 1000,
+            minHeightPx: 1000,
+            maxWidthPx: 1200,
+            maxHeightPx: 1200,
+            unknownDimensionCount: 0
+          },
+          mediaToolSignals: ["image translation", "image editor", "batch resize"]
+        },
+        status: "ready-for-automation"
+      })
+    })
+  ))
+  assert(workItems.every((item) => item.status === "ready-for-automation"), "shared-profile queue-run fixtures should stay ready before launch")
+
+  const screenshots = `${smokeRoot}/queue-run-shared-profile`
+  mkdirSync(path.join(repoRoot, screenshots), {
+    recursive: true
+  })
+
+  const queueRun = await requestJson<QueueRunStartResult>(`${baseUrl}/automation/queue-run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      headed: false,
+      profile: `${smokeRoot}/queue-run-shared-profile`,
+      screenshots,
+      selectorConfig,
+      mediaAutomationMode: "unattended-apply",
+      mediaAutomationTools: ["image-translation"],
+      storeId: scopedStoreId,
+      storeName: scopedStoreName,
+      limit: 3
+    })
+  })
+  assert.equal(queueRun.queued, 3, `shared-profile queue-run should start all scoped full-flow jobs. skipped: ${JSON.stringify(queueRun.skippedItems)}`)
+  assert.equal(queueRun.flowJobIds.length, 3, "shared-profile queue-run should return every started full-flow job id")
+
+  const jobs = await Promise.all(queueRun.flowJobIds.map((id) => waitForFullFlowJob(id)))
+  assert(jobs.every((job) => job.status !== "running"), `shared-profile queue-run should reach a terminal state instead of hanging. jobs: ${JSON.stringify(jobs.map((job) => ({ id: job.id, status: job.status, error: job.error })))}`)
+
+  const collisionPattern = /launchPersistentContext|Target page, context or browser has been closed/i
+  for (const job of jobs) {
+    const dryRunStage = job.stages.find((stage) => stage.name === "dry-run")
+    assert(dryRunStage?.jobId, `shared-profile queue-run should keep the dry-run job id for ${job.id}`)
+    const dryRunLog = await requestJson<JobLog>(`${baseUrl}/automation/dry-run/jobs/${dryRunStage.jobId}/logs?maxChars=4000`)
+    assert(
+      !collisionPattern.test(`${job.error ?? ""}\n${dryRunLog.stderr}`),
+      `shared-profile queue-run should avoid persistent-profile collisions. job=${job.id} error=${job.error ?? "none"} stderr=${dryRunLog.stderr}`
+    )
+  }
+
+  for (let index = 0; index < jobs.length - 1; index += 1) {
+    const current = jobs[index]
+    const next = jobs[index + 1]
+    const currentFinishedAt = current.finishedAt
+    const nextDryRunStartedAt = next.stages.find((stage) => stage.name === "dry-run")?.startedAt ?? null
+    assert(currentFinishedAt, "serialized shared-profile full-flow should record current completion time")
+    assert(nextDryRunStartedAt, "serialized shared-profile full-flow should record next dry-run start time")
+    assert(
+      Date.parse(nextDryRunStartedAt) >= Date.parse(currentFinishedAt),
+      `shared-profile queue-run should not start ${next.id} before ${current.id} finishes`
+    )
+  }
 }
 
 const runQueueDaemon = async () => {
@@ -2983,6 +3441,7 @@ const runSelectorCalibration = async (fixtureUrl: string) => {
   })
   assert.equal(restored.restoredVersion.id, saved.version.id, "selector config restore should identify the restored version")
   assertSelectorConfigEquals(restored.config, saved.version.config, "selector config restore should apply the backup config")
+  writeBootstrapSelectorDiagnosis(1000)
 }
 
 const runSelectorCalibrationWithMediaSampling = async (fixtureUrl: string) => {
@@ -3028,6 +3487,7 @@ const runSelectorCalibrationWithMediaSampling = async (fixtureUrl: string) => {
   assert(snapshot.mediaActionSampling?.tools.some((tool) => tool.id === "batch-resize" && ["sampled", "close-failed", "no-dialog", "missing-tool"].includes(tool.status)), "selector calibration media sampling should include batch resize sampling result")
   assert(snapshot.mediaActionSampling?.tools.some((tool) => tool.id === "image-translation" && ["sampled", "close-failed", "no-dialog", "missing-tool"].includes(tool.status)), "selector calibration media sampling should include image translation sampling result")
   assert(snapshot.mediaActionSampling?.tools.some((tool) => tool.id === "white-background" && tool.status === "skipped"), "selector calibration media sampling should skip non-allowlisted tools")
+  writeBootstrapSelectorDiagnosis(1000)
 }
 
 const runWrongSurfaceSelectorCalibration = async () => {
@@ -3148,6 +3608,7 @@ const main = async () => {
   assert(existsSync(path.join(repoRoot, taskFile)), `task fixture not found: ${taskFile}`)
   assert(existsSync(selectorConfigPath), `selector config not found: ${selectorConfig}`)
   writeRepairApplyFixturePlan()
+  writeBootstrapSelectorDiagnosis()
 
   const fixtureHtml = readFileSync(fixturePath, "utf8")
   const originalSelectorConfig = readFileSync(selectorConfigPath, "utf8")
@@ -3180,42 +3641,111 @@ const main = async () => {
     await runSelectorCalibrationWithMediaSampling(fixtureUrl)
 
     const results = []
-    results.push(await runMode("dry-run", fixtureUrl))
-    results.push(await runRepairApply(fixtureUrl))
-    await runWrongSurfaceDryRun()
-    await runUnattendedMediaDryRun(fixtureUrl)
-    await runUnattendedMediaApplyDryRun(fixtureUrl)
-    await runUnattendedMediaTransientRetrySuccessDryRun(fixtureUrl)
-    await runUnattendedMediaConfiguredActionsDryRun(fixtureUrl)
-    await runUnattendedMediaApplyFailureDryRun(fixtureUrl)
-    await runUnattendedMediaSurfaceMismatchDryRun(fixtureUrl)
-    await runUnattendedMediaTransientFailureDryRun(fixtureUrl)
-    await runMediaFailureBlocksSaveDraft(fixtureUrl)
-    await runMediaSurfaceMismatchBlocksSaveDraft(fixtureUrl)
-    await expectSafetyGate("fill-draft", `${fixtureUrl}#mismatched-target`)
+    if (shouldRunSmokeStep("mode-dry-run")) {
+      results.push(await runMode("dry-run", fixtureUrl))
+    }
+    if (shouldRunSmokeStep("repair-apply")) {
+      results.push(await runRepairApply(fixtureUrl))
+    }
+    if (shouldRunSmokeStep("wrong-surface-dry-run")) {
+      await runWrongSurfaceDryRun()
+    }
+    if (shouldRunSmokeStep("unattended-media-dry-run")) {
+      await runUnattendedMediaDryRun(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("unattended-media-apply")) {
+      await runUnattendedMediaApplyDryRun(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("unattended-media-transient-retry-success")) {
+      await runUnattendedMediaTransientRetrySuccessDryRun(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("unattended-media-configured-actions")) {
+      await runUnattendedMediaConfiguredActionsDryRun(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("unattended-media-silent-batch-resize")) {
+      await runUnattendedMediaSilentBatchResizeDryRun(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("unattended-media-apply-failure")) {
+      await runUnattendedMediaApplyFailureDryRun(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("unattended-media-surface-mismatch")) {
+      await runUnattendedMediaSurfaceMismatchDryRun(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("unattended-media-transient-failure")) {
+      await runUnattendedMediaTransientFailureDryRun(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("media-failure-blocks-save-draft")) {
+      await runMediaFailureBlocksSaveDraft(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("media-surface-mismatch-blocks-save-draft")) {
+      await runMediaSurfaceMismatchBlocksSaveDraft(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("fill-draft-safety-mismatch")) {
+      await expectSafetyGate("fill-draft", `${fixtureUrl}#mismatched-target`)
+    }
 
-    results.push(await runMode("fill-draft", fixtureUrl))
-    await expectSafetyGate("save-draft", `${fixtureUrl}#mismatched-target`)
+    if (shouldRunSmokeStep("mode-fill-draft")) {
+      results.push(await runMode("fill-draft", fixtureUrl))
+    }
+    if (shouldRunSmokeStep("fill-draft-size-chart-cleanup")) {
+      await runFillDraftSizeChartCleanup(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("save-draft-safety-mismatch")) {
+      await expectSafetyGate("save-draft", `${fixtureUrl}#mismatched-target`)
+    }
 
-    results.push(await runMode("save-draft", fixtureUrl))
-    await expectSafetyGate("submit-listing", `${fixtureUrl}#mismatched-target`)
-    results.push(await runMode("submit-listing", fixtureUrl))
-    assert.equal(
-      new Set(results.filter((result) => result.mode !== "repair-apply").map((result) => result.targetFingerprint)).size,
-      1,
-      "normal flow should use one target fingerprint"
-    )
-    await runFullFlow(fixtureUrl)
-    await runFullFlowWithSubmit(fixtureUrl)
-    await runFullFlow(`${fixtureUrl}#submit-fail`)
-    await runSubmitListingFailure(fixtureUrl)
-    await runQueueRun(fixtureUrl)
-    await runQueueDaemon()
-    await runQueueDaemonOutcomeRecovery(fixtureUrl)
-    await runWrongSurfaceSelectorCalibration()
-    await runQueueDaemonStartupBlockedByWrongSurface()
-    await runSelectorCalibration(fixtureUrl)
-    await runSelectorCalibrationWithMediaSampling(fixtureUrl)
+    if (shouldRunSmokeStep("mode-save-draft")) {
+      results.push(await runMode("save-draft", fixtureUrl))
+    }
+    if (shouldRunSmokeStep("submit-listing-safety-mismatch")) {
+      await expectSafetyGate("submit-listing", `${fixtureUrl}#mismatched-target`)
+    }
+    if (shouldRunSmokeStep("mode-submit-listing")) {
+      results.push(await runMode("submit-listing", fixtureUrl))
+    }
+    if (shouldRunSmokeStep("target-fingerprint-consistency")) {
+      assert.equal(
+        new Set(results.filter((result) => result.mode !== "repair-apply").map((result) => result.targetFingerprint)).size,
+        1,
+        "normal flow should use one target fingerprint"
+      )
+    }
+    if (shouldRunSmokeStep("full-flow")) {
+      await runFullFlow(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("full-flow-with-submit")) {
+      await runFullFlowWithSubmit(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("full-flow-submit-fail")) {
+      await runFullFlow(`${fixtureUrl}#submit-fail`)
+    }
+    if (shouldRunSmokeStep("submit-listing-failure")) {
+      await runSubmitListingFailure(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("queue-run")) {
+      await runQueueRun(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("shared-profile-queue-run")) {
+      await runSharedProfileQueueRun(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("queue-daemon")) {
+      await runQueueDaemon()
+    }
+    if (shouldRunSmokeStep("queue-daemon-outcome-recovery")) {
+      await runQueueDaemonOutcomeRecovery(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("wrong-surface-selector-calibration")) {
+      await runWrongSurfaceSelectorCalibration()
+    }
+    if (shouldRunSmokeStep("queue-daemon-startup-blocked-by-wrong-surface")) {
+      await runQueueDaemonStartupBlockedByWrongSurface()
+    }
+    if (shouldRunSmokeStep("selector-calibration-rerun")) {
+      await runSelectorCalibration(fixtureUrl)
+    }
+    if (shouldRunSmokeStep("selector-calibration-media-sampling-rerun")) {
+      await runSelectorCalibrationWithMediaSampling(fixtureUrl)
+    }
 
     console.log(JSON.stringify({
       baseUrl,

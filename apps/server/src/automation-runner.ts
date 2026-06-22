@@ -3,7 +3,10 @@ import { createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, read
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createTaskFromDianxiaomiProductWorkItem, exportTaskFile, getTaskFileExportSnapshotStatus, getDianxiaomiProductWorkQueueSummary, exportDianxiaomiRepairPreview, listSelectorDiagnosisReports, listDianxiaomiProductWorkItems, updateDianxiaomiProductWorkItemStatus, validateDianxiaomiAutomationPageUrl, validateSelectorConfig } from "./planner";
+import { createTaskFromDianxiaomiProductWorkItem, exportTaskFile, findTaskByDianxiaomiWorkItemId, getTaskFileExportSnapshotStatus, exportDianxiaomiRepairPreview, getSelectorConfigVersions, listSelectorDiagnosisReports, listDianxiaomiProductWorkItems, mergeDianxiaomiProductWorkItemSnapshot, persistPlannerState, recomputeDraftPricingIfStale, restoreSelectorConfigVersion, updateDianxiaomiProductWorkItemStatus, validateDianxiaomiAutomationPageUrl, validateSelectorConfig } from "./planner";
+import { startDianxiaomiImageCheck } from "./dianxiaomi-image-check-runner";
+import { hasAutomationItemScope, matchesAutomationItemScope, normalizeAutomationItemUrls, normalizeAutomationSourceBuckets } from "@temu-ai-ops/shared";
+import type { AutomationDryRunStartInput, AutomationModeReadiness, AutomationQueueDaemonInput, AutomationQueueDaemonState, AutomationQueueDaemonTick, AutomationRecoveryFailureSummary, DianxiaomiProductWorkItem, DianxiaomiPublishOutcome, DianxiaomiWorkFailureDiagnosis } from "@temu-ai-ops/shared";
 export class AutomationSafetyGateError extends Error {
     statusCode = 409;
     constructor(message) {
@@ -18,6 +21,7 @@ const getRepoRoot = () => {
 const timestampId = () => new Date().toISOString().replace(/[:.]/g, "-");
 const DEFAULT_SCREENSHOT_DIR = "output/playwright";
 const DEFAULT_ARTIFACT_ROOT = ".runtime/automation-artifacts";
+const DEFAULT_UNATTENDED_MEDIA_AUTOMATION_TOOLS = ["image-translation", "batch-resize"];
 const getQueueDaemonStatePath = () => process.env.QUEUE_DAEMON_STATE_PATH ?? path.join(getRepoRoot(), ".runtime/data/queue-daemon-state.json");
 const getRecoveryRunHistoryPath = () => process.env.RECOVERY_RUN_HISTORY_PATH ?? path.join(getRepoRoot(), ".runtime/data/recovery-runs.json");
 const getManualBudgetProofLedgerPath = () => process.env.MANUAL_BUDGET_PROOF_LEDGER_PATH ?? path.join(getRepoRoot(), ".runtime/data/manual-budget-proof-ledger.json");
@@ -25,6 +29,10 @@ const getManualBudgetTrialHistoryPath = () => process.env.MANUAL_BUDGET_TRIAL_HI
 const getProfileLockLedgerPath = () => process.env.PROFILE_LOCK_LEDGER_PATH ?? path.join(getRepoRoot(), ".runtime/data/profile-lock-ledger.json");
 const RECOVERY_RUN_HISTORY_LIMIT = 50;
 const RECOVERY_RELEASE_HISTORY_LIMIT = 50;
+// P1-13: per-product / per-action cumulative recovery cap. After this many
+// recovery failures, release events can no longer un-pause the item; it must
+// go to the manual-step budget.
+const RECOVERY_MAX_CUMULATIVE_ATTEMPTS = 5;
 const MANUAL_BUDGET_PROOF_LEDGER_LIMIT = 100;
 const MANUAL_BUDGET_TRIAL_HISTORY_LIMIT = 100;
 const PROFILE_LOCK_AUDIT_LIMIT = 100;
@@ -1126,11 +1134,12 @@ export const recordManualBudgetProofFromRecoveryTrial = (input) => {
         recordedBy: "recovery-run"
     });
 };
-const defaultQueueDaemonState = () => ({
+const defaultQueueDaemonState = (): AutomationQueueDaemonState => ({
     status: "PAUSED",
     input: {
-        limit: 5,
+        limit: 1,
         mediaAutomationMode: "unattended-apply",
+        mediaAutomationTools: [...DEFAULT_UNATTENDED_MEDIA_AUTOMATION_TOOLS],
         submitAfterSave: false,
         submitMaxAttempts: 3
     },
@@ -1162,10 +1171,130 @@ let manualBudgetProofLedger = [];
 let manualBudgetTrialHistory = [];
 let profileLockAuditLedger = [];
 const resolvedFullFlowWorkItemIds = new Set();
+// P1-7: alert webhook config. Set via PUT /automation/alert-webhook. When
+// `url` is non-empty, the queue daemon fires a POST with a small JSON
+// payload (decision, reason, affected work item ids, tick id) on every
+// `decision === "block"` audit entry so off-hours operators can see the
+// problem without watching the dashboard.
+let alertWebhookUrl = ""
+let alertWebhookHistory: Array<{ at: string; status: number | null; error: string | null; decision: string; reason: string }> = []
+
+export const getAlertWebhookConfig = () => ({
+  url: alertWebhookUrl,
+  history: alertWebhookHistory.slice(-20)
+})
+
+export const setAlertWebhookConfig = (input: { url?: string }) => {
+  const next = (input.url ?? "").trim()
+  if (next && !/^https?:\/\//i.test(next)) {
+    throw new Error("alert webhook url must start with http:// or https://")
+  }
+  alertWebhookUrl = next
+  return { url: alertWebhookUrl }
+}
+
+const fireAlertWebhook = async (entry: { decision: string; reason: string; subject?: string; workItemIds?: string[]; tickId?: string | null }) => {
+  if (!alertWebhookUrl) {
+    return
+  }
+  const payload = {
+    decision: entry.decision,
+    reason: entry.reason,
+    subject: entry.subject ?? null,
+    workItemIds: entry.workItemIds ?? [],
+    tickId: entry.tickId ?? null,
+    firedAt: new Date().toISOString()
+  }
+  try {
+    const response = await fetch(alertWebhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    })
+    alertWebhookHistory.push({
+      at: payload.firedAt,
+      status: response.status,
+      error: response.ok ? null : `HTTP ${response.status}`,
+      decision: entry.decision,
+      reason: entry.reason
+    })
+  } catch (error) {
+    alertWebhookHistory.push({
+      at: payload.firedAt,
+      status: null,
+      error: error instanceof Error ? error.message : String(error),
+      decision: entry.decision,
+      reason: entry.reason
+    })
+  }
+  if (alertWebhookHistory.length > 50) {
+    alertWebhookHistory.splice(0, alertWebhookHistory.length - 50)
+  }
+}
 const runningTargetLocks = new Map();
+// Full-flow stages launch Playwright persistent contexts when a profile is
+// configured. Chromium cannot safely open the same user-data-dir from
+// concurrent launches, so full-flow executions sharing one profile must run
+// serially even when they target different products.
+const runningFullFlowProfileLocks = new Map<string, string>();
+const waitingFullFlowProfileLockResolvers = new Map<string, Array<() => void>>();
+// P1-5: in-flight Dianxiaomi work item ids. A work item enters the set when
+// its full-flow job starts and leaves when the job resolves (completed /
+// failed / recovery-released). queue-run / recovery-run / manual-trial
+// paths consult this set so concurrent triggers don't double-pick the same
+// item. Persisted across server restarts so a crashed job still blocks
+// duplicate selection until the daemon's startup routine normalizes it.
+const inFlightWorkItemIds = new Set<string>()
+
+export const markWorkItemInFlight = (workItemId: string) => {
+    if (!workItemId) {
+        return
+    }
+    inFlightWorkItemIds.add(workItemId)
+}
+
+export const clearWorkItemInFlight = (workItemId: string) => {
+    inFlightWorkItemIds.delete(workItemId)
+}
+
+export const listInFlightWorkItemIds = () => Array.from(inFlightWorkItemIds)
 const queueRunHistory = [];
 let queueDaemonTimer = null;
 let queueDaemonState = defaultQueueDaemonState();
+const waitForFullFlowProfileTurn = (profilePath: string) => new Promise<void>((resolve) => {
+    const waiters = waitingFullFlowProfileLockResolvers.get(profilePath) ?? [];
+    waiters.push(resolve);
+    waitingFullFlowProfileLockResolvers.set(profilePath, waiters);
+});
+const acquireFullFlowProfileLock = async (profileInput, flowId) => {
+    const profilePath = resolveProfilePath(profileInput);
+    if (!profilePath) {
+        return null;
+    }
+    while (true) {
+        const holder = runningFullFlowProfileLocks.get(profilePath);
+        if (!holder || holder === flowId) {
+            runningFullFlowProfileLocks.set(profilePath, flowId);
+            return profilePath;
+        }
+        await waitForFullFlowProfileTurn(profilePath);
+    }
+};
+const releaseFullFlowProfileLock = (profilePath: string | null, flowId) => {
+    if (!profilePath) {
+        return;
+    }
+    if (runningFullFlowProfileLocks.get(profilePath) !== flowId) {
+        return;
+    }
+    runningFullFlowProfileLocks.delete(profilePath);
+    const waiters = waitingFullFlowProfileLockResolvers.get(profilePath);
+    const next = waiters?.shift();
+    if (waiters && waiters.length === 0) {
+        waitingFullFlowProfileLockResolvers.delete(profilePath);
+    }
+    next?.();
+};
 const pushArg = (args, name, value) => {
     if (value === undefined || value === "") {
         return;
@@ -1216,7 +1345,7 @@ export const buildAutomationModeArgs = (mode) => {
     }
     return ["--dry-run=false", "--review=false", "--save-draft=false", "--submit=true"];
 };
-export const buildAutomationTargetFingerprint = (input = {}) => {
+export const buildAutomationTargetFingerprint = (input: AutomationDryRunStartInput = {}) => {
     const payload = JSON.stringify({
         url: input.url?.trim() ?? "",
         taskFile: input.taskFile?.trim() ?? "",
@@ -1309,6 +1438,36 @@ const uniqueAutomationPageUrlSources = (sources) => {
         return true;
     });
 };
+type MediaAutomationInput = Pick<AutomationDryRunStartInput, "mediaAutomationMode" | "mediaAutomationTools">;
+const normalizeMediaAutomationTools = (tools: MediaAutomationInput["mediaAutomationTools"]) => Array.isArray(tools)
+    ? Array.from(new Set(tools.map((tool) => typeof tool === "string" ? tool.trim() : "").filter(Boolean)))
+    : [];
+const resolveMediaAutomationTools = (
+    mode: MediaAutomationInput["mediaAutomationMode"],
+    tools: MediaAutomationInput["mediaAutomationTools"]
+) => {
+    const normalizedTools = normalizeMediaAutomationTools(tools);
+    if (normalizedTools.length > 0) {
+        return normalizedTools;
+    }
+    return mode === "unattended-apply" ? [...DEFAULT_UNATTENDED_MEDIA_AUTOMATION_TOOLS] : undefined;
+};
+const applyAutomationMediaDefaults = <T extends MediaAutomationInput>(
+    input: T,
+    fallbackMode?: MediaAutomationInput["mediaAutomationMode"]
+): T => {
+    const mediaAutomationMode = input.mediaAutomationMode ?? fallbackMode;
+    const mediaAutomationTools = resolveMediaAutomationTools(mediaAutomationMode, input.mediaAutomationTools);
+    return {
+        ...input,
+        ...(mediaAutomationMode ? {
+            mediaAutomationMode
+        } : {}),
+        ...(mediaAutomationTools ? {
+            mediaAutomationTools
+        } : {})
+    } as T;
+};
 const readTaskFileDianxiaomiPageUrls = (taskFileRead) => {
     const parsed = taskFileRead.task;
     if (!parsed) {
@@ -1331,7 +1490,7 @@ const readTaskFileDianxiaomiPageUrls = (taskFileRead) => {
     }
     return uniqueAutomationPageUrlSources(sources);
 };
-const getAutomationPageUrlGate = (input = {}) => {
+const getAutomationPageUrlGate = (input: AutomationDryRunStartInput = {}) => {
     const explicitUrl = input.url?.trim();
     const taskFileRead = readAutomationTaskFile(input.taskFile);
     if (taskFileRead.error) {
@@ -1368,18 +1527,115 @@ const getAutomationPageUrlGate = (input = {}) => {
         checkedSources
     };
 };
-const normalizeAutomationStartInput = (input = {}) => {
+const normalizeAutomationStartInput = (input: AutomationDryRunStartInput = {}) => {
+    const normalizedInput = applyAutomationMediaDefaults(input);
     const pageUrlGate = getAutomationPageUrlGate(input);
     if (!pageUrlGate.ready) {
         throw new AutomationSafetyGateError(pageUrlGate.reason);
     }
-    if (!input.url?.trim() && pageUrlGate.effectiveUrl) {
+    if (!normalizedInput.url?.trim() && pageUrlGate.effectiveUrl) {
         return {
-            ...input,
+            ...normalizedInput,
             url: pageUrlGate.effectiveUrl
         };
     }
-    return input;
+    return normalizedInput;
+};
+const normalizeStoreScopeValue = (value) => typeof value === "string" && value.trim() ? value.trim() : undefined;
+const getAutomationStoreScope = (input: AutomationDryRunStartInput = {}) => ({
+    storeId: normalizeStoreScopeValue(input.storeId),
+    storeName: normalizeStoreScopeValue(input.storeName)
+});
+const getAutomationItemScope = (input: AutomationDryRunStartInput = {}) => ({
+    itemUrls: normalizeAutomationItemUrls(input.itemUrls),
+    sourceBuckets: normalizeAutomationSourceBuckets(input.sourceBuckets)
+});
+const hasAutomationStoreScope = (input: AutomationDryRunStartInput = {}) => {
+    const scope = getAutomationStoreScope(input);
+    return Boolean(scope.storeId || scope.storeName);
+};
+const hasAutomationQueueScope = (input: AutomationDryRunStartInput = {}) => hasAutomationStoreScope(input) || hasAutomationItemScope(input);
+const matchesAutomationStoreScope = (item: { storeId?: string; storeName?: string } | null | undefined, input: AutomationDryRunStartInput = {}) => {
+    const scope = getAutomationStoreScope(input);
+    if (!scope.storeId && !scope.storeName) {
+        return true;
+    }
+    const storeId = normalizeStoreScopeValue(item?.storeId);
+    const storeName = normalizeStoreScopeValue(item?.storeName);
+    if (scope.storeId) {
+        return storeId === scope.storeId;
+    }
+    return storeName === scope.storeName;
+};
+const matchesAutomationQueueScope = (item: DianxiaomiProductWorkItem | null | undefined, input: AutomationDryRunStartInput = {}) => matchesAutomationStoreScope(item, input)
+    && matchesAutomationItemScope(item ?? {}, input);
+const filterItemsByAutomationStoreScope = (items: DianxiaomiProductWorkItem[], input: AutomationDryRunStartInput = {}) => items.filter((item) => matchesAutomationQueueScope(item, input));
+const summarizeScopedWorkItems = (items: DianxiaomiProductWorkItem[]) => ({
+    total: items.length,
+    ready: items.filter((item) => item.status === "ready-for-automation").length,
+    blocked: items.filter((item) => item.status === "blocked").length,
+    edited: items.filter((item) => item.status === "edited").length,
+    needsRevision: items.filter((item) => item.status === "needs-revision").length
+});
+const scopedWorkItemIds = (items: DianxiaomiProductWorkItem[]) => new Set(items.map((item) => item.id));
+const listScopedDianxiaomiProductWorkItems = (input: AutomationDryRunStartInput = {}): DianxiaomiProductWorkItem[] => filterItemsByAutomationStoreScope(listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER), input);
+const matchesRequestedScopeValues = (actual: string[], expected: string[]) => expected.length === 0 || expected.every((value) => actual.includes(value));
+const matchesQueueRunStoreScope = (run: { storeId?: string; storeName?: string; itemUrls?: string[]; sourceBuckets?: string[] } | null | undefined, input: AutomationDryRunStartInput = {}) => {
+    const scope = getAutomationStoreScope(input);
+    if (!scope.storeId && !scope.storeName) {
+        const itemScope = getAutomationItemScope(input);
+        if (itemScope.itemUrls.length === 0 && itemScope.sourceBuckets.length === 0) {
+            return true;
+        }
+        return matchesRequestedScopeValues(normalizeAutomationItemUrls(run?.itemUrls), itemScope.itemUrls)
+            && matchesRequestedScopeValues(normalizeAutomationSourceBuckets(run?.sourceBuckets), itemScope.sourceBuckets);
+    }
+    const storeId = normalizeStoreScopeValue(run?.storeId);
+    const storeName = normalizeStoreScopeValue(run?.storeName);
+    const storeMatches = scope.storeId ? storeId === scope.storeId : storeName === scope.storeName;
+    if (!storeMatches) {
+        return false;
+    }
+    const itemScope = getAutomationItemScope(input);
+    return matchesRequestedScopeValues(normalizeAutomationItemUrls(run?.itemUrls), itemScope.itemUrls)
+        && matchesRequestedScopeValues(normalizeAutomationSourceBuckets(run?.sourceBuckets), itemScope.sourceBuckets);
+};
+const matchesRecoveryRunStoreScope = (run: { input?: AutomationDryRunStartInput } | null | undefined, input: AutomationDryRunStartInput = {}) => {
+    if (!matchesAutomationStoreScope(run?.input ?? {}, input)) {
+        return false;
+    }
+    const itemScope = getAutomationItemScope(input);
+    return matchesRequestedScopeValues(normalizeAutomationItemUrls(run?.input?.itemUrls), itemScope.itemUrls)
+        && matchesRequestedScopeValues(normalizeAutomationSourceBuckets(run?.input?.sourceBuckets), itemScope.sourceBuckets);
+};
+const matchesQueueDaemonTickStoreScope = (tick: AutomationQueueDaemonTick, input: AutomationDryRunStartInput = {}) => {
+    if (!hasAutomationQueueScope(input)) {
+        return true;
+    }
+    if (tick?.queueRun) {
+        return matchesQueueRunStoreScope(tick.queueRun, input);
+    }
+    if (tick?.recoveryRun) {
+        return matchesRecoveryRunStoreScope(tick.recoveryRun, input);
+    }
+    if (!matchesAutomationStoreScope(queueDaemonState.input, input)) {
+        return false;
+    }
+    const itemScope = getAutomationItemScope(input);
+    return matchesRequestedScopeValues(normalizeAutomationItemUrls(queueDaemonState.input.itemUrls), itemScope.itemUrls)
+        && matchesRequestedScopeValues(normalizeAutomationSourceBuckets(queueDaemonState.input.sourceBuckets), itemScope.sourceBuckets);
+};
+const filterRecoveryFailureSummariesForItems = (summaries: AutomationRecoveryFailureSummary[], items: DianxiaomiProductWorkItem[]) => {
+    const itemIds = scopedWorkItemIds(items);
+    return summaries.filter((summary) => {
+        if (summary.workItemId) {
+            return itemIds.has(summary.workItemId);
+        }
+        if (!summary.repairAction) {
+            return false;
+        }
+        return items.some((item) => repairActionLabelsForActions(item.repairPlan?.actions ?? []).includes(summary.repairAction));
+    });
 };
 const resolveScreenshotDir = (repoRoot, input) => {
     const screenshotDir = input.screenshots?.trim() || DEFAULT_SCREENSHOT_DIR;
@@ -1408,7 +1664,20 @@ const readLatestExecutionReport = (repoRoot, input) => {
         .sort((left, right) => right.report.createdAt.localeCompare(left.report.createdAt))[0];
     return reportPath ?? null;
 };
-const startAutomationJob = (mode, input = {}) => {
+const startRepairApplyFollowUpImageCheck = (job, input) => {
+    if (!job.workItemId) {
+        return null;
+    }
+    const screenshots = path.join(job.artifactDir, "follow-up-image-check");
+    return startDianxiaomiImageCheck({
+        workItemId: job.workItemId,
+        url: input.url,
+        profile: input.profile,
+        headed: false,
+        screenshots
+    });
+};
+const startAutomationJob = (mode, input: AutomationDryRunStartInput = {}) => {
     const normalizedInput = normalizeAutomationStartInput(input);
     const targetFingerprint = buildAutomationTargetFingerprint(normalizedInput);
     const repoRoot = getRepoRoot();
@@ -1430,7 +1699,9 @@ const startAutomationJob = (mode, input = {}) => {
         path.join(repoRoot, "apps/automation/src/temu-publish.ts"),
         ...buildAutomationModeArgs(mode)
     ];
-    pushArg(args, "headed", effectiveInput.headed ?? true);
+    // Unattended queue jobs must exit on completion. Headed mode is still
+    // available when explicitly requested for login/debug calibration.
+    pushArg(args, "headed", effectiveInput.headed ?? false);
     pushArg(args, "url", effectiveInput.url);
     pushArg(args, "task-file", effectiveInput.taskFile);
     pushArg(args, "repair-plan-file", effectiveInput.repairPlanFile);
@@ -1439,6 +1710,7 @@ const startAutomationJob = (mode, input = {}) => {
     pushArg(args, "selector-config", effectiveInput.selectorConfig);
     pushArg(args, "media-automation-mode", effectiveInput.mediaAutomationMode);
     pushArg(args, "media-automation-tools", effectiveInput.mediaAutomationTools?.join(","));
+    pushArg(args, "skip-draft-fill", effectiveInput.skipDraftFill ? "true" : undefined);
     pushArg(args, "submit-max-attempts", effectiveInput.submitMaxAttempts?.toString());
     const tsxCliPath = getTsxCliPath();
     const commandArgs = [tsxCliPath, ...args];
@@ -1475,6 +1747,12 @@ const startAutomationJob = (mode, input = {}) => {
             return;
         }
         const executionReport = code === 0 ? readLatestExecutionReport(repoRoot, effectiveInput) : null;
+        if (mode === "repair-apply" && code === 0 && current.workItemId && executionReport?.report.status === "completed") {
+            const snapshotEnrichment = collectDianxiaomiSnapshotEnrichmentFromReports([executionReport.filePath]);
+            if (snapshotEnrichment) {
+                mergeDianxiaomiProductWorkItemSnapshot(current.workItemId, snapshotEnrichment, `repair apply updated from job ${id}`);
+            }
+        }
         store.set(id, {
             ...current,
             status: code === 0 ? "completed" : "failed",
@@ -1485,6 +1763,17 @@ const startAutomationJob = (mode, input = {}) => {
             reportStatus: executionReport?.report.status ?? null
         });
         releaseTargetLock(targetFingerprint, id);
+        if (mode === "repair-apply" && code === 0 && current.workItemId && executionReport?.report.status === "completed") {
+            try {
+                startRepairApplyFollowUpImageCheck({
+                    ...current,
+                    artifactDir: current.artifactDir
+                }, effectiveInput);
+            }
+            catch (error) {
+                console.warn(`repair-apply follow-up image check failed to start: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
     });
     child.on("error", (error) => {
         const current = store.get(id);
@@ -1552,7 +1841,7 @@ const getSelectorReadinessGate = (input) => {
     };
 };
 const getTaskFileSnapshotGate = (input) => getTaskFileExportSnapshotStatus(input.taskFile);
-export const getAutomationModeReadiness = (mode, input = {}) => {
+export const getAutomationModeReadiness = (mode, input: AutomationDryRunStartInput = {}): AutomationModeReadiness => {
     const pageUrlGate = getAutomationPageUrlGate(input);
     const inputForReadiness = pageUrlGate.ready && !input.url?.trim() && pageUrlGate.effectiveUrl
         ? {
@@ -2038,8 +2327,8 @@ const recordStaleProfileLockAudit = (profilePath, inspections) => {
         .filter((entry) => Boolean(entry));
     recordProfileLockAuditEntries(records);
 };
-const inspectQueueDaemonProfile = () => {
-    const profilePath = resolveQueueDaemonProfilePath();
+const inspectQueueDaemonProfile = (profileInput?: string | null) => {
+    const profilePath = resolveProfilePath(profileInput) ?? resolveQueueDaemonProfilePath();
     if (!profilePath) {
         return {
             path: null,
@@ -2077,10 +2366,22 @@ const queueDaemonIssueStatus = (issues) => issues.some((issue) => issue.level ==
 const queueDaemonSuccessfulCategories = new Set([
     "idle-no-items",
     "ready-queued",
+    "awaiting-flow-completion",
     "flow-outcome-recovered",
     "recovery-run-started",
     "validation-rerun-started"
 ]);
+const listQueueDaemonUnresolvedFlowJobs = (input: AutomationDryRunStartInput = {}) => {
+    const scopedWorkItemIds = hasAutomationQueueScope(input)
+        ? new Set(listScopedDianxiaomiProductWorkItems(input).map((item) => item.id))
+        : null;
+    return queueDaemonState.trackedFlowJobIds
+        .filter((id) => !queueDaemonState.resolvedFlowJobIds.includes(id))
+        .map((id) => fullFlowJobs.get(id) ?? null)
+        .filter((job) => Boolean(job))
+        .filter((job) => job.status === "running")
+        .filter((job) => !scopedWorkItemIds || Boolean(job.workItemId && scopedWorkItemIds.has(job.workItemId)));
+};
 const queueDaemonWorkItemIdsForTick = (tick) => Array.from(new Set([
     ...(tick.recoveryRun?.items.map((item) => item.workItemId) ?? []),
     ...(tick.manualBudgetValidationRun?.proposal?.sampleWorkItemIds ?? []),
@@ -2167,6 +2468,23 @@ const queueDaemonAuditEntryForTick = (tick) => {
             countsAsFailure
         };
     }
+    if (tick.category === "awaiting-flow-completion") {
+        return {
+            tickId: tick.id,
+            startedAt: tick.startedAt,
+            finishedAt: tick.finishedAt,
+            status: tick.status,
+            category: tick.category,
+            decision: "awaiting-flow-completion",
+            subject: "previous full-flow still running",
+            reason,
+            nextAction: "Wait for the running full-flow to finish before queueing the next product.",
+            workItemIds,
+            queueRunId: null,
+            recoveryRunId: null,
+            countsAsFailure
+        };
+    }
     if (tick.category === "flow-outcome-recovered") {
         const failed = tick.flowOutcomes.filter((outcome) => outcome.status === "failed").length;
         return {
@@ -2249,6 +2567,17 @@ const queueDaemonRecommendation = (input) => {
         + input.autoRetryCandidates
         + input.browserRecoveryCandidates
         + input.releasedBrowserRecoveryCandidates;
+    if ((input.unresolvedRunningFlows ?? 0) > 0) {
+        return {
+            kind: "wait-for-running-flow",
+            level: "info",
+            title: "Wait for the current product to finish",
+            detail: `${input.unresolvedRunningFlows} unattended full-flow job(s) are still running.`,
+            action: "Let the current Dianxiaomi flow finish; the daemon will queue the next product automatically.",
+            source: "queue",
+            workItemIds: []
+        };
+    }
     if (issueIds.has("real-dianxiaomi-calibration")) {
         return {
             kind: "run-calibration",
@@ -2988,7 +3317,7 @@ export const startManualBudgetTrial = (input) => {
     refreshRunningManualBudgetTrialOutcomes();
     const requestedAt = new Date().toISOString();
     const trialRequestId = `manual-budget-trial-request-${timestampId()}-${Math.random().toString(36).slice(2, 8)}`;
-    const allWorkItems = listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER);
+    const allWorkItems = listScopedDianxiaomiProductWorkItems(input);
     const manualBudget = buildManualStepBudgetWithCurrentReadiness(allWorkItems, {
         rollbackAcknowledged: input.rollbackAcknowledged,
         acceptedRollbackCriteria: input.acceptedRollbackCriteria
@@ -3146,9 +3475,9 @@ export const startManualBudgetTrial = (input) => {
         outcome: buildRunningManualBudgetTrialOutcome(flowJobIds, `waiting for ${flowJobIds.length} bounded trial full-flow job(s)`)
     });
 };
-export const startNextManualBudgetValidationRun = (input = {}) => {
+export const startNextManualBudgetValidationRun = (input: AutomationDryRunStartInput = {}) => {
     refreshRunningManualBudgetTrialOutcomes();
-    const allWorkItems = listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER);
+    const allWorkItems = listScopedDianxiaomiProductWorkItems(input);
     const manualBudget = buildManualStepBudgetWithCurrentReadiness(allWorkItems);
     const proposal = manualBudget.trialProposals[0] ?? null;
     if (!proposal) {
@@ -3181,20 +3510,22 @@ export const startNextManualBudgetValidationRun = (input = {}) => {
         submitAfterSave: input.submitAfterSave ?? true
     });
 };
-export const getDianxiaomiQueueDaemonHealth = () => {
+export const getDianxiaomiQueueDaemonHealth = (input: AutomationDryRunStartInput = {}) => {
     refreshRunningManualBudgetTrialOutcomes();
-    const profile = inspectQueueDaemonProfile();
-    const workItems = getDianxiaomiProductWorkQueueSummary();
-    const allWorkItems = listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER);
+    const scopeInput = hasAutomationQueueScope(input) ? input : queueDaemonState.input;
+    const profile = inspectQueueDaemonProfile(input.profile);
+    const allWorkItems = listScopedDianxiaomiProductWorkItems(scopeInput);
+    const allWorkItemIds = scopedWorkItemIds(allWorkItems);
+    const workItems = summarizeScopedWorkItems(allWorkItems);
     const calibrationCheck = latestSelectorCalibrationCheck();
     const sessionCheck = latestDianxiaomiSessionCheck();
     const manualBudget = buildManualStepBudget(allWorkItems, {
         calibrationCheck,
         profile,
-        allWorkItemIds: new Set(allWorkItems.map((item) => item.id))
+        allWorkItemIds
     });
     const manualBudgetPromotionStatus = manualBudgetPromotionGate(manualBudget);
-    const recoveryFailureSummaries = collectRecoveryFailureSummaries();
+    const recoveryFailureSummaries = filterRecoveryFailureSummariesForItems(collectRecoveryFailureSummaries(), allWorkItems);
     const browserRecoveryCandidateItems = allWorkItems
         .filter((item) => isDianxiaomiWorkItemBrowserRecoveryCandidate(item));
     recordReleasedRecoveryPauses(browserRecoveryCandidateItems, recoveryFailureSummaries);
@@ -3205,7 +3536,6 @@ export const getDianxiaomiQueueDaemonHealth = () => {
     const releasedRetryCandidates = unpausedBrowserRecoveryCandidateItems
         .map((item) => releasedRetryCandidateForWorkItem(item))
         .filter((item) => Boolean(item));
-    const releasedRetryOutcomes = collectReleasedRetryOutcomes(recoveryFailureSummaries);
     const releasedRetryCandidateIds = new Set(releasedRetryCandidates.map((item) => item.workItemId));
     const autoRetryCandidates = allWorkItems
         .filter((item) => isDianxiaomiWorkItemAutoRetryCandidate(item) && !isDianxiaomiWorkItemBrowserRecoveryCandidate(item)).length;
@@ -3220,11 +3550,33 @@ export const getDianxiaomiQueueDaemonHealth = () => {
     const publishRecoveryCandidates = allWorkItems.filter((item) => item.publishOutcome?.status === "failed"
         && ["auto-retry", "browser-recovery"].includes(item.publishOutcome.route)).length;
     const publishManualBudget = manualBudget.total;
-    const unresolvedFlowIds = queueDaemonState.trackedFlowJobIds.filter((id) => !queueDaemonState.resolvedFlowJobIds.includes(id));
-    const recentFailures = queueDaemonState.flowOutcomes.filter((outcome) => outcome.status === "failed").slice(0, 10).length;
-    const auditEntries = collectQueueDaemonAuditEntries(10);
-    const lastFailedTick = queueDaemonState.ticks.find((tick) => tick.status === "failed"
-        || !queueDaemonSuccessfulCategories.has(tick.category));
+    const trackedFlowIds = queueDaemonState.trackedFlowJobIds.filter((id) => {
+        if (!hasAutomationQueueScope(scopeInput)) {
+            return true;
+        }
+        const job = fullFlowJobs.get(id);
+        return Boolean(job?.workItemId && allWorkItemIds.has(job.workItemId));
+    });
+    const unresolvedFlowIds = trackedFlowIds.filter((id) => !queueDaemonState.resolvedFlowJobIds.includes(id));
+    const unresolvedRunningFlows = trackedFlowIds
+        .map((id) => fullFlowJobs.get(id))
+        .filter((job) => Boolean(job))
+        .filter((job) => job.status === "running").length;
+    const recentFailures = queueDaemonState.flowOutcomes
+        .filter((outcome) => outcome.status === "failed" && allWorkItemIds.has(outcome.workItemId))
+        .slice(0, 10).length;
+    const auditEntries = queueDaemonState.ticks
+        .filter((tick) => matchesQueueDaemonTickStoreScope(tick, scopeInput))
+        .slice(0, 10)
+        .map(queueDaemonAuditEntryForTick);
+    const lastFailedTick = queueDaemonState.ticks.find((tick) => (tick.status === "failed"
+        || !queueDaemonSuccessfulCategories.has(tick.category))
+        && matchesQueueDaemonTickStoreScope(tick, scopeInput));
+    const releasedRetryOutcomes = collectReleasedRetryOutcomes(recoveryFailureSummaries)
+        .filter((outcome) => allWorkItemIds.has(outcome.workItemId));
+    const scopedRecoveryReleases = recoveryReleases
+        .filter((release) => allWorkItems.some((item) => recoveryReleaseMatchesWorkItem(release, item)))
+        .slice(0, 10);
     const issues = [];
     if (queueDaemonState.status === "PAUSED") {
         issues.push({
@@ -3355,6 +3707,7 @@ export const getDianxiaomiQueueDaemonHealth = () => {
         browserRecoveryCandidates,
         releasedBrowserRecoveryCandidates,
         pausedBrowserRecoveryCandidates,
+        unresolvedRunningFlows,
         recentFailures,
         profileLockFiles: profile.lockFiles,
         recoveryFailureSummaries
@@ -3388,7 +3741,7 @@ export const getDianxiaomiQueueDaemonHealth = () => {
         manualBudget,
         profile,
         flows: {
-            tracked: queueDaemonState.trackedFlowJobIds.length,
+            tracked: trackedFlowIds.length,
             unresolved: unresolvedFlowIds.length,
             recentFailures
         },
@@ -3404,7 +3757,7 @@ export const getDianxiaomiQueueDaemonHealth = () => {
             releasedRetryBatch,
             releasedRetryCandidates,
             releasedRetryOutcomes,
-            releases: recoveryReleases.slice(0, 10)
+            releases: scopedRecoveryReleases
         }
     };
 };
@@ -3634,7 +3987,7 @@ const latestDianxiaomiSessionCheck = () => {
         details
     };
 };
-export const getDianxiaomiUnattendedStartupCheck = (input = {}) => {
+export const getDianxiaomiUnattendedStartupCheck = (input: AutomationDryRunStartInput = {}) => {
     const normalized = normalizeQueueDaemonInput(input);
     const previousState = queueDaemonState;
     queueDaemonState = {
@@ -3643,7 +3996,7 @@ export const getDianxiaomiUnattendedStartupCheck = (input = {}) => {
         intervalSeconds: normalized.intervalSeconds,
         maxConsecutiveFailures: normalized.maxConsecutiveFailures
     };
-    const health = getDianxiaomiQueueDaemonHealth();
+    const health = getDianxiaomiQueueDaemonHealth(normalized.input);
     queueDaemonState = previousState;
     const manualBudgetPromotionStatus = manualBudgetPromotionGate(health.manualBudget);
     const selectorGate = getSelectorReadinessGate(normalized.input);
@@ -3768,10 +4121,17 @@ const summarizeReportFailureStep = (report) => {
         const failureKind = String(failedMediaTool.failureKind ?? "unknown");
         const retryable = failedMediaTool.retryable === true;
         const feedback = String(failedMediaTool.feedbackMessage ?? failedMediaTool.error ?? failedMediaTool.reason ?? "");
+        const imageCheckIssues = Array.isArray(failedMediaTool.imageCheckIssues)
+            ? failedMediaTool.imageCheckIssues
+                .map((issue) => `${String(issue.category ?? "").trim()}:${String(issue.issue ?? "").trim()}`)
+                .filter(Boolean)
+                .join(", ")
+            : "";
         return [
             `${failedStep.id}: ${label} failed`,
             `failureKind=${failureKind}`,
             `retryable=${retryable}`,
+            imageCheckIssues ? `imageCheckIssues=${imageCheckIssues}` : null,
             feedback
         ].filter(Boolean).join("; ");
     }
@@ -3779,6 +4139,115 @@ const summarizeReportFailureStep = (report) => {
 };
 const readString = (value) => typeof value === "string" ? value : null;
 const readPositiveNumber = (value, fallback = 0) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+const normalizeMediaToolKey = (value) => (readString(value) ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, "-");
+const inferCompletedMediaToolKey = (tool) => {
+    const candidates = [
+        tool?.id,
+        tool?.configKey,
+        tool?.label,
+        tool?.reason
+    ]
+        .map(normalizeMediaToolKey)
+        .filter(Boolean);
+    for (const candidate of candidates) {
+        if (["image-translation", "imagetranslation"].includes(candidate) || candidate.includes("translation")) {
+            return "image-translation";
+        }
+        if (["white-background", "whitebackground"].includes(candidate) || candidate.includes("white-background")) {
+            return "white-background";
+        }
+        if (["image-editor", "xiaomi-image-editor", "imageeditor"].includes(candidate) || candidate.includes("image-editor")) {
+            return "image-editor";
+        }
+        if (["batch-resize", "batchresize"].includes(candidate) || candidate.includes("resize")) {
+            return "batch-resize";
+        }
+        if (["image-management", "imagemanagement"].includes(candidate) || candidate.includes("image-management")) {
+            return "image-management";
+        }
+    }
+    return null;
+};
+const isCompletedMediaToolApplied = (tool) => tool?.applied === true
+    || normalizeMediaToolKey(tool?.status) === "applied";
+const COMPLETED_MEDIA_SIGNAL_BY_TOOL = {
+    "image-translation": "image translation",
+    "white-background": "white background",
+    "image-editor": "Xiaomi image editor",
+    "batch-resize": "batch resize",
+    "image-management": "image check"
+};
+const MEDIA_SIGNAL_PRIORITY = [
+    "image translation",
+    "batch resize",
+    "white background",
+    "Xiaomi image editor",
+    "image check"
+];
+export const collectDianxiaomiSnapshotEnrichmentFromReports = (reportPaths) => {
+    const mediaSignals = new Set();
+    let imageCheckPassed = false;
+    const imageCheckIssues = [];
+    for (const reportPath of reportPaths) {
+        const report = readAutomationExecutionReport(reportPath);
+        if (!report) {
+            continue;
+        }
+        for (const step of Array.isArray(report.steps) ? report.steps : []) {
+            if (step?.id !== "media-processing-plan") {
+                continue;
+            }
+            const tools = Array.isArray(step.data?.tools) ? step.data.tools : [];
+            for (const tool of tools) {
+                const key = inferCompletedMediaToolKey(tool);
+                if (key === "image-management" && Array.isArray(tool.imageCheckIssues)) {
+                    imageCheckIssues.push(...tool.imageCheckIssues
+                        .filter((issue) => issue && typeof issue === "object")
+                        .map((issue) => ({
+                        category: String(issue.category ?? "").trim(),
+                        issue: String(issue.issue ?? "").trim(),
+                        detail: typeof issue.detail === "string" ? issue.detail.trim() : undefined
+                    }))
+                        .filter((issue) => issue.category && issue.issue));
+                }
+                if (!isCompletedMediaToolApplied(tool)) {
+                    continue;
+                }
+                if (!key) {
+                    continue;
+                }
+                const signal = COMPLETED_MEDIA_SIGNAL_BY_TOOL[key];
+                if (signal) {
+                    mediaSignals.add(signal);
+                }
+                if (key === "image-management") {
+                    imageCheckPassed = true;
+                }
+            }
+        }
+    }
+    const orderedSignals = MEDIA_SIGNAL_PRIORITY.filter((signal) => mediaSignals.has(signal));
+    if (!orderedSignals.length && !imageCheckPassed && imageCheckIssues.length === 0) {
+        return null;
+    }
+    const dedupedImageCheckIssues = imageCheckIssues.filter((issue, index, items) => items.findIndex((candidate) => candidate.category === issue.category
+        && candidate.issue === issue.issue
+        && candidate.detail === issue.detail) === index);
+    return {
+        mediaToolSignals: orderedSignals,
+        imageCheck: imageCheckPassed || dedupedImageCheckIssues.length > 0
+            ? {
+                passed: imageCheckPassed,
+                ...(dedupedImageCheckIssues.length > 0 ? {
+                    issues: dedupedImageCheckIssues
+                } : {})
+            }
+            : undefined
+    };
+};
 const getSubmitListingStage = (job) => job.stages.find((stage) => stage.name === "submit-listing") ?? null;
 const getSubmitListingStep = (report) => report?.steps.find((step) => step.id === "submit-listing") ?? null;
 const isVerifiedSubmitAttemptSuccess = (attempt) => Boolean(attempt
@@ -3852,6 +4321,14 @@ const resolveFullFlowWorkItemOutcome = (job, source = "full-flow") => {
     if (!job.workItemId || job.status === "running") {
         return null;
     }
+    // P1-5: clear the in-flight flag the moment the full-flow job
+    // resolves. Done before the persistence side-effects so a crash in
+    // updateDianxiaomiProductWorkItemStatus still releases the lock.
+    clearWorkItemInFlight(job.workItemId);
+    const snapshotEnrichment = collectDianxiaomiSnapshotEnrichmentFromReports(collectFullFlowReportPaths(job));
+    if (snapshotEnrichment) {
+        mergeDianxiaomiProductWorkItemSnapshot(job.workItemId, snapshotEnrichment);
+    }
     const publishOutcome = buildDianxiaomiPublishOutcomeForFullFlow(job, null);
     const publishFailureReason = publishOutcome?.status === "failed"
         ? publishOutcome.failureReason ?? publishOutcome.message
@@ -3860,9 +4337,10 @@ const resolveFullFlowWorkItemOutcome = (job, source = "full-flow") => {
         ? formatFullFlowFailureDiagnosisReason(job)
         : publishFailureReason;
     const failureDiagnosis = failureReason ? classifyDianxiaomiWorkFailure(failureReason, source) : null;
-    const finalPublishOutcome = publishOutcome
+    const finalPublishOutcome: DianxiaomiPublishOutcome | null = publishOutcome
         ? {
             ...publishOutcome,
+            status: publishOutcome.status as DianxiaomiPublishOutcome["status"],
             route: getPublishOutcomeRoute(publishOutcome.status, failureDiagnosis)
         }
         : null;
@@ -4088,9 +4566,9 @@ const getDianxiaomiAutoRecoveryReleaseLabel = (item) => item.publishOutcome?.sta
     : item.failureDiagnosis?.autoRetryRecommended === true
         ? `auto retry released: ${item.failureDiagnosis?.category ?? "unknown"}`
         : `auto repair released: ${item.repairPlan?.summary ?? item.failureDiagnosis?.category ?? "unknown"}`;
-const releaseAutoRetryDianxiaomiWorkItems = () => {
+const releaseAutoRetryDianxiaomiWorkItems = (input: AutomationDryRunStartInput = {}) => {
     const released = [];
-    for (const item of listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER)) {
+    for (const item of listScopedDianxiaomiProductWorkItems(input)) {
         if (!isDianxiaomiWorkItemAutoRetryCandidate(item) || isDianxiaomiWorkItemBrowserRecoveryCandidate(item)) {
             continue;
         }
@@ -4101,12 +4579,12 @@ const releaseAutoRetryDianxiaomiWorkItems = () => {
     }
     return released;
 };
-export const classifyDianxiaomiWorkFailure = (reason, source = "queue-daemon") => {
+export const classifyDianxiaomiWorkFailure = (reason, source = "queue-daemon"): DianxiaomiWorkFailureDiagnosis => {
     const normalized = reason.toLowerCase();
     const includesAny = (patterns) => patterns.some((pattern) => normalized.includes(pattern));
     const base = {
         message: reason.trim() || "unknown automation failure",
-        source,
+        source: source as DianxiaomiWorkFailureDiagnosis["source"],
         updatedAt: new Date().toISOString()
     };
     if (includesAny(["login", "captcha", "verify", "verification", "楠岃瘉鐮?", "验证码", "登录", "鐧诲綍"])) {
@@ -4163,6 +4641,36 @@ export const classifyDianxiaomiWorkFailure = (reason, source = "queue-daemon") =
             nextAction: "Refresh the Dianxiaomi work item task file and let the queue retry it."
         };
     }
+    if (includesAny([
+        "media-processing-plan",
+        "failurekind=",
+        "image translation",
+        "white background",
+        "image editor",
+        "batch resize",
+        "图片翻译",
+        "白底",
+        "批量改图片尺寸",
+        "图片空间不足",
+        "购买空间",
+        "storage quota",
+        "quota exceeded",
+        "insufficient storage"
+    ])) {
+        const storageQuota = includesAny(["failurekind=storage-quota", "图片空间不足", "空间不足", "购买空间", "image space", "storage quota", "quota exceeded", "insufficient storage"]);
+        const transient = !storageQuota && includesAny(["failurekind=transient", "retryable=true"]);
+        return {
+            ...base,
+            category: "media-processing",
+            retryable: transient,
+            autoRetryRecommended: false,
+            nextAction: storageQuota
+                ? "Free or purchase Dianxiaomi image space, or switch to a proven image path that does not create new image-space assets, then rerun this product."
+                : transient
+                    ? "Dianxiaomi reported a temporary media-tool issue. Retry only after confirming the same image tool can complete successfully."
+                    : "Check the Dianxiaomi image tool result, fix invalid images or tool configuration, then retry this product."
+        };
+    }
     if (includesAny(["submit", "publish", "required", "validation", "missing required", "attribute", "failed feedback", "发布", "提交", "必填", "属性", "失败"])) {
         return {
             ...base,
@@ -4170,17 +4678,6 @@ export const classifyDianxiaomiWorkFailure = (reason, source = "queue-daemon") =
             retryable: true,
             autoRetryRecommended: false,
             nextAction: "Use the captured Dianxiaomi validation text to fix required fields, then move the item back to ready."
-        };
-    }
-    if (includesAny(["media", "image", "resize", "translation", "white background", "image editor", "batch resize", "图片", "翻译", "白底", "尺寸"])) {
-        return {
-            ...base,
-            category: "media-processing",
-            retryable: includesAny(["failurekind=transient", "retryable=true"]),
-            autoRetryRecommended: false,
-            nextAction: includesAny(["failurekind=transient", "retryable=true"])
-                ? "Dianxiaomi reported a temporary media-tool issue. Retry only after confirming the same image tool can complete successfully."
-                : "Check the Dianxiaomi image tool result, fix invalid images or tool configuration, then retry this product."
         };
     }
     return {
@@ -4191,12 +4688,12 @@ export const classifyDianxiaomiWorkFailure = (reason, source = "queue-daemon") =
         nextAction: "Review the latest automation report and logs before retrying this product."
     };
 };
-export const startDianxiaomiDryRun = (input = {}) => startAutomationJob("dry-run", input);
+export const startDianxiaomiDryRun = (input: AutomationDryRunStartInput = {}) => startAutomationJob("dry-run", input);
 export const listDianxiaomiDryRunJobs = (limit = 20) => listAutomationJobs("dry-run", limit);
 export const getDianxiaomiDryRunJob = (id) => getAutomationJob("dry-run", id);
 export const getDianxiaomiDryRunJobLog = (id, maxChars = 4000) => getAutomationJobLog("dry-run", id, maxChars);
-export const startDianxiaomiRepairPreview = (input = {}) => startAutomationJob("repair-preview", input);
-export const startDianxiaomiRepairPreviewForWorkItem = (workItemId, input = {}) => {
+export const startDianxiaomiRepairPreview = (input: AutomationDryRunStartInput = {}) => startAutomationJob("repair-preview", input);
+export const startDianxiaomiRepairPreviewForWorkItem = (workItemId: string, input: AutomationDryRunStartInput = {}) => {
     const exported = exportDianxiaomiRepairPreview(workItemId);
     if (!exported) {
         return null;
@@ -4226,8 +4723,8 @@ export const startDianxiaomiRepairPreviewForWorkItem = (workItemId, input = {}) 
 export const listDianxiaomiRepairPreviewJobs = (limit = 20) => listAutomationJobs("repair-preview", limit);
 export const getDianxiaomiRepairPreviewJob = (id) => getAutomationJob("repair-preview", id);
 export const getDianxiaomiRepairPreviewJobLog = (id, maxChars = 4000) => getAutomationJobLog("repair-preview", id, maxChars);
-export const startDianxiaomiRepairApply = (input = {}) => startAutomationJob("repair-apply", input);
-export const startDianxiaomiRepairApplyForWorkItem = (workItemId, input = {}) => {
+export const startDianxiaomiRepairApply = (input: AutomationDryRunStartInput = {}) => startAutomationJob("repair-apply", input);
+export const startDianxiaomiRepairApplyForWorkItem = (workItemId: string, input: AutomationDryRunStartInput = {}) => {
     const exported = exportDianxiaomiRepairPreview(workItemId);
     if (!exported) {
         return null;
@@ -4257,15 +4754,15 @@ export const startDianxiaomiRepairApplyForWorkItem = (workItemId, input = {}) =>
 export const listDianxiaomiRepairApplyJobs = (limit = 20) => listAutomationJobs("repair-apply", limit);
 export const getDianxiaomiRepairApplyJob = (id) => getAutomationJob("repair-apply", id);
 export const getDianxiaomiRepairApplyJobLog = (id, maxChars = 4000) => getAutomationJobLog("repair-apply", id, maxChars);
-export const startDianxiaomiFillDraft = (input = {}) => startAutomationJob("fill-draft", input);
+export const startDianxiaomiFillDraft = (input: AutomationDryRunStartInput = {}) => startAutomationJob("fill-draft", input);
 export const listDianxiaomiFillDraftJobs = (limit = 20) => listAutomationJobs("fill-draft", limit);
 export const getDianxiaomiFillDraftJob = (id) => getAutomationJob("fill-draft", id);
 export const getDianxiaomiFillDraftJobLog = (id, maxChars = 4000) => getAutomationJobLog("fill-draft", id, maxChars);
-export const startDianxiaomiSaveDraft = (input = {}) => startAutomationJob("save-draft", input);
+export const startDianxiaomiSaveDraft = (input: AutomationDryRunStartInput = {}) => startAutomationJob("save-draft", input);
 export const listDianxiaomiSaveDraftJobs = (limit = 20) => listAutomationJobs("save-draft", limit);
 export const getDianxiaomiSaveDraftJob = (id) => getAutomationJob("save-draft", id);
 export const getDianxiaomiSaveDraftJobLog = (id, maxChars = 4000) => getAutomationJobLog("save-draft", id, maxChars);
-export const startDianxiaomiSubmitListing = (input = {}) => startAutomationJob("submit-listing", input);
+export const startDianxiaomiSubmitListing = (input: AutomationDryRunStartInput = {}) => startAutomationJob("submit-listing", input);
 export const listDianxiaomiSubmitListingJobs = (limit = 20) => listAutomationJobs("submit-listing", limit);
 export const getDianxiaomiSubmitListingJob = (id) => getAutomationJob("submit-listing", id);
 export const getDianxiaomiSubmitListingJobLog = (id, maxChars = 4000) => getAutomationJobLog("submit-listing", id, maxChars);
@@ -4292,14 +4789,20 @@ const updateFullFlowStage = (flowId, stageName, patch) => {
     }));
 };
 const runFullFlowStage = async (flowId, mode, input) => {
-    const targetFingerprint = buildAutomationTargetFingerprint(input);
+  const targetFingerprint = buildAutomationTargetFingerprint(input);
+  const stageInput = mode === "save-draft" || mode === "submit-listing"
+        ? {
+            ...input,
+            skipDraftFill: true
+        }
+        : input;
     updateFullFlowStage(flowId, mode, {
         status: "running",
         startedAt: new Date().toISOString(),
         error: null
     });
     releaseTargetLock(targetFingerprint, flowId);
-    const started = startAutomationJob(mode, input);
+    const started = startAutomationJob(mode, stageInput);
     runningTargetLocks.set(targetFingerprint, flowId);
     updateFullFlowStage(flowId, mode, {
         jobId: started.id
@@ -4322,7 +4825,9 @@ const runFullFlow = async (id) => {
     if (!job) {
         return;
     }
+    let lockedProfilePath: string | null = null;
     try {
+        lockedProfilePath = await acquireFullFlowProfileLock(job.input.profile, id);
         await runFullFlowStage(id, "dry-run", job.input);
         if (job.input.repairPlanFile) {
             await runFullFlowStage(id, "repair-preview", job.input);
@@ -4360,13 +4865,11 @@ const runFullFlow = async (id) => {
     }
     finally {
         releaseTargetLock(job.targetFingerprint, id);
+        releaseFullFlowProfileLock(lockedProfilePath, id);
     }
 };
-export const startDianxiaomiFullFlow = (input = {}, metadata = {}) => {
-    const normalizedInput = {
-        ...normalizeAutomationStartInput(input),
-        mediaAutomationMode: input.mediaAutomationMode ?? "unattended-apply"
-    };
+export const startDianxiaomiFullFlow = (input: AutomationDryRunStartInput = {}, metadata: Record<string, any> = {}) => {
+    const normalizedInput = applyAutomationMediaDefaults(normalizeAutomationStartInput(input), "unattended-apply");
     const targetFingerprint = buildAutomationTargetFingerprint(normalizedInput);
     if (getRunningTargetJobId(targetFingerprint)) {
         throw new AutomationSafetyGateError(`target already has a running automation job: ${getRunningTargetJobId(targetFingerprint)}`);
@@ -4409,14 +4912,154 @@ export const listDianxiaomiFullFlowJobs = (limit = 20) => Array.from(fullFlowJob
     .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
     .slice(0, limit);
 export const getDianxiaomiFullFlowJob = (id) => fullFlowJobs.get(id) ?? null;
-export const startDianxiaomiQueueRun = (input = {}, options = {}) => {
+// P0-G: if the last N (default 3) full-flow jobs all failed with
+// `write-blocked-wrong-surface`, the active selector config is the suspect.
+// Restore the previous selector config version so the next tick has a
+// known-good baseline. Returns a structured rollback event for the audit
+// trail; the caller (queue-run) surfaces it on the dashboard.
+//
+// This is intentionally narrow: only `write-blocked-wrong-surface` qualifies,
+// so transient network / media / publish failures cannot trigger a rollback.
+// It also requires at least 2 selector config versions to exist (so we have
+// something to roll back TO).
+const AUTO_ROLLBACK_BLOCKING_STEP_ID = "write-blocked-wrong-surface"
+
+// P1-14: a full-flow failure counts toward auto-rollback when the failed
+// report shows a SELECTOR regression, not a content/value problem. These are:
+//   - target-surface failed (page not recognized as an edit surface)
+//   - write-blocked-* (fill/save/submit refused because surface invalid)
+//   - fill-<field> failed with "字段" / "field" not found (selector miss)
+//   - write-verify-failed-* (P0-E: wrote but DOM value didn't take — usually
+//     a wrong selector pointing at the wrong input)
+// A publish-validation failure about a MISSING VALUE (e.g. "missing required
+// attribute Color") is NOT a selector problem and must not trigger rollback.
+const isFullFlowSurfaceFailure = (job) => {
+    const failedStage = job?.stages?.find((stage) => stage.status === "failed")
+    if (!failedStage?.reportPath) {
+        return false
+    }
+    try {
+        const report = JSON.parse(readFileSync(failedStage.reportPath, "utf8"))
+        const steps = Array.isArray(report?.steps) ? report.steps : []
+        const failedStep = steps.find((step) => step?.id === "target-surface" && step?.status === "failed")
+        if (failedStep) {
+            return true
+        }
+        // Downstream write-block step added when target-surface is unrecognized.
+        const writeBlocked = steps.find((step) => step?.id?.startsWith("write-blocked-") && step?.status === "failed")
+        if (writeBlocked) {
+            return true
+        }
+        // P1-14: write-verify failure (P0-E) — the value was written but the DOM
+        // value did not match, which points at a stale/wrong field selector.
+        const writeVerifyFailed = steps.find((step) => step?.id?.startsWith("write-verify-failed-") && step?.status === "failed")
+        if (writeVerifyFailed) {
+            return true
+        }
+        // P1-14: a fill-<field> step that failed because the field selector was
+        // not found ("未找到字段" / "field missing"). Distinguish from value
+        // problems by requiring the not-found wording.
+        const fillSelectorMiss = steps.find((step) =>
+            typeof step?.id === "string"
+            && step.id.startsWith("fill-")
+            && step.status === "failed"
+            && typeof step.detail === "string"
+            && /未找到字段|field missing|field not found|未找到属性字段/i.test(step.detail))
+        return Boolean(fillSelectorMiss)
+    } catch {
+        return false
+    }
+}
+
+const maybeAutoRollbackBadSelectorConfig = (consecutiveThreshold = 3) => {
+    const recent = listDianxiaomiFullFlowJobs(consecutiveThreshold)
+    if (recent.length < consecutiveThreshold) {
+        return null
+    }
+    if (!recent.every((job) => job.status === "failed" && isFullFlowSurfaceFailure(job))) {
+        return null
+    }
+    // versions are sorted newest first; pick the second-newest so we restore
+    // the version BEFORE the most recent (suspect) save.
+    const versions = getSelectorConfigVersions(20)
+    if (versions.length < 2) {
+        return null
+    }
+    const targetVersion = versions[1]
+    const restored = restoreSelectorConfigVersion(targetVersion.id, { confirmDangerousChanges: true })
+    if (!restored) {
+        return null
+    }
+    return {
+        reason: `${consecutiveThreshold} consecutive full-flow jobs failed with a selector regression (target-surface / write-blocked / write-verify / field-not-found)`,
+      restoredVersionId: targetVersion.id,
+      restoredAt: targetVersion.createdAt,
+      jobIds: recent.map((job) => job.id)
+    }
+}
+
+// P1-4: walk every ready work item, recompute pricing when rules changed or
+// drafts went stale, and persist the result. Returns a small audit summary
+// the caller can surface on the dashboard.
+const refreshStalePricingForReadyWorkItems = (input: AutomationDryRunStartInput = {}) => {
+    const items = listScopedDianxiaomiProductWorkItems(input)
+    const refreshed: Array<{ workItemId: string; reason: string }> = []
+    for (const item of items) {
+        if (item.status !== "ready-for-automation") {
+            continue
+        }
+        // P1-4: only recompute pricing for items that ALREADY have a task.
+        // Never create a task here — creating one re-touches the work item
+        // (bumping updatedAt and selection order), which would let the
+        // pricing-refresh pass change which item the queue picks.
+        const task = findTaskByDianxiaomiWorkItemId(item.id)
+        if (!task) {
+            continue
+        }
+        const result = recomputeDraftPricingIfStale(task)
+        if (result.recomputed) {
+            persistPlannerState()
+            refreshed.push({ workItemId: item.id, reason: result.reason })
+        }
+    }
+    return {
+        refreshedCount: refreshed.length,
+        refreshedItemIds: refreshed.map((entry) => entry.workItemId),
+        refreshed
+    }
+}
+
+export const startDianxiaomiQueueRun = (input: any = {}, options: Record<string, any> = {}) => {
     const limit = Math.max(1, Math.min(20, Math.floor(input.limit ?? 5)));
     const startedAt = new Date().toISOString();
     const id = `automation-queue-run-${timestampId()}`;
+    const storeScope = getAutomationStoreScope(input);
+    const itemScope = getAutomationItemScope(input);
+    // P0-G: if the last few full-flow jobs all failed with the same selector
+    // problem, the new selector config is the suspect. Roll it back to the
+    // previous version so the next tick has a known-good baseline. This is
+    // intentionally narrow: only `write-blocked-wrong-surface` qualifies, so
+    // transient network / media / publish failures cannot trigger a rollback.
+    const selectorRollback = maybeAutoRollbackBadSelectorConfig(3);
+    // P1-4: refresh stale pricing on every ready work item before selecting.
+    // This catches operators who changed pricing rules (rulesHash mismatch)
+    // or whose drafts are older than 6 hours. The audit trail records
+    // how many items were recomputed.
+    const pricingRefresh = refreshStalePricingForReadyWorkItems(input);
     const autoRetryReleasedIds = options.releasedAutoRetryIds
-        ?? (options.releaseAutoRetry === false ? [] : releaseAutoRetryDianxiaomiWorkItems());
-    const readyItems = listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER)
-        .filter((item) => item.status === "ready-for-automation")
+        ?? (options.releaseAutoRetry === false ? [] : releaseAutoRetryDianxiaomiWorkItems(input));
+    const readyItems = listScopedDianxiaomiProductWorkItems(input)
+        .filter((item) =>
+            item.status === "ready-for-automation"
+            // P0-B: skip items that already completed a successful Dianxiaomi submit.
+            // Defends against race conditions where full-flow success has not yet
+            // promoted the item to `edited` (or the status flip raced with a tick).
+            && item.publishOutcome?.route !== "published"
+            // P1-5: skip items that another automation path is currently running.
+            // This blocks concurrent queue-run / recovery-run / manual-trial
+            // triggers from picking the same item twice.
+            && !inFlightWorkItemIds.has(item.id)
+        )
         .slice(0, limit);
     const flowJobIds = [];
     const skippedItems = [];
@@ -4470,6 +5113,11 @@ export const startDianxiaomiQueueRun = (input = {}, options = {}) => {
         }
         try {
             const taskId = repairExport?.task.id ?? taskResult?.task.id ?? null;
+            // P1-5: mark this work item as in-flight before the full-flow
+            // job starts so a concurrent queue / recovery / manual-trial
+            // trigger cannot double-pick it. The flag is cleared when the
+            // full-flow job resolves (in resolveFullFlowWorkItemOutcome).
+            markWorkItemInFlight(workItem.id);
             const flow = startDianxiaomiFullFlow({
                 ...flowInput,
                 url: input.url ?? workItem.pageUrl,
@@ -4483,7 +5131,6 @@ export const startDianxiaomiQueueRun = (input = {}, options = {}) => {
                 source: "queue-run"
             });
             flowJobIds.push(flow.id);
-            updateDianxiaomiProductWorkItemStatus(workItem.id, "edited", `automation full-flow queued: ${flow.id}`);
         }
         catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
@@ -4497,12 +5144,22 @@ export const startDianxiaomiQueueRun = (input = {}, options = {}) => {
     const result = {
         id,
         startedAt,
+        storeId: storeScope.storeId,
+        storeName: storeScope.storeName,
+        itemUrls: itemScope.itemUrls.length > 0 ? itemScope.itemUrls : undefined,
+        sourceBuckets: itemScope.sourceBuckets.length > 0 ? itemScope.sourceBuckets : undefined,
         limit,
         queued: flowJobIds.length,
         skipped: skippedItems.length,
         autoRetryReleasedIds,
         flowJobIds,
-        skippedItems
+        skippedItems,
+        // P0-G: surfaces the auto-rollback event (if any) so the dashboard's
+        // audit card can show what changed before this tick ran.
+        selectorRollback,
+        // P1-4: surfaces how many work items had their pricing recomputed
+        // before this tick.
+        pricingRefresh
     };
     queueRunHistory.unshift(result);
     queueRunHistory.splice(50);
@@ -4517,6 +5174,8 @@ const cloneRecoveryRun = (run) => ({
     input: {
         ...run.input,
         mediaAutomationTools: run.input.mediaAutomationTools ? [...run.input.mediaAutomationTools] : undefined,
+        itemUrls: run.input.itemUrls ? [...run.input.itemUrls] : undefined,
+        sourceBuckets: run.input.sourceBuckets ? [...run.input.sourceBuckets] : undefined,
         workItemIds: run.input.workItemIds ? [...run.input.workItemIds] : undefined
     },
     items: run.items.map(cloneRecoveryRunItem)
@@ -4805,17 +5464,31 @@ const recoveryPauseForWorkItem = (item, failureSummaries = collectRecoveryFailur
         return typeof failure.repairAction === "string" && actionLabels.includes(failure.repairAction);
     });
     for (const matchingFailure of matchingFailures) {
-        const release = recoveryReleaseForFailure(item, matchingFailure);
-        if (release) {
-            recordRecoveryRelease(matchingFailure, release);
-            continue;
+        // P1-13: hard cumulative cap. Once a work item / repair action has
+        // failed recovery RECOVERY_MAX_CUMULATIVE_ATTEMPTS times, a release
+        // event can no longer un-pause it — it must go to the manual-step
+        // budget. This prevents an item from bouncing through the
+        // released-retry lane indefinitely on repeated one-use release
+        // events.
+        const capped = (matchingFailure.count ?? 0) >= RECOVERY_MAX_CUMULATIVE_ATTEMPTS;
+        if (!capped) {
+            const release = recoveryReleaseForFailure(item, matchingFailure);
+            if (release) {
+                recordRecoveryRelease(matchingFailure, release);
+                continue;
+            }
         }
         return {
             ...matchingFailure,
-            pausedUntil: matchingFailure.kind === "repair-action" ? "selector-recalibrated" : "work-item-updated",
-            releaseReason: matchingFailure.kind === "repair-action"
-                ? "rerun real Dianxiaomi selector/media calibration or regenerate the repair plan"
-                : "update the Dianxiaomi product or regenerate its repair plan before another automatic recovery attempt"
+            cappedByAttemptLimit: capped,
+            pausedUntil: capped
+                ? "manual-step-budget"
+                : matchingFailure.kind === "repair-action" ? "selector-recalibrated" : "work-item-updated",
+            releaseReason: capped
+                ? `recovery attempt cap reached (${matchingFailure.count}/${RECOVERY_MAX_CUMULATIVE_ATTEMPTS}); move this item to the manual-step budget and resolve it by hand`
+                : matchingFailure.kind === "repair-action"
+                    ? "rerun real Dianxiaomi selector/media calibration or regenerate the repair plan"
+                    : "update the Dianxiaomi product or regenerate its repair plan before another automatic recovery attempt"
         };
     }
     return null;
@@ -5015,6 +5688,10 @@ const runDianxiaomiRecoveryRun = async (id) => {
             failRecoveryRunItem(id, item.workItemId, "failed", "work item no longer exists");
             continue;
         }
+        if (!matchesAutomationStoreScope(workItem, run.input)) {
+            failRecoveryRunItem(id, item.workItemId, "failed", "work item is outside selected store scope");
+            continue;
+        }
         const exported = exportDianxiaomiRepairPreview(workItem.id);
         if (!exported) {
             failRecoveryRunItem(id, item.workItemId, "failed", "could not export repair task and plan");
@@ -5074,7 +5751,6 @@ const runDianxiaomiRecoveryRun = async (id) => {
             updateRecoveryRunItem(id, workItem.id, {
                 fullFlowJobId: fullFlow.id
             });
-            updateDianxiaomiProductWorkItemStatus(workItem.id, "edited", `automation recovery full-flow queued: ${fullFlow.id}`);
             const fullFlowJob = await waitForFullFlowJob(fullFlow.id);
             if (fullFlowJob.status !== "completed") {
                 failRecoveryRunItem(id, workItem.id, "failed", fullFlowJob.error ?? "full-flow failed after repair");
@@ -5106,20 +5782,46 @@ const runDianxiaomiRecoveryRun = async (id) => {
         finishedAt: new Date().toISOString()
     }));
 };
-export const startDianxiaomiRecoveryRun = (input = {}) => {
+export const startDianxiaomiRecoveryRun = (input: any = {}) => {
     const limit = Math.max(1, Math.min(20, Math.floor(input.limit ?? 5)));
     const selectedIds = new Set((input.workItemIds ?? []).map((id) => id.trim()).filter(Boolean));
     const allWorkItems = listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER);
+    const scopedWorkItems = filterItemsByAutomationStoreScope(allWorkItems, input);
     const requestedItems = selectedIds.size > 0
-        ? [...selectedIds].map((id) => allWorkItems.find((item) => item.id === id) ?? id)
-        : allWorkItems;
-    const items = requestedItems.slice(0, limit).map((candidate) => {
-        if (typeof candidate === "string") {
+        ? [...selectedIds].map((id) => {
+            const workItem = allWorkItems.find((item) => item.id === id);
+            if (!workItem) {
+                return {
+                    kind: "missing",
+                    workItemId: id,
+                    title: id,
+                    reason: "work item not found"
+                };
+            }
+            if (!matchesAutomationStoreScope(workItem, input)) {
+                return {
+                    kind: "out-of-scope",
+                    workItemId: id,
+                    title: workItem.title ?? id,
+                    reason: "work item is outside the selected store scope"
+                };
+            }
             return {
-                workItemId: candidate,
-                title: candidate,
+                kind: "work-item",
+                workItem
+            };
+        })
+        : scopedWorkItems.map((workItem) => ({
+            kind: "work-item",
+            workItem
+        }));
+    const items = requestedItems.slice(0, limit).map((candidate) => {
+        if (candidate.kind !== "work-item") {
+            return {
+                workItemId: candidate.workItemId,
+                title: candidate.title,
                 status: "skipped",
-                reason: "work item not found",
+                reason: candidate.reason,
                 repairPreviewJobId: null,
                 repairApplyJobId: null,
                 fullFlowJobId: null,
@@ -5129,10 +5831,11 @@ export const startDianxiaomiRecoveryRun = (input = {}) => {
                 finishedAt: new Date().toISOString()
             };
         }
-        const blockReason = getDianxiaomiBrowserRecoveryBlockReason(candidate);
+        const { workItem: candidateWorkItem } = candidate;
+        const blockReason = getDianxiaomiBrowserRecoveryBlockReason(candidateWorkItem);
         return {
-            workItemId: candidate.id,
-            title: candidate.title,
+            workItemId: candidateWorkItem.id,
+            title: candidateWorkItem.title,
             status: blockReason ? "skipped" : "repair-preview-running",
             reason: blockReason,
             repairPreviewJobId: null,
@@ -5182,7 +5885,9 @@ const cloneQueueDaemonState = (state) => ({
     ...state,
     input: {
         ...state.input,
-        mediaAutomationTools: state.input.mediaAutomationTools ? [...state.input.mediaAutomationTools] : undefined
+        mediaAutomationTools: state.input.mediaAutomationTools ? [...state.input.mediaAutomationTools] : undefined,
+        itemUrls: state.input.itemUrls ? [...state.input.itemUrls] : undefined,
+        sourceBuckets: state.input.sourceBuckets ? [...state.input.sourceBuckets] : undefined
     },
     trackedFlowJobIds: [...state.trackedFlowJobIds],
     resolvedFlowJobIds: [...state.resolvedFlowJobIds],
@@ -5192,6 +5897,8 @@ const cloneQueueDaemonState = (state) => ({
         queueRun: tick.queueRun ? {
             ...tick.queueRun,
             autoRetryReleasedIds: [...(tick.queueRun.autoRetryReleasedIds ?? [])],
+            itemUrls: tick.queueRun.itemUrls ? [...tick.queueRun.itemUrls] : undefined,
+            sourceBuckets: tick.queueRun.sourceBuckets ? [...tick.queueRun.sourceBuckets] : undefined,
             flowJobIds: [...tick.queueRun.flowJobIds],
             skippedItems: tick.queueRun.skippedItems.map((item) => ({ ...item }))
         } : null,
@@ -5269,16 +5976,22 @@ const loadAutomationRunnerRuntimeState = () => {
     loadProfileLockAuditLedger();
     loadQueueDaemonState();
 };
-const normalizeQueueDaemonInput = (input = {}) => {
+const normalizeQueueDaemonInput = (input: Partial<AutomationQueueDaemonInput> = {}) => {
     const { intervalSeconds, maxConsecutiveFailures, ...queueInput } = input;
+    const normalizedMediaInput = applyAutomationMediaDefaults(queueInput, "unattended-apply");
+    const itemUrls = normalizeAutomationItemUrls(queueInput.itemUrls);
+    const sourceBuckets = normalizeAutomationSourceBuckets(queueInput.sourceBuckets);
     return {
         input: {
-            ...queueInput,
+            ...normalizedMediaInput,
+            itemUrls: itemUrls.length > 0 ? itemUrls : undefined,
+            sourceBuckets: sourceBuckets.length > 0 ? sourceBuckets : undefined,
             limit: clampInteger(queueInput.limit, 5, 1, 20),
-            mediaAutomationMode: queueInput.mediaAutomationMode ?? "unattended-apply",
+            mediaAutomationMode: normalizedMediaInput.mediaAutomationMode ?? "unattended-apply",
+            mediaAutomationTools: normalizedMediaInput.mediaAutomationTools,
             submitAfterSave: queueInput.submitAfterSave ?? false,
             submitMaxAttempts: clampInteger(queueInput.submitMaxAttempts, 3, 1, 10)
-        },
+        } as AutomationQueueDaemonInput,
         intervalSeconds: clampInteger(intervalSeconds, 300, 15, 24 * 60 * 60),
         maxConsecutiveFailures: clampInteger(maxConsecutiveFailures, 3, 1, 100)
     };
@@ -5312,6 +6025,17 @@ const pushQueueDaemonTick = (tick) => {
         ticks: [tick, ...queueDaemonState.ticks].slice(0, 50)
     };
     persistQueueDaemonState();
+    // P1-7: fire the alert webhook for "block" decisions so off-hours
+    // operators can react without watching the dashboard.
+    if (tick.decision === "block" || tick.status === "failed") {
+        void fireAlertWebhook({
+            decision: tick.decision ?? "block",
+            reason: tick.reason ?? "queue daemon tick blocked",
+            subject: tick.subject ?? null,
+            workItemIds: tick.workItemIds ?? [],
+            tickId: tick.id ?? null
+        })
+    }
 };
 const mergeQueueDaemonFlowJobIds = (nextIds) => Array.from(new Set([
     ...queueDaemonState.trackedFlowJobIds,
@@ -5425,10 +6149,10 @@ const classifyQueueDaemonRun = (queueRun) => {
         reason: `no jobs queued; skipped ${queueRun.skipped}: ${firstReason}`
     };
 };
-const listDianxiaomiReleasedRetryCandidateIds = (limit) => {
-    const failureSummaries = collectRecoveryFailureSummaries();
-    const items = listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER)
+const listDianxiaomiReleasedRetryCandidateIds = (limit, input: AutomationDryRunStartInput = {}) => {
+    const items = listScopedDianxiaomiProductWorkItems(input)
         .filter((item) => isDianxiaomiWorkItemBrowserRecoveryCandidate(item));
+    const failureSummaries = filterRecoveryFailureSummariesForItems(collectRecoveryFailureSummaries(), items);
     recordReleasedRecoveryPauses(items, failureSummaries);
     return items
         .filter((item) => !isDianxiaomiWorkItemBrowserRecoveryPaused(item, failureSummaries))
@@ -5437,10 +6161,10 @@ const listDianxiaomiReleasedRetryCandidateIds = (limit) => {
         .slice(0, limit)
         .map((item) => item.workItemId);
 };
-const listDianxiaomiBrowserRecoveryCandidateIds = (limit) => {
-    const failureSummaries = collectRecoveryFailureSummaries();
-    const items = listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER)
+const listDianxiaomiBrowserRecoveryCandidateIds = (limit, input: AutomationDryRunStartInput = {}) => {
+    const items = listScopedDianxiaomiProductWorkItems(input)
         .filter((item) => isDianxiaomiWorkItemBrowserRecoveryCandidate(item));
+    const failureSummaries = filterRecoveryFailureSummariesForItems(collectRecoveryFailureSummaries(), items);
     recordReleasedRecoveryPauses(items, failureSummaries);
     const releasedRetryCandidateIds = new Set(items
         .filter((item) => !isDianxiaomiWorkItemBrowserRecoveryPaused(item, failureSummaries))
@@ -5455,7 +6179,7 @@ const listDianxiaomiBrowserRecoveryCandidateIds = (limit) => {
 };
 const startQueueDaemonRecoveryRun = (input) => {
     const limit = Math.max(1, Math.min(20, Math.floor(input.limit ?? 5)));
-    const releasedRetryWorkItemIds = listDianxiaomiReleasedRetryCandidateIds(RECOVERY_RELEASED_RETRY_BATCH_LIMIT);
+    const releasedRetryWorkItemIds = listDianxiaomiReleasedRetryCandidateIds(RECOVERY_RELEASED_RETRY_BATCH_LIMIT, input);
     if (releasedRetryWorkItemIds.length > 0) {
         return startDianxiaomiRecoveryRun({
             ...input,
@@ -5466,7 +6190,7 @@ const startQueueDaemonRecoveryRun = (input) => {
             recoveryPolicy: "released-retry"
         });
     }
-    const workItemIds = listDianxiaomiBrowserRecoveryCandidateIds(limit);
+    const workItemIds = listDianxiaomiBrowserRecoveryCandidateIds(limit, input);
     if (workItemIds.length === 0) {
         return null;
     }
@@ -5480,7 +6204,7 @@ const startQueueDaemonRecoveryRun = (input) => {
     });
 };
 const startQueueDaemonValidationRerun = (input) => {
-    const policy = getDianxiaomiQueueDaemonHealth().manualBudget.validationClosure.rerunPolicy;
+    const policy = getDianxiaomiQueueDaemonHealth(input).manualBudget.validationClosure.rerunPolicy;
     const eligibleRoutes = new Set([
         "auto-retry",
         "browser-recovery",
@@ -5492,7 +6216,7 @@ const startQueueDaemonValidationRerun = (input) => {
         || !eligibleRoutes.has(policy.route)) {
         return null;
     }
-    const proposal = getDianxiaomiQueueDaemonHealth().manualBudget.trialProposals
+    const proposal = getDianxiaomiQueueDaemonHealth(input).manualBudget.trialProposals
         .find((item) => item.candidateKey === policy.candidateKey);
     if (!proposal) {
         return null;
@@ -5512,8 +6236,8 @@ const startQueueDaemonValidationRerun = (input) => {
         }
     });
 };
-const queueDaemonStartupBlock = (input = {}) => {
-    const health = getDianxiaomiQueueDaemonHealth();
+const queueDaemonStartupBlock = (input: any = {}) => {
+    const health = getDianxiaomiQueueDaemonHealth(input);
     const profileStartupCheck = unattendedBrowserProfileStartupCheck(health.profile);
     if (input.forActivation === true && profileStartupCheck.status === "block") {
         return {
@@ -5629,8 +6353,8 @@ export const tickDianxiaomiQueueDaemon = async () => {
     let flowOutcomes = [];
     try {
         flowOutcomes = recoverQueueDaemonFlowOutcomes();
-        const autoRetryReleasedIds = releaseAutoRetryDianxiaomiWorkItems();
-        const startupBlock = queueDaemonStartupBlock();
+        const autoRetryReleasedIds = releaseAutoRetryDianxiaomiWorkItems(queueDaemonState.input);
+        const startupBlock = queueDaemonStartupBlock(queueDaemonState.input);
         if (startupBlock) {
             const consecutiveFailures = queueDaemonState.consecutiveFailures + 1;
             const shouldPause = consecutiveFailures >= queueDaemonState.maxConsecutiveFailures;
@@ -5684,6 +6408,37 @@ export const tickDianxiaomiQueueDaemon = async () => {
                 queueRun: null,
                 recoveryRun: null,
                 manualBudgetValidationRun: validationRun,
+                flowOutcomes,
+                error: null
+            };
+            queueDaemonState = {
+                ...queueDaemonState,
+                running: false,
+                consecutiveFailures: 0,
+                lastFinishedAt: finishedAt,
+                lastError: null
+            };
+            pushQueueDaemonTick(tick);
+            scheduleQueueDaemonNextRun();
+            return tick;
+        }
+        const unresolvedFlowJobs = listQueueDaemonUnresolvedFlowJobs(queueDaemonState.input);
+        if (unresolvedFlowJobs.length > 0) {
+            const finishedAt = new Date().toISOString();
+            const flowOutcomeReason = flowOutcomes.length > 0 ? summarizeQueueDaemonFlowOutcomes(flowOutcomes) : null;
+            const reason = [
+                `waiting for ${unresolvedFlowJobs.length} running full-flow job(s)`,
+                flowOutcomeReason
+            ].filter(Boolean).join("; ");
+            const tick = {
+                id,
+                startedAt,
+                finishedAt,
+                status: "skipped",
+                category: "awaiting-flow-completion",
+                reason,
+                queueRun: null,
+                recoveryRun: null,
                 flowOutcomes,
                 error: null
             };
@@ -5815,7 +6570,7 @@ export const tickDianxiaomiQueueDaemon = async () => {
         return tick;
     }
 };
-export const startDianxiaomiQueueDaemon = (input = {}) => {
+export const startDianxiaomiQueueDaemon = (input: any = {}) => {
     const normalized = normalizeQueueDaemonInput(input);
     if (queueDaemonTimer) {
         clearTimeout(queueDaemonTimer);

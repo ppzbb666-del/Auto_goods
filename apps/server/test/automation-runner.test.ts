@@ -21,6 +21,7 @@ const {
   buildAutomationModeArgs,
   buildAutomationTargetFingerprint,
   classifyDianxiaomiWorkFailure,
+  collectDianxiaomiSnapshotEnrichmentFromReports,
   getAutomationModeReadiness,
   getDianxiaomiQueueDaemonHealth,
   getDianxiaomiQueueDaemonState,
@@ -33,6 +34,7 @@ const {
   recordManualBudgetProofFromRecoveryTrial,
   restoreDianxiaomiQueueDaemon,
   startDianxiaomiDryRun,
+  getDianxiaomiFullFlowJob,
   startDianxiaomiQueueDaemon,
   startDianxiaomiQueueRun,
   startDianxiaomiRecoveryRun,
@@ -46,8 +48,12 @@ const {
   createTaskFromDianxiaomiCollectedProduct,
   createTaskFromDianxiaomiProductWorkItem,
   exportDianxiaomiRepairPreview,
+  getDianxiaomiPageContext,
   getDianxiaomiProductWorkItem,
+  listDianxiaomiStoreMetrics,
+  mergeDianxiaomiProductWorkItemSnapshot,
   requeueDianxiaomiProductWorkItemAfterFix,
+  saveDianxiaomiPageContext,
   saveDianxiaomiCollectedProduct,
   saveDianxiaomiProductWorkItem,
   updateDianxiaomiProductWorkItemStatus,
@@ -80,6 +86,16 @@ assert.equal(transientMediaFailure.autoRetryRecommended, false, "transient media
 const invalidMediaFailure = classifyDianxiaomiWorkFailure("media-processing-plan: Batch resize failed; failureKind=invalid-media; retryable=false; image size invalid")
 assert.equal(invalidMediaFailure.category, "media-processing", "structured invalid media failures should stay in media category")
 assert.equal(invalidMediaFailure.retryable, false, "invalid media failures should not be retryable until images are fixed")
+
+const helpUrlValidation = validateDianxiaomiAutomationPageUrl("https://help.dianxiaomi.com/search?searchValue=temu")
+assert.equal(helpUrlValidation.valid, false, "help-center URLs should not be accepted as Dianxiaomi automation targets")
+assert.match(helpUrlValidation.reason ?? "", /help-center|product listing edit page/i, "help-center URL validation should explain the block")
+
+const storageQuotaMediaFailure = classifyDianxiaomiWorkFailure("media-processing-plan: Batch resize failed; failureKind=storage-quota; retryable=false; 错误：图片空间不足，您可以通过删除已发布产品的图片或者购买获取更多空间。")
+assert.equal(storageQuotaMediaFailure.category, "media-processing", "image space quota failures should stay in media category")
+assert.equal(storageQuotaMediaFailure.retryable, false, "image space quota failures should not be retryable until space is fixed")
+assert.equal(storageQuotaMediaFailure.autoRetryRecommended, false, "image space quota failures should not auto retry")
+assert.match(storageQuotaMediaFailure.nextAction, /image space|图片空间|购买/, "image space quota failures should point to freeing or buying image space")
 
 const taskFileFailure = classifyDianxiaomiWorkFailure("task file snapshot is stale")
 assert.equal(taskFileFailure.category, "task-file", "task file failures should be classified")
@@ -297,7 +313,8 @@ writeFileSync(publishSuccessReportPath, JSON.stringify({
           }
         ],
         maxAttempts: 3,
-        success: true
+        success: true,
+        verified: true
       }
     }
   ]
@@ -444,6 +461,198 @@ assert.equal(publishOutcomeUpdatedWorkItem?.publishOutcome?.attempts, 2, "work i
 const publishOutcomeHealth = getDianxiaomiQueueDaemonHealth()
 assert(publishOutcomeHealth.workItems.publishFailed >= 1, "queue health should count failed publish outcomes")
 assert(publishOutcomeHealth.workItems.publishRecoveryCandidates >= 1, "queue health should count publish outcomes that can feed recovery handling")
+
+const mediaEnrichmentReportPath = path.join(testDir, "media-enrichment-report.json")
+writeFileSync(mediaEnrichmentReportPath, JSON.stringify({
+  id: "media-enrichment-report",
+  taskId: "task-media-enrichment",
+  taskTitle: "Media enrichment",
+  platform: "dianxiaomi",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/media-enrichment",
+  pageTitle: "Media enrichment",
+  status: "completed",
+  createdAt: new Date().toISOString(),
+  screenshotPath: "",
+  steps: [
+    {
+      id: "media-processing-plan",
+      label: "Media processing",
+      status: "done",
+      detail: "media tools applied",
+      data: {
+        tools: [
+          {
+            id: "image-translation",
+            label: "Image translation",
+            status: "applied",
+            applied: true
+          },
+          {
+            id: "batch-resize",
+            label: "Batch resize",
+            status: "applied",
+            applied: true
+          },
+          {
+            id: "image-editor",
+            label: "Xiaomi image editor",
+            status: "applied",
+            applied: true
+          },
+          {
+            id: "image-management",
+            label: "Image management",
+            status: "applied",
+            applied: true,
+            feedbackState: "success",
+            feedbackMessage: "image check passed"
+          },
+          {
+            id: "white-background",
+            label: "White background",
+            status: "open-failed",
+            applied: false
+          }
+        ]
+      }
+    }
+  ]
+}, null, 2), "utf8")
+const mediaEnrichmentPatch = collectDianxiaomiSnapshotEnrichmentFromReports([mediaEnrichmentReportPath])
+assert.deepEqual(mediaEnrichmentPatch, {
+  mediaToolSignals: ["image translation", "batch resize", "Xiaomi image editor", "image check"],
+  imageCheck: {
+    passed: true
+  }
+}, "completed media reports should map applied Dianxiaomi tools into work item snapshot signals")
+
+const imageCheckIssueReportPath = path.join(testDir, "image-check-issue-report.json")
+writeFileSync(imageCheckIssueReportPath, JSON.stringify({
+  id: "image-check-issue-report",
+  taskId: "task-image-check-issue",
+  taskTitle: "Image check issue",
+  platform: "dianxiaomi",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/image-check-issue",
+  pageTitle: "Image check issue",
+  status: "failed",
+  createdAt: new Date().toISOString(),
+  screenshotPath: "",
+  steps: [
+    {
+      id: "media-processing-plan",
+      label: "Media processing",
+      status: "failed",
+      detail: "image management failed",
+      data: {
+        tools: [
+          {
+            id: "image-management",
+            label: "Image management",
+            status: "apply-failed",
+            applied: false,
+            failureKind: "invalid-media",
+            retryable: false,
+            feedbackMessage: "图片检测发现问题：轮播图尺寸不符合要求；产品图比例错误",
+            imageCheckIssues: [
+              {
+                category: "轮播图",
+                issue: "尺寸",
+                detail: "轮播图尺寸不符合要求"
+              },
+              {
+                category: "产品图",
+                issue: "比例",
+                detail: "产品图比例错误"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}, null, 2), "utf8")
+const imageCheckIssuePatch = collectDianxiaomiSnapshotEnrichmentFromReports([imageCheckIssueReportPath])
+assert.deepEqual(imageCheckIssuePatch, {
+  mediaToolSignals: [],
+  imageCheck: {
+    passed: false,
+    issues: [
+      {
+        category: "轮播图",
+        issue: "尺寸",
+        detail: "轮播图尺寸不符合要求"
+      },
+      {
+        category: "产品图",
+        issue: "比例",
+        detail: "产品图比例错误"
+      }
+    ]
+  }
+}, "image check issue reports should preserve categorized issue details in snapshot enrichment")
+
+const mediaEnrichmentWorkItem = saveDianxiaomiProductWorkItem({
+  id: "unit-media-enrichment-work-item",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-media-enrichment-work-item",
+  pageTitle: "Media enrichment page",
+  title: "Media enrichment work item title",
+  rawTextSample: "complete listing with compliant text and existing image translation",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    imageStats: {
+      minWidthPx: 1200,
+      minHeightPx: 1200,
+      maxWidthPx: 1600,
+      maxHeightPx: 1600,
+      unknownDimensionCount: 0
+    },
+    mediaToolSignals: ["image translation"]
+  },
+  status: "blocked"
+})
+assert(
+  mediaEnrichmentWorkItem.requirements.checks.some((check) => check.id === "media-editor-review" && !check.ok),
+  "before enrichment the image editor review signal should still be missing"
+)
+assert(
+  mediaEnrichmentWorkItem.requirements.checks.some((check) => check.id === "media-english-only-images" && !check.ok),
+  "before enrichment the english-only image check should still be missing"
+)
+const mergedMediaEnrichmentWorkItem = mergeDianxiaomiProductWorkItemSnapshot(
+  mediaEnrichmentWorkItem.id,
+  mediaEnrichmentPatch ?? {}
+)
+assert.equal(mergedMediaEnrichmentWorkItem?.status, "blocked", "snapshot enrichment should preserve the current blocked status until full-flow resolution updates it")
+assert.deepEqual(mergedMediaEnrichmentWorkItem?.snapshot.mediaToolSignals, [
+  "image translation",
+  "batch resize",
+  "Xiaomi image editor",
+  "image check"
+], "snapshot enrichment should merge new media signals without dropping existing ones")
+assert.equal(mergedMediaEnrichmentWorkItem?.snapshot.imageCheck?.passed, true, "snapshot enrichment should persist the image-check pass flag")
+assert(
+  mergedMediaEnrichmentWorkItem?.requirements.checks.some((check) => check.id === "media-editor-review" && check.ok),
+  "snapshot enrichment should rescore the image editor review requirement"
+)
+assert(
+  mergedMediaEnrichmentWorkItem?.requirements.checks.some((check) => check.id === "media-english-only-images" && check.ok),
+  "snapshot enrichment should rescore the english-only image requirement"
+)
+const resolvedMediaEnrichmentWorkItem = updateDianxiaomiProductWorkItemStatus(
+  mediaEnrichmentWorkItem.id,
+  "edited",
+  "media enrichment test resolved"
+)
+assert(
+  resolvedMediaEnrichmentWorkItem?.requirements.checks.some((check) => check.id === "media-english-only-images" && check.ok),
+  "status updates after snapshot enrichment should retain the recomputed media requirements"
+)
 
 const publishAutoRetryRouteOutcome = {
   ...publishFailureOutcome,
@@ -976,6 +1185,7 @@ assert.equal(daemonStarted.input.submitMaxAttempts, 4, "queue daemon should pers
 assert(Array.isArray(daemonStarted.trackedFlowJobIds), "queue daemon should expose tracked full-flow ids")
 assert(Array.isArray(daemonStarted.resolvedFlowJobIds), "queue daemon should expose resolved full-flow ids")
 assert(Array.isArray(daemonStarted.flowOutcomes), "queue daemon should expose recovered full-flow outcomes")
+assert.equal(getDianxiaomiQueueDaemonHealth().flows.unresolved, 0, "queue daemon startup without queued work should not report unresolved flows")
 assert(getDianxiaomiQueueDaemonState().nextRunAt, "queue daemon should schedule a next run")
 assert(existsSync(process.env.QUEUE_DAEMON_STATE_PATH), "queue daemon should persist state to disk")
 const persistedDaemonState = JSON.parse(readFileSync(process.env.QUEUE_DAEMON_STATE_PATH, "utf8")) as { status: string; input: { limit?: number }; trackedFlowJobIds?: string[]; resolvedFlowJobIds?: string[]; flowOutcomes?: unknown[] }
@@ -1114,6 +1324,168 @@ const blockedManualFlowItem = await waitForWorkItemStatus(manualFullFlowFailureW
 assert(blockedManualFlowItem.failureDiagnosis, "manual queue-run safety failure should persist a work item diagnosis")
 assert.equal(blockedManualFlowItem.failureDiagnosis?.source, "queue-daemon", "manual queue-run diagnosis should keep queue source")
 assert.equal(blockedManualFlowItem.failureDiagnosis?.autoRetryRecommended, false, "manual queue-run wrong-surface failures should not auto retry")
+
+const scopedPendingPublishWorkItem = saveDianxiaomiProductWorkItem({
+  id: "unit-scope-pending-publish-work-item",
+  storeId: "unit-scope-store",
+  storeName: "Unit Scope Store",
+  sourceBucket: "pending-publish",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-scope-pending-publish-work-item",
+  pageTitle: "Scoped pending publish page",
+  title: "Scoped pending publish work item",
+  rawTextSample: "",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    mediaToolSignals: ["image translation"]
+  },
+  status: "ready-for-automation"
+})
+const scopedListingDraftWorkItem = saveDianxiaomiProductWorkItem({
+  id: "unit-scope-listing-draft-work-item",
+  storeId: "unit-scope-store",
+  storeName: "Unit Scope Store",
+  sourceBucket: "listing-draft",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-scope-listing-draft-work-item",
+  pageTitle: "Scoped listing draft page",
+  title: "Scoped listing draft work item",
+  rawTextSample: "Temu半托管产品>待发布>编辑",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    mediaToolSignals: ["image translation"]
+  },
+  status: "ready-for-automation"
+})
+const otherStorePendingPublishWorkItem = saveDianxiaomiProductWorkItem({
+  id: "unit-scope-other-store-work-item",
+  storeId: "unit-scope-other-store",
+  storeName: "Unit Scope Other Store",
+  sourceBucket: "pending-publish",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-scope-other-store-work-item",
+  pageTitle: "Other store pending publish page",
+  title: "Other store pending publish work item",
+  rawTextSample: "",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    mediaToolSignals: ["image translation"]
+  },
+  status: "ready-for-automation"
+})
+const scopedPendingPublishRun = startDianxiaomiQueueRun({
+  limit: 5,
+  storeId: "unit-scope-store",
+  storeName: "Unit Scope Store",
+  sourceBuckets: ["pending-publish"],
+  url: "https://example.com/not-dianxiaomi",
+  selectorConfig: validSelectorConfigPath
+})
+assert.deepEqual(
+  scopedPendingPublishRun.sourceBuckets,
+  ["pending-publish"],
+  "queue-run results should retain requested source bucket scope"
+)
+assert.equal(scopedPendingPublishRun.storeId, "unit-scope-store", "queue-run results should retain requested store scope")
+assert.deepEqual(
+  scopedPendingPublishRun.skippedItems.map((item) => item.workItemId),
+  [scopedPendingPublishWorkItem.id],
+  "queue-run source bucket scope should only target matching work items in the selected store"
+)
+assert.equal(
+  getDianxiaomiProductWorkItem(scopedListingDraftWorkItem.id)?.status,
+  "ready-for-automation",
+  "non-matching source bucket work items should remain untouched"
+)
+assert.equal(
+  getDianxiaomiProductWorkItem(otherStorePendingPublishWorkItem.id)?.status,
+  "ready-for-automation",
+  "other-store work items should remain untouched by a scoped queue-run"
+)
+updateDianxiaomiProductWorkItemStatus(scopedPendingPublishWorkItem.id, "edited", "scoped pending publish fixture complete")
+updateDianxiaomiProductWorkItemStatus(scopedListingDraftWorkItem.id, "edited", "scoped listing draft fixture complete")
+updateDianxiaomiProductWorkItemStatus(otherStorePendingPublishWorkItem.id, "edited", "other store scoped fixture complete")
+
+const scopedItemUrlTargetWorkItem = saveDianxiaomiProductWorkItem({
+  id: "unit-scope-item-url-target-work-item",
+  storeId: "unit-item-url-store",
+  storeName: "Unit Item URL Store",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-scope-item-url-target-work-item",
+  pageTitle: "Scoped item-url target page",
+  title: "Scoped item-url target work item",
+  rawTextSample: "Temu半托管产品>待发布>编辑",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    mediaToolSignals: ["image translation"]
+  },
+  status: "ready-for-automation"
+})
+const scopedItemUrlUntouchedWorkItem = saveDianxiaomiProductWorkItem({
+  id: "unit-scope-item-url-untouched-work-item",
+  storeId: "unit-item-url-store",
+  storeName: "Unit Item URL Store",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-scope-item-url-untouched-work-item",
+  pageTitle: "Scoped item-url untouched page",
+  title: "Scoped item-url untouched work item",
+  rawTextSample: "Temu半托管产品>待发布>编辑",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    mediaToolSignals: ["image translation"]
+  },
+  status: "ready-for-automation"
+})
+const scopedItemUrlRun = startDianxiaomiQueueRun({
+  limit: 5,
+  storeId: "unit-item-url-store",
+  storeName: "Unit Item URL Store",
+  itemUrls: [scopedItemUrlTargetWorkItem.pageUrl],
+  url: "https://example.com/not-dianxiaomi",
+  selectorConfig: validSelectorConfigPath
+})
+assert.deepEqual(
+  scopedItemUrlRun.itemUrls,
+  [scopedItemUrlTargetWorkItem.pageUrl],
+  "queue-run results should retain requested item-url scope"
+)
+assert.deepEqual(
+  scopedItemUrlRun.skippedItems.map((item) => item.workItemId),
+  [scopedItemUrlTargetWorkItem.id],
+  "queue-run item-url scope should only target explicitly requested work items"
+)
+assert.equal(
+  getDianxiaomiProductWorkItem(scopedItemUrlUntouchedWorkItem.id)?.status,
+  "ready-for-automation",
+  "work items outside the requested item-url scope should remain untouched"
+)
+updateDianxiaomiProductWorkItemStatus(scopedItemUrlTargetWorkItem.id, "edited", "scoped item-url target fixture complete")
+updateDianxiaomiProductWorkItemStatus(scopedItemUrlUntouchedWorkItem.id, "edited", "scoped item-url untouched fixture complete")
 
 const retryAfterFixPublishWorkItem = saveDianxiaomiProductWorkItem({
   id: "unit-retry-after-fix-publish-work-item",
@@ -2410,6 +2782,35 @@ assert.equal(invalidMediaRepairWorkItem.repairActionGate?.status, "assisted", "a
 assert.match(invalidMediaRepairWorkItem.repairActionGate?.message ?? "", /默认无人值守动作已暂停/, "assisted action gates should explain why default actions are paused")
 assert(invalidMediaRepairWorkItem.repairPlan?.actions.some((action) => action.type === "review-image"), "invalid media repair plan should review images")
 
+const storageQuotaMediaRepairWorkItem = saveDianxiaomiProductWorkItem({
+  id: "unit-storage-quota-media-repair-plan-work-item",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-storage-quota-media-repair-plan-work-item",
+  pageTitle: "Storage quota media repair page",
+  title: "Storage quota media repair plan work item",
+  rawTextSample: "complete real listing with SKU and image signals",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    mediaToolSignals: ["batch resize", "image translation"]
+  },
+  status: "blocked",
+  failureDiagnosis: {
+    ...storageQuotaMediaFailure,
+    updatedAt: new Date().toISOString()
+  }
+})
+assert.equal(storageQuotaMediaRepairWorkItem.repairPlan?.status, "manual", "image space quota failures should enter manual-step budget")
+assert.equal(storageQuotaMediaRepairWorkItem.repairPlan?.canAutoRepair, false, "image space quota failures must not be auto repairable")
+assert.equal(storageQuotaMediaRepairWorkItem.repairActionGate?.defaultActionAllowed, false, "manual image-space failures should pause default unattended actions")
+assert.equal(storageQuotaMediaRepairWorkItem.repairActionGate?.status, "manual", "manual image-space failures should expose a manual action gate")
+assert(storageQuotaMediaRepairWorkItem.repairPlan?.actions.some((action) => action.payload?.reasonCode === "storage-quota"), "image space quota repair plan should expose the storage-quota reason code")
+assert(storageQuotaMediaRepairWorkItem.repairPlan?.actions.some((action) => action.automation === "manual"), "image space quota repair plan should require manual action")
+
 const publishRepairWorkItem = saveDianxiaomiProductWorkItem({
   id: "unit-publish-repair-plan-work-item",
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-publish-repair-plan-work-item",
@@ -3118,6 +3519,77 @@ const linkedCollectedProduct = saveDianxiaomiCollectedProduct({
   rawTextSample: "linked collected product raw text",
   notes: ["unit"]
 })
+saveDianxiaomiPageContext({
+  storeName: "Mergeable Store",
+  pageUrl: "https://www.dianxiaomi.com/web/popTemu/pageList/draft",
+  availableStores: [
+    {
+      storeName: "Mergeable Store"
+    },
+    {
+      storeId: "unit-mergeable-store-id",
+      storeName: "Mergeable Store"
+    },
+    {
+      storeId: "unit-duplicate-store-a",
+      storeName: "Duplicate Store"
+    },
+    {
+      storeId: "unit-duplicate-store-b",
+      storeName: "Duplicate Store"
+    }
+  ]
+})
+saveDianxiaomiProductWorkItem({
+  id: "unit-store-metrics-primary-store",
+  storeId: "unit-mergeable-store-id",
+  storeName: "Mergeable Store",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-store-metrics-primary-store",
+  pageTitle: "Primary store scoped item",
+  title: "Primary store scoped item",
+  rawTextSample: "primary store scoped item",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 1,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: []
+  },
+  status: "ready-for-automation"
+})
+saveDianxiaomiCollectedProduct({
+  id: "unit-store-metrics-name-only-store",
+  storeName: "Mergeable Store",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-store-metrics-name-only-store",
+  pageTitle: "Name only store collected product",
+  title: "Name only store collected product",
+  category: "unit",
+  sourceUrl: "https://example.com/unit-store-metrics-name-only-store",
+  images: ["https://example.com/unit-store-metrics-name-only-store.jpg"],
+  attributes: {},
+  skus: [{
+    skuName: "Default",
+    priceCny: 10,
+    stock: 5,
+    attributes: {},
+    rowText: "Default 10 5"
+  }],
+  rawTextSample: "name only store collected product",
+  notes: []
+})
+const storeMetricsById = new Map(
+  listDianxiaomiStoreMetrics().map((item) => [`${item.storeId ?? ""}|${item.storeName ?? ""}`, item] as const)
+)
+assert.equal(storeMetricsById.get("unit-mergeable-store-id|Mergeable Store")?.collectedCount, 1, "name-only entries should merge into the unique matching store id")
+assert.equal(storeMetricsById.get("unit-mergeable-store-id|Mergeable Store")?.workItemCount, 1, "id-backed work-item metrics should stay attached to the same store id")
+assert.equal(storeMetricsById.get("unit-duplicate-store-a|Duplicate Store")?.workItemCount, 0, "same-name stores with different ids should stay distinct")
+assert.equal(storeMetricsById.get("unit-duplicate-store-b|Duplicate Store")?.workItemCount, 0, "all duplicate id-backed stores should remain visible")
+assert(!storeMetricsById.has("|Mergeable Store"), "name-only fallback store should disappear when exactly one matching id exists in current data")
+assert(getDianxiaomiPageContext()?.availableStores?.some((item) => item.storeId === "unit-mergeable-store-id" && item.storeName === "Mergeable Store"), "page context should retain the unique id-backed store option")
+assert(getDianxiaomiPageContext()?.availableStores?.some((item) => item.storeId === "unit-duplicate-store-a" && item.storeName === "Duplicate Store"), "page context should retain the first duplicate-name store id")
+assert(getDianxiaomiPageContext()?.availableStores?.some((item) => item.storeId === "unit-duplicate-store-b" && item.storeName === "Duplicate Store"), "page context should retain the second duplicate-name store id")
 const linkedWorkItem = saveDianxiaomiProductWorkItem({
   id: "unit-linked-collected-work-item",
   collectedProductId: linkedCollectedProduct.id,

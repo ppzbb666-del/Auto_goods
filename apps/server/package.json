@@ -8,7 +8,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx test/automation-runner.test.ts && tsx test/profile-lock-archive-route.test.ts",
-    "test:smoke": "tsx test/automation-safety-smoke.ts"
+    "test:size-chart-cleanup": "tsx test/fill-draft-size-chart-cleanup.smoke.ts",
+    "test:smoke": "tsx test/automation-safety-smoke.ts",
+    "test:shared-profile": "tsx test/shared-profile-queue-run.smoke.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
