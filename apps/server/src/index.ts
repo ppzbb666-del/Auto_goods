@@ -424,6 +424,12 @@ const dianxiaomiProductWorkItemSchema = z.object({
   pageUrl: z.string(),
   pageTitle: z.string(),
   pageProfile: z.string().optional(),
+  categoryHint: z.object({
+    label: z.string().optional(),
+    categoryId: z.string().optional(),
+    fullCid: z.string().optional(),
+    source: z.enum(["account-scan", "collected-product", "manual"]).optional()
+  }).optional(),
   title: z.string().default(""),
   queuedAt: z.string().optional(),
   updatedAt: z.string().optional(),
@@ -1393,6 +1399,11 @@ app.post("/dianxiaomi/account-scan/jobs/:id/import", async (request, reply) => {
       pageUrl: link.editUrl,
       pageTitle: title,
       pageProfile: "Dianxiaomi account scan",
+      categoryHint: {
+        categoryId: link.categoryId?.trim() || undefined,
+        fullCid: link.fullCid?.trim() || undefined,
+        source: "account-scan"
+      },
       title,
       rawTextSample: [link.title, link.siteLabel, link.sourcePlatform].filter(Boolean).join(" | "),
       notes: [

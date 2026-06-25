@@ -491,11 +491,839 @@ const INTERNAL_DIANXIAOMI_ATTRIBUTE_KEYS = new Set([
   "dianxiaomiWorkItemId",
   "dianxiaomiPageUrl",
   "dianxiaomiRequirementPreset",
-  "dianxiaomiCollectedProductId"
+  "dianxiaomiCollectedProductId",
+  "dianxiaomiCategoryId",
+  "dianxiaomiFullCid",
+  "dianxiaomiCategoryLabel",
+  "dianxiaomiCategoryHintSource",
+  "dianxiaomiCategoryMissing"
 ])
 
 const isInternalDianxiaomiAttributeKey = (key: string) =>
   INTERNAL_DIANXIAOMI_ATTRIBUTE_KEYS.has(key) || key.startsWith("dxm-")
+
+type CategoryPreparationState = {
+  missingCategory: boolean
+  categoryLabel: string | null
+  categoryButtonVisible: boolean
+}
+
+type NormalizeCategorySelectionOptions = {
+  stepId?: string
+  stepLabel?: string
+}
+
+const CATEGORY_MISSING_TEXT = "未选择分类"
+const CATEGORY_RECOVERY_MODAL_KEYWORDS = ["选择类目", "选择分类", "category"]
+const CATEGORY_RECOVERY_CONFIRM_TEXTS = ["选择", "确定", "确认"]
+const CATEGORY_RECOVERY_CLOSE_TEXTS = ["关闭", "取消", "返回", "close", "cancel"]
+const CATEGORY_HIDDEN_LEAF_PATTERN = /^(?:其他|其它)[（(](.+?)[）)]$/
+const KNOWN_CATEGORY_RECOVERY_PATHS: Record<string, string[]> = {
+  "女装长裤": ["服装、鞋靴和珠宝饰品", "女士时尚", "女装", "女装长裤"],
+  "其他（女装长裤）": ["服装、鞋靴和珠宝饰品", "女士时尚", "女装", "女装长裤"],
+  "其他(女装长裤)": ["服装、鞋靴和珠宝饰品", "女士时尚", "女装", "女装长裤"]
+}
+
+const inspectCategoryPreparationState = async (page: Page): Promise<CategoryPreparationState> => {
+  const bodyText = normalizeText(await page.locator("body").innerText().catch(() => ""))
+  const categoryButton = await findInteractiveByKeywords(page, ["选择分类", "分类", "category"])
+  const categoryLabel = normalizeText(await page.locator("body").locator(`text=${CATEGORY_MISSING_TEXT}`).first().textContent().catch(() => ""))
+  return {
+    missingCategory: bodyText.includes(CATEGORY_MISSING_TEXT) || categoryLabel.includes(CATEGORY_MISSING_TEXT),
+    categoryLabel: categoryLabel || null,
+    categoryButtonVisible: Boolean(categoryButton)
+  }
+}
+
+const categoryRecoveryKey = (segments: string[]) =>
+  segments.map((segment) => cleanVisibleText(segment)).filter(Boolean).join(">")
+
+const isRecoverableCategorySegment = (value: string | null | undefined) => {
+  const text = cleanVisibleText(value)
+  return Boolean(text && !/^\?+$/.test(text))
+}
+
+const dedupeCategoryPaths = (paths: string[][]) => {
+  const seen = new Set<string>()
+  const deduped: string[][] = []
+
+  for (const path of paths) {
+    const cleaned = path
+      .map((segment) => cleanVisibleText(segment))
+      .filter((segment) => isRecoverableCategorySegment(segment))
+    if (cleaned.length <= 0) {
+      continue
+    }
+
+    const key = categoryRecoveryKey(cleaned)
+    if (seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    deduped.push(cleaned)
+  }
+
+  return deduped
+}
+
+const stripTemuCategoryPrefix = (segments: string[]) => {
+  const cleaned = segments
+    .map((segment) => cleanVisibleText(segment))
+    .filter((segment) => isRecoverableCategorySegment(segment))
+  if (cleaned[0]?.toLowerCase() === "temu") {
+    return cleaned.slice(1)
+  }
+
+  return cleaned
+}
+
+const parseCategoryPathText = (value: string | null | undefined) => {
+  const cleaned = cleanVisibleText(value)
+  if (!cleaned || (!cleaned.includes("/") && !cleaned.includes(">"))) {
+    return null
+  }
+
+  let candidate = cleaned
+  const searchPrefixMatch = candidate.match(/(?:搜索|search)\s+(.+)$/i)
+  if (searchPrefixMatch?.[1]) {
+    candidate = searchPrefixMatch[1]
+  }
+  candidate = candidate.replace(/\s+(?:关闭|取消|返回|选择类目|选择分类|close|cancel)\s*$/i, "").trim()
+
+  const segments = candidate
+    .split(/\s*(?:\/|>)\s*/)
+    .map((segment) => cleanVisibleText(segment))
+    .filter((segment) => isRecoverableCategorySegment(segment))
+
+  return segments.length > 0 ? segments : null
+}
+
+const toPublicCategoryPath = (segments: string[] | null) => {
+  if (!segments || segments.length <= 0) {
+    return null
+  }
+
+  const cleaned = stripTemuCategoryPrefix(segments)
+  if (cleaned.length <= 0) {
+    return null
+  }
+
+  const last = cleaned[cleaned.length - 1] ?? ""
+  return CATEGORY_HIDDEN_LEAF_PATTERN.test(last)
+    ? cleaned.slice(0, -1)
+    : cleaned
+}
+
+const categoryRecoveryHintsFromLabel = (value: string | null | undefined) => {
+  const cleaned = cleanVisibleText(value)
+  if (!isRecoverableCategorySegment(cleaned)) {
+    return [] as string[][]
+  }
+
+  const candidates: string[][] = []
+  const direct = KNOWN_CATEGORY_RECOVERY_PATHS[cleaned]
+  if (direct) {
+    candidates.push(direct)
+  }
+
+  const hiddenLeaf = cleaned.match(CATEGORY_HIDDEN_LEAF_PATTERN)?.[1]?.trim()
+  if (hiddenLeaf) {
+    const publicPath = KNOWN_CATEGORY_RECOVERY_PATHS[hiddenLeaf]
+    if (publicPath) {
+      candidates.push(publicPath)
+    }
+  }
+
+  return candidates
+}
+
+const toNonEmptyText = (value: unknown) => {
+  if (typeof value === "string") {
+    const cleaned = value.trim()
+    return cleaned || null
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value)
+  }
+
+  return null
+}
+
+const parseSlashDelimitedIdList = (value: unknown) => {
+  const text = toNonEmptyText(value)
+  if (!text) {
+    return [] as string[]
+  }
+
+  return Array.from(new Set(
+    text
+      .split(/[\/,]/)
+      .map((segment) => segment.trim())
+      .filter((segment) => /^\d+$/.test(segment))
+  ))
+}
+
+const fetchDianxiaomiProductCategorySnapshot = async (page: Page) => {
+  const productId = (() => {
+    try {
+      return toNonEmptyText(new URL(page.url()).searchParams.get("id"))
+    } catch {
+      return null
+    }
+  })()
+
+  if (!productId) {
+    return {
+      productId: null,
+      shopId: null,
+      categoryId: null,
+      categoryIds: [] as string[],
+      fullCid: null,
+      nodePath: null,
+      categoryName: null,
+      sourceCategoryId: null,
+      status: null,
+      error: "missing-product-id"
+    }
+  }
+
+  try {
+    const response = await page.context().request.get(
+      `https://www.dianxiaomi.com/api/popTemuProduct/edit.json?id=${productId}`
+    )
+    const payload = await response.json().catch(() => null) as {
+      data?: {
+        product?: Record<string, unknown>
+      }
+    } | null
+    const product =
+      payload?.data?.product && typeof payload.data.product === "object"
+        ? payload.data.product
+        : null
+
+    return {
+      productId,
+      shopId: toNonEmptyText(product?.shopId),
+      categoryId: toNonEmptyText(product?.categoryId),
+      categoryIds: parseSlashDelimitedIdList(product?.categoryIds),
+      fullCid: toNonEmptyText(product?.fullCid),
+      nodePath: toNonEmptyText(product?.nodePath),
+      categoryName: toNonEmptyText(product?.categoryName),
+      sourceCategoryId: toNonEmptyText(product?.sourceCategoryId),
+      status: response.status(),
+      error: response.ok() ? null : `edit-json-http-${response.status()}`
+    }
+  } catch (error) {
+    return {
+      productId,
+      shopId: null,
+      categoryId: null,
+      categoryIds: [] as string[],
+      fullCid: null,
+      nodePath: null,
+      categoryName: null,
+      sourceCategoryId: null,
+      status: null,
+      error: error instanceof Error ? error.message : String(error)
+    }
+  }
+}
+
+const collectCategoryRecoveryPathsFromApi = async (page: Page, draft: ListingDraft) => {
+  const draftAttributes = draft.attributes ?? {}
+  const draftCategoryId = toNonEmptyText(draftAttributes.dianxiaomiCategoryId)
+  const draftFullCid = toNonEmptyText(draftAttributes.dianxiaomiFullCid)
+  const snapshot = await fetchDianxiaomiProductCategorySnapshot(page)
+  const lookups: Array<Record<string, unknown>> = []
+  const candidatePaths: string[][] = []
+
+  const snapshotPublicPath = toPublicCategoryPath(parseCategoryPathText(snapshot.nodePath))
+  if (snapshotPublicPath && snapshotPublicPath.length > 0) {
+    candidatePaths.push(snapshotPublicPath)
+    lookups.push({
+      source: "edit-json-node-path",
+      categoryId: snapshot.categoryId,
+      nodePath: snapshot.nodePath,
+      publicPath: snapshotPublicPath
+    })
+  }
+
+  const candidateCategoryIds = Array.from(new Set([
+    draftCategoryId,
+    snapshot.categoryId,
+    ...snapshot.categoryIds
+  ].filter((value): value is string => Boolean(value && /^\d+$/.test(value)))))
+
+  if (snapshot.shopId) {
+    for (const categoryId of candidateCategoryIds) {
+      try {
+        const response = await page.context().request.post(
+          "https://www.dianxiaomi.com/api/popTemuCategory/getByCategoryId.json",
+          {
+            form: {
+              categoryId,
+              shopId: snapshot.shopId
+            }
+          }
+        )
+        const payload = await response.json().catch(() => null) as {
+          data?: Record<string, unknown>
+        } | null
+        const data =
+          payload?.data && typeof payload.data === "object"
+            ? payload.data
+            : null
+        const nodePath = toNonEmptyText(data?.nodePath)
+        const publicPath = toPublicCategoryPath(parseCategoryPathText(nodePath))
+        if (publicPath && publicPath.length > 0) {
+          candidatePaths.push(publicPath)
+        }
+
+        lookups.push({
+          source: "get-by-category-id",
+          requestedCategoryId: categoryId,
+          status: response.status(),
+          resolvedCategoryId: toNonEmptyText(data?.catId),
+          nodePath,
+          publicPath,
+          isHidden: data?.isHidden ?? null,
+          hiddenType: data?.hiddenType ?? null
+        })
+      } catch (error) {
+        lookups.push({
+          source: "get-by-category-id",
+          requestedCategoryId: categoryId,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
+  } else if (candidateCategoryIds.length > 0) {
+    lookups.push({
+      source: "get-by-category-id",
+      requestedCategoryIds: candidateCategoryIds,
+      error: "missing-shop-id"
+    })
+  }
+
+  return {
+    draftCategoryId,
+    draftFullCid,
+    snapshot,
+    lookups,
+    candidatePaths: dedupeCategoryPaths(candidatePaths)
+  }
+}
+
+const waitForCategoryRecoveryModal = async (page: Page, minimumVisibleDialogs: number, timeoutMs = 8_000) => {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const dialogs = await visibleAntModalLocators(page)
+    if (dialogs.length > minimumVisibleDialogs) {
+      return dialogs[dialogs.length - 1] ?? null
+    }
+
+    const latest = dialogs[dialogs.length - 1] ?? null
+    if (latest) {
+      const text = cleanVisibleText(await latest.innerText().catch(() => ""))
+      if (CATEGORY_RECOVERY_MODAL_KEYWORDS.some((keyword) => text.includes(keyword))) {
+        return latest
+      }
+    }
+
+    await page.waitForTimeout(250)
+  }
+
+  return (await visibleAntModalLocators(page)).at(-1) ?? null
+}
+
+const waitForCategoryRecoveryColumn = async (modal: Locator, columnIndex: number, timeoutMs = 6_000) => {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const columns = modal.locator(".categories-box")
+    if (await columns.count().catch(() => 0) > columnIndex) {
+      const column = columns.nth(columnIndex)
+      if (await column.isVisible().catch(() => false)) {
+        return column
+      }
+    }
+
+    await modal.page().waitForTimeout(250)
+  }
+
+  return null
+}
+
+const ensureCategoryRecoveryTreeVisible = async (page: Page, modal: Locator) => {
+  const columns = modal.locator(".categories-box")
+  const beforeCount = await columns.count().catch(() => 0)
+  if (beforeCount > 0) {
+    return {
+      visibleColumnCount: beforeCount,
+      searchValueBefore: null,
+      clearedSearchInput: false
+    }
+  }
+
+  const searchInput = await firstVisible([
+    modal.locator("input[name='searchCategory']"),
+    modal.locator(".ant-modal-body input.ant-input")
+  ])
+  const searchValueBefore = searchInput
+    ? cleanVisibleText(await searchInput.inputValue().catch(() => ""))
+    : ""
+
+  if (searchInput && searchValueBefore) {
+    await searchInput.fill("").catch(async () => {
+      await searchInput.click().catch(() => undefined)
+      await searchInput.press("Control+A").catch(() => undefined)
+      await searchInput.press("Backspace").catch(() => undefined)
+    })
+    await page.waitForTimeout(700)
+  }
+
+  return {
+    visibleColumnCount: await columns.count().catch(() => 0),
+    searchValueBefore: searchValueBefore || null,
+    clearedSearchInput: Boolean(searchInput && searchValueBefore)
+  }
+}
+
+const findExactCategoryItemInColumn = async (column: Locator, label: string) => {
+  const items = column.locator(".categories-item-name")
+  const count = Math.min(await items.count().catch(() => 0), 160)
+  for (let index = 0; index < count; index += 1) {
+    const item = items.nth(index)
+    const text = cleanVisibleText(await item.innerText().catch(() => ""))
+    if (text === label) {
+      return item
+    }
+  }
+
+  return null
+}
+
+const clickExactCategoryItemInColumnWithScroll = async (page: Page, column: Locator, label: string, maxSteps = 24) => {
+  let previousTop = -1
+
+  for (let step = 0; step < maxSteps; step += 1) {
+    const item = await findExactCategoryItemInColumn(column, label)
+    if (item) {
+      await clickAfterDianxiaomiIdle(page, item, 2).catch(async () => {
+        await item.click({
+          timeout: 5_000,
+          force: true
+        })
+      })
+      return {
+        clicked: true,
+        step
+      }
+    }
+
+    const scrollState = await column.evaluate((node) => {
+      const element = node as HTMLElement
+      const beforeTop = element.scrollTop
+      const maxTop = Math.max(0, element.scrollHeight - element.clientHeight)
+      const nextTop = Math.min(maxTop, beforeTop + Math.max(180, Math.floor(element.clientHeight * 0.85)))
+      element.scrollTop = nextTop
+      return {
+        beforeTop,
+        afterTop: element.scrollTop
+      }
+    }).catch(() => null)
+
+    if (!scrollState || scrollState.afterTop === previousTop || scrollState.afterTop === scrollState.beforeTop) {
+      break
+    }
+
+    previousTop = scrollState.afterTop
+    await page.waitForTimeout(300)
+  }
+
+  return {
+    clicked: false,
+    step: maxSteps
+  }
+}
+
+const clickCategoryRecoveryPath = async (page: Page, modal: Locator, pathSegments: string[]) => {
+  const attempts: Array<{
+    columnIndex: number
+    label: string
+    clicked: boolean
+    step: number
+  }> = []
+
+  for (let index = 0; index < pathSegments.length; index += 1) {
+    const label = cleanVisibleText(pathSegments[index])
+    const column = await waitForCategoryRecoveryColumn(modal, index)
+    if (!column) {
+      return {
+        clicked: false,
+        failedLabel: label,
+        attempts
+      }
+    }
+
+    const result = await clickExactCategoryItemInColumnWithScroll(page, column, label)
+    attempts.push({
+      columnIndex: index,
+      label,
+      clicked: result.clicked,
+      step: result.step
+    })
+
+    if (!result.clicked) {
+      return {
+        clicked: false,
+        failedLabel: label,
+        attempts
+      }
+    }
+
+    await page.waitForTimeout(index === pathSegments.length - 1 ? 600 : 900)
+  }
+
+  return {
+    clicked: true,
+    failedLabel: null,
+    attempts
+  }
+}
+
+const clickCategoryRecoveryConfirmButton = async (page: Page, modal: Locator) => {
+  const buttons = modal.locator(".ant-modal-footer button")
+  const count = Math.min(await buttons.count().catch(() => 0), 12)
+
+  for (let index = 0; index < count; index += 1) {
+    const button = buttons.nth(index)
+    const text = cleanVisibleText(await button.innerText().catch(() => ""))
+    if (!CATEGORY_RECOVERY_CONFIRM_TEXTS.includes(text)) {
+      continue
+    }
+
+    await clickAfterDianxiaomiIdle(page, button, 2).catch(async () => {
+      await button.click({
+        timeout: 5_000,
+        force: true
+      })
+    })
+    return text
+  }
+
+  return null
+}
+
+const closeCategoryRecoveryModal = async (page: Page, modal: Locator, visibleDialogCountBeforeOpen: number) => {
+  const closeAction = await firstVisible([
+    modal.locator(".ant-modal-close"),
+    modal.locator("[aria-label*='close' i]"),
+    modal.locator("[title*='close' i]")
+  ]) ?? await findInteractiveInRootByKeywords(modal, CATEGORY_RECOVERY_CLOSE_TEXTS)
+
+  if (!closeAction) {
+    return false
+  }
+
+  await clickAfterDianxiaomiIdle(page, closeAction, 1).catch(async () => {
+    await closeAction.click({
+      timeout: 5_000,
+      force: true
+    }).catch(() => undefined)
+  })
+
+  return waitForVisibleAntModalCountAtMost(page, visibleDialogCountBeforeOpen, 5_000)
+}
+
+const waitForCategoryPreparationStateRecovery = async (page: Page, timeoutMs = 10_000) => {
+  const startedAt = Date.now()
+  let state = await inspectCategoryPreparationState(page)
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!state.missingCategory) {
+      return state
+    }
+
+    await waitForDianxiaomiLoadingOverlayToClear(page)
+    await page.waitForTimeout(300)
+    state = await inspectCategoryPreparationState(page)
+  }
+
+  return state
+}
+
+const collectCategoryRecoveryPaths = async (page: Page, modal: Locator, draft: ListingDraft) => {
+  const draftAttributes = draft.attributes ?? {}
+  const searchResultPaths = await modal.locator(".search-result-item").evaluateAll((nodes) =>
+    nodes
+      .map((node) => (node.textContent ?? "").replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .slice(0, 8)
+  ).catch(() => [] as string[])
+  const modalText = cleanVisibleText(await modal.innerText().catch(() => ""))
+
+  const apiRecovery = await collectCategoryRecoveryPathsFromApi(page, draft)
+
+  return {
+    apiRecovery,
+    candidatePaths: dedupeCategoryPaths([
+      ...apiRecovery.candidatePaths,
+      ...searchResultPaths
+        .map((value) => toPublicCategoryPath(parseCategoryPathText(value)))
+        .filter((value): value is string[] => Array.isArray(value) && value.length > 0),
+      ...[modalText]
+        .map((value) => toPublicCategoryPath(parseCategoryPathText(value)))
+        .filter((value): value is string[] => Array.isArray(value) && value.length > 0),
+      ...[draft.categoryPath]
+        .map((value) => toPublicCategoryPath(value))
+        .filter((value): value is string[] => Array.isArray(value) && value.length > 0),
+      ...categoryRecoveryHintsFromLabel(draftAttributes.dianxiaomiCategoryLabel),
+      ...categoryRecoveryHintsFromLabel(draft.categoryPath[draft.categoryPath.length - 1])
+    ])
+  }
+}
+
+export const normalizeCategorySelection = async (
+  page: Page,
+  draft: ListingDraft,
+  options: NormalizeCategorySelectionOptions = {}
+) => {
+  const stepId = options.stepId ?? "normalize-category-selection"
+  const stepLabel = options.stepLabel ?? "Normalize category selection"
+  const draftAttributes = draft.attributes ?? {}
+  const categoryId = draftAttributes.dianxiaomiCategoryId?.trim() || ""
+  const fullCid = draftAttributes.dianxiaomiFullCid?.trim() || ""
+  const categoryLabel = draftAttributes.dianxiaomiCategoryLabel?.trim() || ""
+  const categoryHintSource = draftAttributes.dianxiaomiCategoryHintSource?.trim() || ""
+  const categoryMissingFlag = draftAttributes.dianxiaomiCategoryMissing?.trim() === "true"
+  const state = await inspectCategoryPreparationState(page)
+
+  if (!state.missingCategory) {
+    return stepResult(
+      stepId,
+      stepLabel,
+      "skipped",
+      "Dianxiaomi category is already selected",
+      {
+        state,
+        categoryId: categoryId || null,
+        fullCid: fullCid || null,
+        categoryLabel: categoryLabel || null
+      }
+    )
+  }
+
+  if (!state.categoryButtonVisible) {
+    return stepResult(
+      stepId,
+      stepLabel,
+      "failed",
+      "Dianxiaomi category is missing on the page and the category picker is not visible.",
+      {
+        state,
+        categoryId: categoryId || null,
+        fullCid: fullCid || null,
+        categoryLabel: categoryLabel || null,
+        categoryHintSource: categoryHintSource || null,
+        autoRestoreReady: false,
+        categoryButtonVisible: false
+      }
+    )
+  }
+
+  const categoryButton = await findInteractiveByKeywords(page, ["选择分类", "分类", "category"])
+  if (!categoryButton) {
+    return stepResult(
+      stepId,
+      stepLabel,
+      "failed",
+      "Dianxiaomi category is missing on the page and the category picker could not be located.",
+      {
+        state,
+        categoryId: categoryId || null,
+        fullCid: fullCid || null,
+        categoryLabel: categoryLabel || null,
+        categoryHintSource: categoryHintSource || null,
+        autoRestoreReady: false,
+        categoryButtonVisible: true
+      }
+    )
+  }
+
+  const visibleDialogCountBeforeOpen = (await visibleAntModalLocators(page)).length
+  await clickAfterDianxiaomiIdle(page, categoryButton, 2).catch(async () => {
+    await categoryButton.click({
+      timeout: 5_000,
+      force: true
+    })
+  })
+  await page.waitForTimeout(800)
+
+  const modal = await waitForCategoryRecoveryModal(page, visibleDialogCountBeforeOpen)
+  if (!modal) {
+    return stepResult(
+      stepId,
+      stepLabel,
+      "failed",
+      "Clicked the category picker but the category selection modal did not appear.",
+      {
+        state,
+        categoryId: categoryId || null,
+        fullCid: fullCid || null,
+        categoryLabel: categoryLabel || null,
+        categoryHintSource: categoryHintSource || null,
+        autoRestoreReady: false
+      }
+    )
+  }
+
+  const { candidatePaths, apiRecovery } = await collectCategoryRecoveryPaths(page, modal, draft)
+  if (candidatePaths.length <= 0) {
+    await closeCategoryRecoveryModal(page, modal, visibleDialogCountBeforeOpen).catch(() => false)
+    return stepResult(
+      stepId,
+      stepLabel,
+      "failed",
+      categoryMissingFlag
+        ? "Dianxiaomi category is missing and no recoverable public category path was detected."
+        : "Dianxiaomi category is missing and the category modal did not expose a recoverable public category path.",
+      {
+        state,
+        categoryId: categoryId || null,
+        fullCid: fullCid || null,
+        categoryLabel: categoryLabel || null,
+        categoryHintSource: categoryHintSource || null,
+        autoRestoreReady: false,
+        candidatePaths,
+        apiRecovery
+      }
+    )
+  }
+
+  const treePreparation = await ensureCategoryRecoveryTreeVisible(page, modal)
+  let selectedPath: string[] | null = null
+  let pathAttempts: Array<{
+    columnIndex: number
+    label: string
+    clicked: boolean
+    step: number
+  }> = []
+  let failedLabel: string | null = null
+
+  for (const candidatePath of candidatePaths) {
+    const result = await clickCategoryRecoveryPath(page, modal, candidatePath)
+    pathAttempts = result.attempts
+    if (!result.clicked) {
+      failedLabel = result.failedLabel
+      continue
+    }
+
+    selectedPath = candidatePath
+    failedLabel = null
+    break
+  }
+
+  if (!selectedPath) {
+    await closeCategoryRecoveryModal(page, modal, visibleDialogCountBeforeOpen).catch(() => false)
+    return stepResult(
+      stepId,
+      stepLabel,
+      "failed",
+      failedLabel
+        ? `Detected a public category recovery path but could not click "${failedLabel}" in the category tree.`
+        : "Detected a public category recovery path but could not click it in the category tree.",
+      {
+        state,
+        categoryId: categoryId || null,
+        fullCid: fullCid || null,
+        categoryLabel: categoryLabel || null,
+        categoryHintSource: categoryHintSource || null,
+        autoRestoreReady: true,
+        candidatePaths,
+        apiRecovery,
+        treePreparation,
+        pathAttempts,
+        failedLabel
+      }
+    )
+  }
+
+  const confirmText = await clickCategoryRecoveryConfirmButton(page, modal)
+  if (!confirmText) {
+    await closeCategoryRecoveryModal(page, modal, visibleDialogCountBeforeOpen).catch(() => false)
+    return stepResult(
+      stepId,
+      stepLabel,
+      "failed",
+      "The public category path was selected, but the modal confirm button was not found.",
+      {
+        state,
+        categoryId: categoryId || null,
+        fullCid: fullCid || null,
+        categoryLabel: categoryLabel || null,
+        categoryHintSource: categoryHintSource || null,
+        autoRestoreReady: true,
+        candidatePaths,
+        apiRecovery,
+        treePreparation,
+        selectedPath,
+        pathAttempts
+      }
+    )
+  }
+
+  await waitForVisibleAntModalCountAtMost(page, visibleDialogCountBeforeOpen, 8_000).catch(() => false)
+  const recoveredState = await waitForCategoryPreparationStateRecovery(page)
+  if (!recoveredState.missingCategory) {
+    return stepResult(
+      stepId,
+      stepLabel,
+      "done",
+      `Restored Dianxiaomi category selection via public category path: ${selectedPath.join(" > ")}`,
+      {
+        previousState: state,
+        recoveredState,
+        categoryId: categoryId || null,
+        fullCid: fullCid || null,
+        categoryLabel: categoryLabel || null,
+        categoryHintSource: categoryHintSource || null,
+        autoRestoreReady: true,
+        candidatePaths,
+        apiRecovery,
+        treePreparation,
+        selectedPath,
+        confirmText,
+        pathAttempts
+      }
+    )
+  }
+
+  return stepResult(
+    stepId,
+    stepLabel,
+    "failed",
+    "Clicked a public category recovery path, but Dianxiaomi still shows the page as missing category.",
+    {
+      previousState: state,
+      recoveredState,
+      categoryId: categoryId || null,
+      fullCid: fullCid || null,
+      categoryLabel: categoryLabel || null,
+      categoryHintSource: categoryHintSource || null,
+      autoRestoreReady: true,
+      candidatePaths,
+      apiRecovery,
+      treePreparation,
+      selectedPath,
+      confirmText,
+      pathAttempts
+    }
+  )
+}
 
 const DIANXIAOMI_MEDIA_TOOLS: MediaToolDefinition[] = [
   {
@@ -957,6 +1785,14 @@ const SELECT_PLACEHOLDER_TEXT = "\u8bf7\u9009\u62e9"
 const SITE_WAREHOUSE_LABEL_TEXT = "\u9009\u62e9\u4ed3\u5e93"
 const SITE_WAREHOUSE_REQUIRED_TEXT = "\u8bf7\u9009\u62e9\u7ad9\u70b9\u4ed3\u5e93"
 const SITE_WAREHOUSE_SYNC_KEYWORDS = ["\u540c\u6b65"]
+const VARIANT_INFO_SECTION_HINT_TEXT = "\u53d8\u79cd\u4fe1\u606f"
+const VARIANT_INFO_SKU_CLASSIFICATION_TEXT = "SKU\u5206\u7c7b"
+const VARIANT_INFO_PACKING_LIST_TEXT = "\u5305\u88c5\u6e05\u5355"
+const VARIANT_ATTRIBUTE_SECTION_HINT_TEXT = "\u53d8\u79cd\u5c5e\u6027"
+const VARIANT_ATTRIBUTE_REFERENCE_TEMPLATE_HINT_TEXT = "\u5f15\u7528\u6a21\u677f"
+const VARIANT_ATTRIBUTE_REFERENCE_TEMPLATE_PLACEHOLDER_TEXT = `---${SELECT_PLACEHOLDER_TEXT}${VARIANT_ATTRIBUTE_REFERENCE_TEMPLATE_HINT_TEXT}---`
+const VARIANT_ATTRIBUTE_FOCUS_LABEL_TEXT = "\u91cd\u70b9\u5c55\u793a\u90e8\u4f4d"
+const VARIANT_ATTRIBUTE_REMAP_LABEL_TEXT = "\u91cd\u65b0\u5bf9\u5e94\u53d8\u79cd"
 const SHIPMENT_PROMISE_LABEL_TEXT = "\u627f\u8bfa\u53d1\u8d27\u65f6\u6548"
 const SHIPMENT_PROMISE_REQUIRED_TEXT = "\u8bf7\u9009\u62e9\u627f\u8bfa\u53d1\u8d27\u65f6\u6548"
 const SHIPMENT_PROMISE_OPTION_TEXTS = [
@@ -978,6 +1814,7 @@ const COLOR_SKC_RECALC_TIMEOUT_MS = 15_000
 const COLOR_SKC_OPTION_WAIT_TIMEOUT_MS = 8_000
 const COLOR_SKC_OPTION_HYDRATE_TIMEOUT_MS = 30_000
 const COLOR_SKC_OPTION_REVEAL_TIMEOUT_MS = 10_000
+const VARIANT_REMAP_ROW_WAIT_TIMEOUT_MS = 12_000
 const COLOR_SKC_SECTION_SELECTOR = ".skuAttrItem_1001"
 const COLOR_SKC_ROW_SELECTOR = ".batch-table-wrap.color-table tbody tr"
 const COLOR_SKC_OPTION_SELECTORS = [
@@ -992,10 +1829,37 @@ const COLOR_SKC_OPTION_SELECTORS = [
   ".options-module .theme-value-text"
 ]
 const COLOR_SKC_REMAP_KEYWORDS = ["重新对应变种", "重新对应"]
+const VARIANT_REMAP_SURFACE_HINT_KEYWORDS = ["重新对应变种", "变种属性", "变种信息"]
+const VARIANT_REMAP_MODAL_HINT_KEYWORDS = [
+  "重新对应变种",
+  "1688 变种主题",
+  "对应Temu半托管变种主题",
+  "分类对应",
+  "产品信息"
+]
+const VARIANT_REMAP_PROGRESS_KEYWORDS = ["下一步", "继续"]
+const VARIANT_REMAP_FILL_KEYWORDS = ["一键填充"]
+const VARIANT_REMAP_CONFIRM_KEYWORDS = ["确定", "确认", "完成", "保存", "应用", "提交"]
+const VARIANT_REMAP_NEGATIVE_KEYWORDS = ["返回", "取消", "关闭"]
+const VARIANT_REMAP_CUSTOM_NAME_HINT_TEXT = "自定义名称"
 const SIZE_CHART_TEMPLATE_SUFFIX = "\u5e97\u5c0f\u79d8\u6a21\u677f"
 
 const readVisibleText = async (locator: Locator | null) =>
   locator ? cleanVisibleText(await locator.innerText().catch(() => "")) : ""
+
+const SKU_ROW_FIELD_SELECTOR = [
+  'input[name*="variationSku" i]:not([type="search"])',
+  'input[name*="skuAttrCode" i]:not([type="search"])',
+  'input[name*="price" i]:not([type="search"])',
+  'input[name*="stock" i]:not([type="search"])',
+  'input[placeholder*="\u4ef7\u683c" i]:not([type="search"])',
+  'input[placeholder*="\u5e93\u5b58" i]:not([type="search"])',
+  'input[placeholder*="\u8d27\u53f7" i]:not([type="search"])',
+  'input[placeholder*="\u4e0d\u80fd\u5305\u542b\u4e2d\u6587" i]:not([type="search"])',
+  'input[aria-label*="\u4ef7\u683c" i]:not([type="search"])',
+  'input[aria-label*="\u5e93\u5b58" i]:not([type="search"])',
+  'input[aria-label*="\u8d27\u53f7" i]:not([type="search"])'
+].join(", ")
 
 const visibleAntModalLocators = async (page: Page) => {
   const modals = page.locator(".ant-modal:visible")
@@ -1277,6 +2141,75 @@ const findSiteWarehouseContainer = async (page: Page) => {
   return best?.item ?? null
 }
 
+const findVariantInfoContainer = async (page: Page) => {
+  const locator = page.locator([
+    ".sku-data-table",
+    ".skuWarehouse",
+    ".commonCard",
+    ".commonCardCon",
+    ".ant-form-item",
+    "div"
+  ].join(", ")).filter({
+    hasText: new RegExp([
+      VARIANT_INFO_SECTION_HINT_TEXT,
+      SITE_WAREHOUSE_LABEL_TEXT,
+      VARIANT_INFO_SKU_CLASSIFICATION_TEXT,
+      VARIANT_INFO_PACKING_LIST_TEXT
+    ].map(escapeRegExp).join("|"), "i")
+  })
+
+  const count = Math.min(await locator.count().catch(() => 0), 80)
+  let best: {
+    item: Locator
+    score: number
+  } | null = null
+
+  for (let index = 0; index < count; index += 1) {
+    const item = locator.nth(index)
+    if (!await item.isVisible().catch(() => false)) {
+      continue
+    }
+
+    const text = cleanVisibleText(await item.innerText().catch(() => ""))
+    const hasWarehouse = text.includes(SITE_WAREHOUSE_LABEL_TEXT)
+    const hasSkuClassification = text.includes(VARIANT_INFO_SKU_CLASSIFICATION_TEXT)
+    const hasPackingList = text.includes(VARIANT_INFO_PACKING_LIST_TEXT)
+    if (!hasWarehouse && !hasSkuClassification && !hasPackingList) {
+      continue
+    }
+
+    const className = await item.evaluate((element) =>
+      typeof (element as HTMLElement).className === "string"
+        ? (element as HTMLElement).className
+        : ""
+    ).catch(() => "")
+    const selectCount = await countVisible(item.locator(".ant-select"), 10)
+    const tableCount = await countVisible(item.locator("table, .myj-table, [class*='table' i]"), 10)
+    const fieldCount = await countVisible(item.locator(SKU_ROW_FIELD_SELECTOR), 20)
+    const box = await item.boundingBox().catch(() => null)
+    const areaPenalty = box ? Math.round((box.width * box.height) / 1000) : 10_000
+    const score =
+      text.length
+      + areaPenalty
+      - (hasWarehouse ? 320 : 0)
+      - (hasSkuClassification ? 260 : 0)
+      - (hasPackingList ? 260 : 0)
+      - (/sku-data-table|skuWarehouse/i.test(className) ? 520 : 0)
+      - (selectCount > 0 ? 120 : 0)
+      - (tableCount > 0 ? 80 : 0)
+      - (fieldCount * 160)
+
+    if (!best || score < best.score) {
+      best = {
+        item,
+        score
+      }
+    }
+  }
+
+  return best?.item ?? null
+}
+
 const readVisibleAntSelectOptions = async (page: Page) => {
   const options = page.locator(".ant-select-dropdown:visible .ant-select-item-option")
   const count = Math.min(await options.count().catch(() => 0), 120)
@@ -1296,6 +2229,14 @@ const readVisibleAntSelectOptions = async (page: Page) => {
 
   return collected
 }
+
+const collectAntSelectTexts = async (root: Page | Locator) =>
+  root.locator(".ant-select").evaluateAll((nodes) =>
+    nodes
+      .map((node) => (node.textContent ?? "").replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .slice(0, 12)
+  ).catch(() => [] as string[])
 
 const chooseFirstUsableAntSelectOption = async (
   page: Page,
@@ -1719,6 +2660,267 @@ const normalizeFreightTemplate = async (page: Page) => {
       afterText,
       syncClicked,
       optionTexts: selection.optionTexts
+    }
+  )
+}
+
+const findVariantAttributeSection = async (page: Page) => {
+  const locator = page.locator([
+    ".product-add-layout [class*='form-card' i]",
+    ".product-add-layout [class*='skuAttr' i]",
+    ".product-add-layout .ant-card",
+    ".product-add-layout .ant-form",
+    ".product-add-layout div"
+  ].join(", ")).filter({
+    hasText: new RegExp([
+      VARIANT_ATTRIBUTE_SECTION_HINT_TEXT,
+      VARIANT_ATTRIBUTE_FOCUS_LABEL_TEXT,
+      VARIANT_ATTRIBUTE_REMAP_LABEL_TEXT,
+      VARIANT_ATTRIBUTE_REFERENCE_TEMPLATE_HINT_TEXT
+    ].map(escapeRegExp).join("|"), "i")
+  })
+
+  const count = Math.min(await locator.count().catch(() => 0), 120)
+  let best: {
+    item: Locator
+    score: number
+  } | null = null
+
+  for (let index = 0; index < count; index += 1) {
+    const item = locator.nth(index)
+    if (!await item.isVisible().catch(() => false)) {
+      continue
+    }
+
+    const text = cleanVisibleText(await item.innerText().catch(() => ""))
+    if (!text) {
+      continue
+    }
+
+    const selectTexts = await collectAntSelectTexts(item)
+    const hasSection = text.includes(VARIANT_ATTRIBUTE_SECTION_HINT_TEXT)
+    const hasFocus = text.includes(VARIANT_ATTRIBUTE_FOCUS_LABEL_TEXT)
+    const hasRemap = text.includes(VARIANT_ATTRIBUTE_REMAP_LABEL_TEXT)
+    const hasTemplate = selectTexts.some((value) =>
+      value.includes(VARIANT_ATTRIBUTE_REFERENCE_TEMPLATE_HINT_TEXT)
+      || value.includes(VARIANT_ATTRIBUTE_REFERENCE_TEMPLATE_PLACEHOLDER_TEXT)
+    )
+    if (!hasFocus && !hasRemap && !hasTemplate) {
+      continue
+    }
+
+    const box = await item.boundingBox().catch(() => null)
+    const areaPenalty = box ? Math.round((box.width * box.height) / 1_500) : 10_000
+    const score =
+      (hasSection ? 340 : 0)
+      + (hasFocus ? 320 : 0)
+      + (hasRemap ? 300 : 0)
+      + (hasTemplate ? 260 : 0)
+      + (Math.min(selectTexts.length, 4) * 70)
+      - areaPenalty
+      - Math.round(text.length / 12)
+
+    if (!best || score > best.score) {
+      best = {
+        item,
+        score
+      }
+    }
+  }
+
+  return best?.item ?? null
+}
+
+const findVariantAttributeFocusContainer = async (section: Locator) => {
+  const locator = section.locator([
+    ".ant-form-item",
+    ".ant-row.ant-form-item-row",
+    "div"
+  ].join(", ")).filter({
+    hasText: new RegExp(escapeRegExp(VARIANT_ATTRIBUTE_FOCUS_LABEL_TEXT), "i")
+  })
+
+  const count = Math.min(await locator.count().catch(() => 0), 40)
+  let best: {
+    item: Locator
+    score: number
+  } | null = null
+
+  for (let index = 0; index < count; index += 1) {
+    const item = locator.nth(index)
+    if (!await item.isVisible().catch(() => false)) {
+      continue
+    }
+
+    const text = cleanVisibleText(await item.innerText().catch(() => ""))
+    if (!text.includes(VARIANT_ATTRIBUTE_FOCUS_LABEL_TEXT)) {
+      continue
+    }
+
+    const selectTexts = await collectAntSelectTexts(item)
+    if (selectTexts.length <= 0) {
+      continue
+    }
+
+    const className = await item.evaluate((element) =>
+      typeof (element as HTMLElement).className === "string"
+        ? (element as HTMLElement).className
+        : ""
+    ).catch(() => "")
+    const box = await item.boundingBox().catch(() => null)
+    const areaPenalty = box ? Math.round((box.width * box.height) / 1_000) : 10_000
+    const score =
+      300
+      + (selectTexts.length * 90)
+      + (/ant-form-item/i.test(className) ? 160 : 0)
+      - areaPenalty
+      - text.length
+
+    if (!best || score > best.score) {
+      best = {
+        item,
+        score
+      }
+    }
+  }
+
+  return best?.item ?? null
+}
+
+const normalizeVariantAttributes = async (page: Page) => {
+  const beforeRows = await findSkuRows(page)
+  const section = await findVariantAttributeSection(page)
+  if (!section) {
+    return stepResult(
+      "normalize-variant-attributes",
+      "Normalize variant attributes",
+      "skipped",
+      "Variant attribute controls are not visible on the current Dianxiaomi page",
+      {
+        beforeRows: beforeRows.length
+      }
+    )
+  }
+
+  const sectionText = normalizeFeedbackText(await section.innerText().catch(() => ""))
+  const templateSelect = await firstVisible([
+    section.locator(".ant-select").filter({
+      hasText: new RegExp(escapeRegExp(VARIANT_ATTRIBUTE_REFERENCE_TEMPLATE_PLACEHOLDER_TEXT), "i")
+    }),
+    section.locator(".ant-select").filter({
+      hasText: new RegExp(escapeRegExp(VARIANT_ATTRIBUTE_REFERENCE_TEMPLATE_HINT_TEXT), "i")
+    })
+  ])
+  const templateBeforeText = await readVisibleText(templateSelect)
+  const templateAlreadySelected = Boolean(
+    templateBeforeText
+    && !templateBeforeText.includes(SELECT_PLACEHOLDER_TEXT)
+    && !templateBeforeText.includes(VARIANT_ATTRIBUTE_REFERENCE_TEMPLATE_PLACEHOLDER_TEXT)
+  )
+  let templateSelection = {
+    visible: Boolean(templateSelect),
+    beforeText: templateBeforeText,
+    afterText: templateBeforeText,
+    optionTexts: [] as string[],
+    selectedText: null as string | null,
+    status: "skipped" as StepStatus,
+    detail: templateSelect
+      ? templateAlreadySelected
+        ? `Reference template is already set: ${templateBeforeText}`
+        : "Reference template select is waiting for selection"
+      : "Reference template select is not visible"
+  }
+  if (templateSelect && !templateAlreadySelected) {
+    const selection = await chooseFirstUsableAntSelectOption(page, templateSelect)
+    const afterText = await readVisibleText(templateSelect)
+    const noUsableOptions = selection.optionTexts.length <= 0
+    const success = Boolean(selection.selectedText || (afterText && !afterText.includes(SELECT_PLACEHOLDER_TEXT)))
+    templateSelection = {
+      visible: true,
+      beforeText: templateBeforeText,
+      afterText,
+      optionTexts: selection.optionTexts,
+      selectedText: selection.selectedText,
+      status: success ? "done" : noUsableOptions ? "skipped" : "failed",
+      detail: success
+        ? `Reference template set to ${selection.selectedText ?? afterText}`
+        : noUsableOptions
+          ? "Reference template select has no usable options on the current Dianxiaomi page"
+        : "Could not select a usable reference template option"
+    }
+    if (success) {
+      await page.waitForTimeout(700)
+    }
+  }
+
+  const focusContainer = await findVariantAttributeFocusContainer(section)
+  const focusSelect = focusContainer
+    ? await firstVisible([
+      focusContainer.locator(".ant-select").filter({ hasText: new RegExp(SELECT_PLACEHOLDER_TEXT, "i") }),
+      focusContainer.locator(".ant-select")
+    ])
+    : null
+  const focusBeforeText = await readVisibleText(focusSelect)
+  const focusAlreadySelected = Boolean(focusBeforeText && !focusBeforeText.includes(SELECT_PLACEHOLDER_TEXT))
+  let focusSelection = {
+    visible: Boolean(focusSelect),
+    beforeText: focusBeforeText,
+    afterText: focusBeforeText,
+    optionTexts: [] as string[],
+    selectedText: null as string | null,
+    status: "skipped" as StepStatus,
+    detail: focusSelect
+      ? focusAlreadySelected
+        ? `Focus display field is already set: ${focusBeforeText}`
+        : "Focus display field is waiting for selection"
+      : "Focus display field is not visible"
+  }
+  if (focusSelect && !focusAlreadySelected) {
+    const selection = await chooseFirstUsableAntSelectOption(page, focusSelect)
+    const afterText = await readVisibleText(focusSelect)
+    const noUsableOptions = selection.optionTexts.length <= 0
+    const success = Boolean(selection.selectedText || (afterText && !afterText.includes(SELECT_PLACEHOLDER_TEXT)))
+    focusSelection = {
+      visible: true,
+      beforeText: focusBeforeText,
+      afterText,
+      optionTexts: selection.optionTexts,
+      selectedText: selection.selectedText,
+      status: success ? "done" : noUsableOptions ? "skipped" : "failed",
+      detail: success
+        ? `Focus display field set to ${selection.selectedText ?? afterText}`
+        : noUsableOptions
+          ? "Focus display field has no usable options on the current Dianxiaomi page"
+        : "Could not select a usable focus display option"
+    }
+  }
+
+  const afterRows = await waitForVariantRowsReady(page, beforeRows.length, 6_000).catch(() => beforeRows)
+  const failedSelections = [templateSelection, focusSelection].filter((item) => item.status === "failed")
+  const appliedSelections = [templateSelection, focusSelection].filter((item) => item.status === "done")
+  const visibleSelections = [templateSelection, focusSelection].filter((item) => item.visible)
+  const rowsMaterialized = afterRows.length > beforeRows.length
+  const detail = rowsMaterialized
+    ? `Variant attributes normalized and variant rows materialized (${beforeRows.length} -> ${afterRows.length})`
+    : failedSelections.length > 0
+      ? failedSelections.map((item) => item.detail).join("; ")
+    : appliedSelections.length > 0
+      ? `Variant attributes normalized: ${appliedSelections.map((item) => item.detail).join("; ")}`
+      : visibleSelections.length > 0
+        ? "Variant attribute selects are already set"
+        : "Variant attribute selects are not visible on the current Dianxiaomi page"
+
+  return stepResult(
+    "normalize-variant-attributes",
+    "Normalize variant attributes",
+    failedSelections.length > 0 ? "failed" : rowsMaterialized || appliedSelections.length > 0 ? "done" : "skipped",
+    detail,
+    {
+      beforeRows: beforeRows.length,
+      afterRows: afterRows.length,
+      sectionText,
+      templateSelection,
+      focusSelection
     }
   )
 }
@@ -2833,33 +4035,39 @@ const isWritableField = async (field: Locator | null) => {
 }
 
 export const findSkuRows = async (page: Page, config?: DianxiaomiSelectorConfig) => {
-  const skuRowFieldSelector = [
-    'input[name*="variationSku" i]',
-    'input[name*="price" i]',
-    'input[name*="stock" i]',
-    'input[placeholder*="价格" i]',
-    'input[placeholder*="库存" i]',
-    'input[aria-label*="价格" i]',
-    'input[aria-label*="库存" i]'
-  ].join(", ")
+  const variantInfoContainer = await findVariantInfoContainer(page)
+  const rowRoot = variantInfoContainer ?? page
   const configuredRow = config?.skuRows?.length
-    ? page.locator(config.skuRows.join(", ")).filter({
-        has: page.locator(skuRowFieldSelector)
+    ? rowRoot.locator(config.skuRows.join(", ")).filter({
+        has: rowRoot.locator(SKU_ROW_FIELD_SELECTOR)
       })
     : null
-  const rowCandidates = page.locator("tr, [role='row'], [class*='sku' i], [class*='table-row' i]").filter({
-    has: page.locator(skuRowFieldSelector)
+  const rowCandidates = rowRoot.locator("tr, [role='row'], [class*='sku' i], [class*='table-row' i]").filter({
+    has: rowRoot.locator(SKU_ROW_FIELD_SELECTOR)
   })
 
   const rows: Array<{ row: Locator; text: string }> = []
   const candidates = configuredRow && await configuredRow.count() > 0 ? configuredRow : rowCandidates
+  const seen = new Set<string>()
   const count = Math.min(await candidates.count(), 80)
   for (let index = 0; index < count; index += 1) {
     const row = candidates.nth(index)
+    if (!await row.isVisible().catch(() => false)) {
+      continue
+    }
+
     const text = normalizeText(await row.innerText().catch(() => ""))
-    const inputs = await row.locator(skuRowFieldSelector).count()
+    const inputs = await countVisible(row.locator(SKU_ROW_FIELD_SELECTOR), 12)
 
     if (inputs > 0) {
+      const key = await locatorIdentityKey(row)
+      if (key && seen.has(key)) {
+        continue
+      }
+      if (key) {
+        seen.add(key)
+      }
+
       rows.push({
         row,
         text
@@ -3537,6 +4745,1465 @@ const clickColorSkcRemapTrigger = async (
   }
 }
 
+const isMissingVariantSaveFailure = (message: string) => {
+  const normalized = normalizeFeedbackText(message)
+  return normalized.includes("请至少选择一个变种")
+    || (normalized.includes("至少选择") && normalized.includes("变种"))
+}
+
+const findVariantRemapSurface = async (page: Page) => {
+  const roots = [
+    page.locator(".ant-modal-wrap.full-modal__dxm:visible").last(),
+    page.locator(".ant-modal.product-ref-modal:visible").last(),
+    page.locator(".ant-modal-wrap:visible").filter({
+      hasText: new RegExp(VARIANT_REMAP_MODAL_HINT_KEYWORDS.map(escapeRegExp).join("|"), "i")
+    }).last(),
+    page.locator(".ant-modal:visible").filter({
+      hasText: new RegExp(VARIANT_REMAP_MODAL_HINT_KEYWORDS.map(escapeRegExp).join("|"), "i")
+    }).last()
+  ]
+
+  for (const candidate of roots) {
+    const count = await candidate.count().catch(() => 0)
+    if (count <= 0) {
+      continue
+    }
+
+    const locator = candidate.first()
+    if (await locator.isVisible().catch(() => false)) {
+      return locator
+    }
+  }
+
+  return null
+}
+
+export const waitForVariantRemapSurface = async (page: Page, timeoutMs = 8_000) => {
+  const deadline = Date.now() + timeoutMs
+  let surface = await findVariantRemapSurface(page)
+  while (!surface && Date.now() < deadline) {
+    await page.waitForTimeout(250)
+    surface = await findVariantRemapSurface(page)
+  }
+  return surface
+}
+
+const readVariantRemapSurfaceText = async (surface: Locator | null) =>
+  normalizeFeedbackText(await surface?.innerText().catch(() => "") ?? "")
+
+const chooseVariantRemapAction = async (
+  page: Page,
+  surface: Locator,
+  keywords: string[],
+  negativeKeywords: string[] = []
+) => {
+  const direct = await findInteractiveInRootByKeywords(surface, keywords)
+  if (direct && await direct.isVisible().catch(() => false)) {
+    return direct
+  }
+
+  const actions = surface.locator("button, [role='button'], input[type='button'], input[type='submit'], a")
+  const count = Math.min(await actions.count().catch(() => 0), 30)
+  for (let index = count - 1; index >= 0; index -= 1) {
+    const action = actions.nth(index)
+    if (!await action.isVisible().catch(() => false)) {
+      continue
+    }
+
+    const text = cleanVisibleText(await action.innerText().catch(async () => await action.getAttribute("value").catch(() => "")))
+    if (!text) {
+      continue
+    }
+    if (negativeKeywords.some((keyword) => text.includes(keyword))) {
+      continue
+    }
+    if (keywords.some((keyword) => text.includes(keyword))) {
+      return action
+    }
+  }
+
+  const fallback = await findLastVisibleActionInRoot(surface, 30)
+  if (!fallback) {
+    return null
+  }
+
+  const fallbackText = cleanVisibleText(await fallback.innerText().catch(async () => await fallback.getAttribute("value").catch(() => "")))
+  if (!fallbackText || negativeKeywords.some((keyword) => fallbackText.includes(keyword))) {
+    return null
+  }
+  return fallback
+}
+
+const waitForVariantRowsReady = async (
+  page: Page,
+  beforeRowCount: number,
+  timeoutMs = VARIANT_REMAP_ROW_WAIT_TIMEOUT_MS
+) => {
+  const deadline = Date.now() + timeoutMs
+  let rows = await findSkuRows(page)
+  while (Date.now() < deadline) {
+    const bodyText = normalizeFeedbackText(await page.locator("body").innerText().catch(() => ""))
+    if (rows.length > beforeRowCount || (rows.length > 0 && bodyText.includes("变种信息"))) {
+      return rows
+    }
+    await page.waitForTimeout(400)
+    rows = await findSkuRows(page)
+  }
+  return rows
+}
+
+const collectVariantRemapStageTwoTabs = async (surface: Locator) => {
+  const tabs = surface.locator("[role='tab'], .ant-tabs-tab, .ant-radio-wrapper, li, button, a, span, div")
+  const count = Math.min(await tabs.count().catch(() => 0), 80)
+  const results: Array<{ locator: Locator; text: string }> = []
+  const seen = new Set<string>()
+
+  for (let index = 0; index < count; index += 1) {
+    const tab = tabs.nth(index)
+    if (!await tab.isVisible().catch(() => false)) {
+      continue
+    }
+
+    const text = cleanVisibleText(await tab.innerText().catch(() => ""))
+    if (!text || text.length > 12) {
+      continue
+    }
+    if (!["颜色", "尺码", "图片"].includes(text)) {
+      continue
+    }
+    if (seen.has(text)) {
+      continue
+    }
+
+    seen.add(text)
+    results.push({
+      locator: tab,
+      text
+    })
+  }
+
+  return results
+}
+
+const activateVariantRemapStageTwoTab = async (
+  page: Page,
+  surface: Locator,
+  tabText: string
+) => {
+  const tabs = await collectVariantRemapStageTwoTabs(surface)
+  const target = tabs.find((item) => item.text === tabText)
+  if (!target) {
+    return false
+  }
+
+  const beforeText = await readVariantRemapSurfaceText(surface)
+  await clickAfterDianxiaomiIdle(page, target.locator, 2).catch(async () => {
+    await target.locator.click({ force: true }).catch(() => undefined)
+  })
+  await page.waitForTimeout(700)
+
+  const afterText = await readVariantRemapSurfaceText(surface)
+  return afterText !== beforeText || afterText.includes(tabText)
+}
+
+const fillVariantRemapStageTwoTabs = async (
+  page: Page,
+  surface: Locator
+) => {
+  const tabs = await collectVariantRemapStageTwoTabs(surface)
+  console.log(`variant-remap: stage-two tabs=${tabs.map((tab) => tab.text).join(",") || "none"}`)
+  const filledTabs: Array<{
+    tab: string
+    fillClicked: boolean
+    rowCount: number
+    placeholderRowsBefore: number
+    placeholderRowsAfter: number
+    rowSelections: Array<{
+      sourceText: string
+      beforeText: string
+      afterText: string
+      selectedText: string | null
+      targetText: string | null
+      matchedBy: string
+      optionTexts: string[]
+      customNameBefore: string
+      customNameAfter: string
+    }>
+  }> = []
+
+  for (const tab of tabs) {
+    console.log(`variant-remap: tab start ${tab.text}`)
+    await activateVariantRemapStageTwoTab(page, surface, tab.text)
+    const fillAction = await chooseVariantRemapAction(page, surface, VARIANT_REMAP_FILL_KEYWORDS, VARIANT_REMAP_NEGATIVE_KEYWORDS)
+    let fillClicked = false
+    if (fillAction) {
+      await clickAfterDianxiaomiIdle(page, fillAction, 2).catch(async () => {
+        await fillAction.click({ force: true }).catch(() => undefined)
+      })
+      fillClicked = true
+      await page.waitForTimeout(1_200)
+    }
+
+    const collectRows = async () => {
+      const rows = surface.locator("tbody tr, .ant-table-row, [class*='table-row' i], tr")
+      const count = Math.min(await rows.count().catch(() => 0), 80)
+      const collected: Array<{
+        rowKey: string
+        rowIndex: number
+        row: Locator
+        select: Locator
+        sourceText: string
+        selectedText: string
+        customInput: Locator | null
+        customNameText: string
+      }> = []
+
+      for (let index = 0; index < count; index += 1) {
+        const row = rows.nth(index)
+        if (!await row.isVisible().catch(() => false)) {
+          continue
+        }
+
+        const select = await firstVisible([row.locator(".ant-select")])
+        if (!select) {
+          continue
+        }
+
+        const cells = row.locator("td")
+        const cellCount = Math.min(await cells.count().catch(() => 0), 8)
+        const cellTexts: string[] = []
+        for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
+          cellTexts.push(cleanVisibleText(await cells.nth(cellIndex).innerText().catch(() => "")))
+        }
+        const sourceText = cleanVisibleText(
+          cellTexts[1]
+          ?? cellTexts.find((text, cellIndex) =>
+            cellIndex > 0
+            && Boolean(text)
+            && !text.includes("移除")
+            && !text.includes("请选择")
+          )
+          ?? ""
+        )
+        const customInput = await firstVisible([
+          row.locator(`input[placeholder*='${VARIANT_REMAP_CUSTOM_NAME_HINT_TEXT}' i]`),
+          row.locator("input:not(.ant-select-selection-search-input):not([type='hidden'])")
+        ])
+        const customNameText = customInput
+          ? cleanVisibleText(await customInput.inputValue().catch(() => ""))
+          : ""
+        const rowKey = normalizeText(sourceText) || `row-${index}`
+
+        collected.push({
+          rowKey,
+          rowIndex: index,
+          row,
+          select,
+          sourceText,
+          selectedText: await readRemapSelectText(select),
+          customInput,
+          customNameText
+        })
+      }
+
+      return collected
+    }
+
+    const buildDesiredTexts = (sourceText: string) => {
+      const raw = cleanVisibleText(sourceText)
+      const values = new Set<string>()
+      const push = (value: string) => {
+        const text = cleanVisibleText(value)
+        if (text) {
+          values.add(text)
+        }
+      }
+
+      push(raw)
+      push(raw.replace(/[【\[].*?[】\]]/g, " "))
+      push(raw.replace(/[（(].*?[）)]/g, " "))
+
+      if (tab.text === "颜色") {
+        push(raw.replace(/颜色/g, ""))
+        push(raw.replace(/色/g, ""))
+      }
+
+      const sizeToken = raw.match(/\b(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|ONE SIZE|ONE-SIZE|FREE SIZE|FREE-SIZE)\b/i)?.[0]
+      if (sizeToken) {
+        push(sizeToken.toUpperCase())
+      }
+
+      return [...values]
+    }
+
+    const normalizeMatchText = (value: string) =>
+      normalizeText(value)
+        .replace(/[【】\[\]（）()]/g, " ")
+        .replace(/[\/,，、|:：-]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+
+    const normalizeColorMatchText = (value: string) =>
+      normalizeMatchText(value)
+        .replace(/颜色/g, "")
+        .replace(/色/g, "")
+        .replace(/\s+/g, "")
+
+    const collapseRepeatedSelectedText = (value: string) => {
+      const text = cleanVisibleText(value)
+      if (!text) {
+        return ""
+      }
+
+      const parts = text.split(/\s+/).filter(Boolean)
+      if (parts.length >= 2 && parts.every((part) => part === parts[0])) {
+        return parts[0]
+      }
+
+      return text
+    }
+
+    const extractSizeToken = (value: string) =>
+      cleanVisibleText(value)
+        .match(/\b(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|3XL|ONE SIZE|ONE-SIZE|FREE SIZE|FREE-SIZE|FREE\(ONE SIZE\))\b/i)?.[0]
+        ?.toUpperCase()
+        ?? ""
+
+    const readRemapSelectText = async (select: Locator) => {
+      const display = await firstVisible([
+        select.locator(".ant-select-selection-item"),
+        select.locator(".ant-select-selection-overflow-item .ant-select-selection-item"),
+        select.locator(".ant-select-selection-placeholder")
+      ])
+      if (display) {
+        const text = cleanVisibleText(await display.innerText().catch(() => ""))
+        if (text) {
+          return collapseRepeatedSelectedText(text)
+        }
+      }
+
+      return collapseRepeatedSelectedText(await readVisibleText(select))
+    }
+
+    const normalizeOptionKey = (value: string) => {
+      const collapsed = collapseRepeatedSelectedText(value)
+      return normalizeMatchText(collapsed) || normalizeText(collapsed)
+    }
+
+    const isUsableOptionText = (value: string) => {
+      const normalized = normalizeText(value)
+      return Boolean(
+        normalized
+        && !normalized.includes(normalizeText(SELECT_PLACEHOLDER_TEXT))
+        && !normalized.includes("暂无")
+        && !normalized.includes("无数据")
+        && !normalized.includes("未配置")
+        && !normalized.includes("请先")
+      )
+    }
+
+    const isDisabledAntOption = async (option: Locator) => {
+      const ariaDisabled = await option.getAttribute("aria-disabled").catch(() => null)
+      const className = await option.getAttribute("class").catch(() => "")
+      return ariaDisabled === "true" || /disabled/i.test(className ?? "")
+    }
+
+    const clickRemapControl = async (locator: Locator) => {
+      await locator.scrollIntoViewIfNeeded().catch(() => undefined)
+      try {
+        await locator.click({
+          timeout: 2_500
+        })
+        return true
+      } catch {
+        try {
+          await locator.click({
+            timeout: 2_500,
+            force: true
+          })
+          return true
+        } catch {
+          return false
+        }
+      }
+    }
+
+    const readSelectOptions = async (
+      select: Locator
+    ) => {
+      await clickRemapControl(select)
+      await page.waitForTimeout(350)
+
+      const optionNodes = page.locator(".ant-select-dropdown:visible .ant-select-item-option")
+      const optionCount = Math.min(await optionNodes.count().catch(() => 0), 120)
+      const optionTexts: string[] = []
+      const usableOptionTexts: string[] = []
+
+      for (let optionIndex = 0; optionIndex < optionCount; optionIndex += 1) {
+        const option = optionNodes.nth(optionIndex)
+        if (!await option.isVisible().catch(() => false)) {
+          continue
+        }
+
+        const optionText = cleanVisibleText(await option.innerText().catch(() => ""))
+        if (!optionText) {
+          continue
+        }
+
+        optionTexts.push(optionText)
+        if (isUsableOptionText(optionText) && !await isDisabledAntOption(option)) {
+          usableOptionTexts.push(optionText)
+        }
+      }
+
+      await page.keyboard.press("Escape").catch(() => undefined)
+      await page.waitForTimeout(120)
+
+      return {
+        optionTexts,
+        usableOptionTexts
+      }
+    }
+
+    const scoreCandidate = (
+      sourceText: string,
+      candidateText: string,
+      currentSelectedText: string,
+      preferredIndex: number,
+      candidateOrder: number
+    ) => {
+      const desiredTexts = buildDesiredTexts(sourceText)
+      const candidateNormalized = normalizeMatchText(candidateText)
+      const candidateColor = normalizeColorMatchText(candidateText)
+      const candidateSizeToken = extractSizeToken(candidateText)
+
+      let bestScore = Number.NEGATIVE_INFINITY
+      let matchedBy = "none"
+
+      const updateBest = (score: number, reason: string) => {
+        if (score > bestScore) {
+          bestScore = score
+          matchedBy = reason
+        }
+      }
+
+      for (const desiredText of desiredTexts) {
+        const normalizedDesired = normalizeMatchText(desiredText)
+        if (!normalizedDesired || !candidateNormalized) {
+          continue
+        }
+
+        if (candidateNormalized === normalizedDesired) {
+          updateBest(1_400, "desired")
+          continue
+        }
+        if (candidateNormalized.includes(normalizedDesired) || normalizedDesired.includes(candidateNormalized)) {
+          updateBest(1_240 - Math.abs(candidateNormalized.length - normalizedDesired.length) * 6, "desired-partial")
+        }
+      }
+
+      if (tab.text === "颜色") {
+        const sourceColor = normalizeColorMatchText(sourceText)
+        if (sourceColor && candidateColor) {
+          if (candidateColor === sourceColor) {
+            updateBest(1_120, "exact-color")
+          } else if (candidateColor.includes(sourceColor) || sourceColor.includes(candidateColor)) {
+            updateBest(980 - Math.abs(candidateColor.length - sourceColor.length) * 10, "fuzzy-color")
+          } else {
+            const sourceChars = [...new Set(sourceColor.split(""))]
+            const optionChars = new Set(candidateColor.split(""))
+            const sharedCount = sourceChars.filter((char) => optionChars.has(char)).length
+            if (sharedCount > 0) {
+              let score = sharedCount * 115
+              if (sourceColor[0] === candidateColor[0]) {
+                score += 90
+              }
+              if (sourceColor.at(-1) === candidateColor.at(-1)) {
+                score += 40
+              }
+              updateBest(score, "fuzzy-color")
+            }
+          }
+        }
+      }
+
+      const sourceSizeToken = extractSizeToken(sourceText)
+      if (sourceSizeToken && candidateSizeToken) {
+        if (candidateSizeToken === sourceSizeToken) {
+          updateBest(1_060, "size-token")
+        } else if (candidateText.toUpperCase().includes(sourceSizeToken) || sourceSizeToken.includes(candidateSizeToken)) {
+          updateBest(920, "size-token-partial")
+        }
+      }
+
+      const currentSelectionKey = normalizeOptionKey(currentSelectedText)
+      const candidateKey = normalizeOptionKey(candidateText)
+      if (currentSelectionKey && candidateKey && currentSelectionKey === candidateKey) {
+        updateBest(150, "keep-current")
+      }
+
+      updateBest(Math.max(0, 80 - Math.abs(candidateOrder - preferredIndex) * 12), "row-order")
+
+      return {
+        score: bestScore,
+        matchedBy
+      }
+    }
+
+    const rowsBeforeManualSelection = await collectRows()
+    console.log(`variant-remap: tab ${tab.text} visible rows=${rowsBeforeManualSelection.length}`)
+    const rowOptionSnapshots = new Map<string, {
+      optionTexts: string[]
+      usableOptionTexts: string[]
+    }>()
+    for (const row of rowsBeforeManualSelection) {
+      rowOptionSnapshots.set(row.rowKey, await readSelectOptions(row.select))
+    }
+    console.log(`variant-remap: tab ${tab.text} option snapshots collected=${rowOptionSnapshots.size}`)
+
+    for (const row of rowsBeforeManualSelection) {
+      if (row.customInput && !row.customNameText && row.sourceText) {
+        await row.customInput.fill(row.sourceText).catch(() => undefined)
+        await page.waitForTimeout(150)
+      }
+    }
+
+    const currentSelectionPool = rowsBeforeManualSelection
+      .map((row) => cleanVisibleText(row.selectedText))
+      .filter(isUsableOptionText)
+
+    const assignmentPlans = new Map<string, {
+      targetText: string | null
+      matchedBy: string
+      score: number
+      optionTexts: string[]
+    }>()
+    const assignedKeys = new Set<string>()
+
+    for (const row of rowsBeforeManualSelection) {
+      const snapshot = rowOptionSnapshots.get(row.rowKey) ?? {
+        optionTexts: [] as string[],
+        usableOptionTexts: [] as string[]
+      }
+      const candidateMap = new Map<string, {
+        text: string
+        order: number
+      }>()
+
+      let order = 0
+      for (const optionText of snapshot.usableOptionTexts) {
+        const key = normalizeOptionKey(optionText)
+        if (!key || candidateMap.has(key)) {
+          continue
+        }
+        candidateMap.set(key, {
+          text: optionText,
+          order
+        })
+        order += 1
+      }
+
+      for (const optionText of currentSelectionPool) {
+        const key = normalizeOptionKey(optionText)
+        if (!key || candidateMap.has(key)) {
+          continue
+        }
+        candidateMap.set(key, {
+          text: optionText,
+          order
+        })
+        order += 1
+      }
+
+      const rankedCandidates = [...candidateMap.entries()]
+        .map(([key, candidate]) => {
+          const scored = scoreCandidate(
+            row.sourceText,
+            candidate.text,
+            row.selectedText,
+            row.rowIndex,
+            candidate.order
+          )
+
+          return {
+            key,
+            text: candidate.text,
+            order: candidate.order,
+            score: scored.score,
+            matchedBy: scored.matchedBy
+          }
+        })
+        .sort((left, right) =>
+          right.score - left.score
+          || left.order - right.order
+        )
+
+      const chosenCandidate = rankedCandidates.find((candidate) => !assignedKeys.has(candidate.key))
+        ?? rankedCandidates[0]
+        ?? null
+
+      if (chosenCandidate?.key) {
+        assignedKeys.add(chosenCandidate.key)
+      }
+
+      assignmentPlans.set(row.rowKey, {
+        targetText: chosenCandidate?.text ?? (cleanVisibleText(row.selectedText) || null),
+        matchedBy: chosenCandidate?.matchedBy ?? "none",
+        score: chosenCandidate?.score ?? Number.NEGATIVE_INFINITY,
+        optionTexts: snapshot.optionTexts
+      })
+    }
+
+    const optionMatchesTarget = (optionText: string, targetText: string) => {
+      const optionKey = normalizeOptionKey(optionText)
+      const targetKey = normalizeOptionKey(targetText)
+      if (optionKey && targetKey && optionKey === targetKey) {
+        return true
+      }
+
+      const normalizedOption = normalizeMatchText(optionText)
+      const normalizedTarget = normalizeMatchText(targetText)
+      if (
+        normalizedOption
+        && normalizedTarget
+        && normalizedOption.includes(normalizedTarget)
+      ) {
+        return true
+      }
+
+      if (tab.text === "颜色") {
+        const optionColor = normalizeColorMatchText(optionText)
+        const targetColor = normalizeColorMatchText(targetText)
+        if (
+          optionColor
+          && targetColor
+          && (
+            optionColor === targetColor
+            || optionColor.includes(targetColor)
+          )
+        ) {
+          return true
+        }
+      }
+
+      const optionSizeToken = extractSizeToken(optionText)
+      const targetSizeToken = extractSizeToken(targetText)
+      return Boolean(
+        optionSizeToken
+        && targetSizeToken
+        && (
+          optionSizeToken === targetSizeToken
+          || optionText.toUpperCase().includes(targetSizeToken)
+        )
+      )
+    }
+
+    const scoreOptionAgainstTarget = (optionText: string, targetText: string) => {
+      const optionKey = normalizeOptionKey(optionText)
+      const targetKey = normalizeOptionKey(targetText)
+      const normalizedOption = normalizeMatchText(optionText)
+      const normalizedTarget = normalizeMatchText(targetText)
+      let bestScore = Number.NEGATIVE_INFINITY
+      let matchedBy = "none"
+
+      const updateBest = (score: number, reason: string) => {
+        if (score > bestScore) {
+          bestScore = score
+          matchedBy = reason
+        }
+      }
+
+      if (optionKey && targetKey && optionKey === targetKey) {
+        updateBest(3_200, "exact-key")
+      }
+
+      if (normalizedOption && normalizedTarget && normalizedOption === normalizedTarget) {
+        updateBest(3_100, "exact-normalized")
+      } else if (normalizedOption && normalizedTarget && normalizedOption.includes(normalizedTarget)) {
+        updateBest(2_250 - Math.abs(normalizedOption.length - normalizedTarget.length) * 10, "contains-target")
+      }
+
+      if (tab.text === "棰滆壊") {
+        const optionColor = normalizeColorMatchText(optionText)
+        const targetColor = normalizeColorMatchText(targetText)
+        if (optionColor && targetColor && optionColor === targetColor) {
+          updateBest(3_000, "exact-color")
+        } else if (optionColor && targetColor && optionColor.includes(targetColor)) {
+          updateBest(2_050 - Math.abs(optionColor.length - targetColor.length) * 18, "contains-color")
+        }
+      }
+
+      const optionSizeToken = extractSizeToken(optionText)
+      const targetSizeToken = extractSizeToken(targetText)
+      if (optionSizeToken && targetSizeToken && optionSizeToken === targetSizeToken) {
+        updateBest(2_900, "size-token")
+      } else if (optionSizeToken && targetSizeToken && optionText.toUpperCase().includes(targetSizeToken)) {
+        updateBest(2_300, "size-token-partial")
+      }
+
+      return {
+        score: bestScore,
+        matchedBy
+      }
+    }
+
+    const isStrictTargetMatch = (optionText: string, targetText: string) => {
+      const match = scoreOptionAgainstTarget(optionText, targetText)
+      return (
+        match.matchedBy === "exact-key"
+        || match.matchedBy === "exact-normalized"
+        || match.matchedBy === "exact-color"
+        || match.matchedBy === "size-token"
+      )
+    }
+
+    const selectionSatisfiesPlan = (
+      selectedText: string,
+      targetText: string | null | undefined
+    ) => Boolean(targetText && isStrictTargetMatch(selectedText, targetText))
+
+    const attemptSelectTargetText = async (
+      rowState: {
+        rowIndex: number
+        row: Locator
+        select: Locator
+        sourceText: string
+        selectedText: string
+        customInput: Locator | null
+        customNameText: string
+      },
+      targetText: string
+    ) => {
+      await clickRemapControl(rowState.select)
+      await page.waitForTimeout(350)
+
+      const optionNodes = page.locator(".ant-select-dropdown:visible .ant-select-item-option")
+      const optionCount = Math.min(await optionNodes.count().catch(() => 0), 120)
+      const optionTexts: string[] = []
+      const usableOptions: Array<{ locator: Locator; text: string }> = []
+
+      for (let optionIndex = 0; optionIndex < optionCount; optionIndex += 1) {
+        const option = optionNodes.nth(optionIndex)
+        if (!await option.isVisible().catch(() => false)) {
+          continue
+        }
+
+        const optionText = cleanVisibleText(await option.innerText().catch(() => ""))
+        if (!optionText) {
+          continue
+        }
+
+        optionTexts.push(optionText)
+        if (isUsableOptionText(optionText) && !await isDisabledAntOption(option)) {
+          usableOptions.push({
+            locator: option,
+            text: optionText
+          })
+        }
+      }
+
+      const matchedOption = usableOptions
+        .map((option, optionOrder) => ({
+          ...option,
+          optionOrder,
+          match: scoreOptionAgainstTarget(option.text, targetText)
+        }))
+        .filter((option) => option.match.score > Number.NEGATIVE_INFINITY)
+        .sort((left, right) =>
+          right.match.score - left.match.score
+          || left.optionOrder - right.optionOrder
+        )[0] ?? null
+      if (!matchedOption) {
+        await page.keyboard.press("Escape").catch(() => undefined)
+        return {
+          selected: false,
+          selectedText: null as string | null,
+          afterText: await readRemapSelectText(rowState.select),
+          optionTexts,
+          usableOptionTexts: usableOptions.map((option) => option.text)
+        }
+      }
+
+      const optionClicked = await clickRemapControl(matchedOption.locator)
+      if (!optionClicked) {
+        await page.keyboard.press("Escape").catch(() => undefined)
+        return {
+          selected: false,
+          selectedText: null as string | null,
+          afterText: await readRemapSelectText(rowState.select),
+          optionTexts,
+          usableOptionTexts: usableOptions.map((option) => option.text)
+        }
+      }
+      await page.waitForTimeout(350)
+      return {
+        selected: true,
+        selectedText: matchedOption.text,
+        afterText: await readRemapSelectText(rowState.select),
+        optionTexts,
+        usableOptionTexts: usableOptions.map((option) => option.text)
+      }
+    }
+
+    const pickTemporaryOptionTexts = (
+      usableOptionTexts: string[],
+      currentSelectionKeys: Set<string>,
+      plannedTargetKeys: Set<string>,
+      currentSelectedText: string,
+      targetText: string
+    ) => {
+      const currentKey = normalizeOptionKey(currentSelectedText)
+      const targetKey = normalizeOptionKey(targetText)
+      const seen = new Set<string>()
+      const ordered: string[] = []
+      const pushMatches = (predicate: (key: string, optionText: string) => boolean) => {
+        for (const optionText of usableOptionTexts) {
+          const key = normalizeOptionKey(optionText)
+          if (!key || seen.has(key) || !predicate(key, optionText)) {
+            continue
+          }
+          seen.add(key)
+          ordered.push(optionText)
+        }
+      }
+
+      pushMatches((key) =>
+        key !== currentKey
+        && key !== targetKey
+        && !plannedTargetKeys.has(key)
+        && !currentSelectionKeys.has(key)
+      )
+      pushMatches((key) =>
+        key !== currentKey
+        && key !== targetKey
+        && !plannedTargetKeys.has(key)
+      )
+      pushMatches((key) => key !== currentKey && key !== targetKey)
+
+      return ordered
+    }
+
+    const rowSelections: Array<{
+      sourceText: string
+      beforeText: string
+      afterText: string
+      selectedText: string | null
+      targetText: string | null
+      matchedBy: string
+      optionTexts: string[]
+      customNameBefore: string
+      customNameAfter: string
+    }> = []
+
+    const selectionAttempts = new Map<string, {
+      selected: boolean
+      selectedText: string | null
+      afterText: string
+      optionTexts: string[]
+      usableOptionTexts: string[]
+    }>()
+    const pendingRows = new Set(
+      rowsBeforeManualSelection
+        .filter((row) => {
+          const targetText = assignmentPlans.get(row.rowKey)?.targetText
+          return Boolean(targetText && !selectionSatisfiesPlan(row.selectedText, targetText))
+        })
+        .map((row) => row.rowKey)
+    )
+
+    let rowsAfterManualSelection = await collectRows()
+    let liveRowsByKey = new Map(rowsAfterManualSelection.map((row) => [row.rowKey, row]))
+    const currentOwnerByKey = new Map<string, number>()
+    const targetRowByKey = new Map<string, string>()
+    for (const row of rowsBeforeManualSelection) {
+      const targetKey = normalizeOptionKey(assignmentPlans.get(row.rowKey)?.targetText ?? "")
+      if (targetKey) {
+        targetRowByKey.set(targetKey, row.rowKey)
+      }
+    }
+
+    const rebuildCurrentOwners = async () => {
+      currentOwnerByKey.clear()
+      rowsAfterManualSelection = await collectRows()
+      for (const liveRow of rowsAfterManualSelection) {
+        const currentKey = normalizeOptionKey(liveRow.selectedText)
+        if (currentKey) {
+          currentOwnerByKey.set(currentKey, liveRow.rowIndex)
+        }
+        const plan = assignmentPlans.get(liveRow.rowKey)
+        if (
+          plan?.targetText
+          && selectionSatisfiesPlan(liveRow.selectedText, plan.targetText)
+        ) {
+          pendingRows.delete(liveRow.rowKey)
+        }
+      }
+      liveRowsByKey = new Map(rowsAfterManualSelection.map((row) => [row.rowKey, row]))
+    }
+
+    const refreshLiveRows = async () => {
+      rowsAfterManualSelection = await collectRows()
+      liveRowsByKey = new Map(rowsAfterManualSelection.map((row) => [row.rowKey, row]))
+      await rebuildCurrentOwners()
+    }
+
+    const moveRowToText = async (rowKey: string, targetText: string) => {
+      const liveRow = liveRowsByKey.get(rowKey) ?? null
+      if (!liveRow) {
+        return {
+          success: false,
+          freedKey: "",
+          attempt: null as null | {
+            selected: boolean
+            selectedText: string | null
+            afterText: string
+            optionTexts: string[]
+            usableOptionTexts: string[]
+          }
+        }
+      }
+
+      const beforeKey = normalizeOptionKey(liveRow.selectedText)
+      let latestAttempt: {
+        selected: boolean
+        selectedText: string | null
+        afterText: string
+        optionTexts: string[]
+        usableOptionTexts: string[]
+      } | null = null
+      let afterRow: typeof liveRow | null = null
+      let success = false
+
+      for (let moveAttempt = 1; moveAttempt <= 2; moveAttempt += 1) {
+        const activeRow = liveRowsByKey.get(rowKey) ?? liveRow
+        console.log(`variant-remap: tab ${tab.text} move row=${rowKey} current=${activeRow.selectedText || "(empty)"} target=${targetText} try=${moveAttempt}`)
+        latestAttempt = await attemptSelectTargetText(activeRow, targetText)
+        selectionAttempts.set(rowKey, latestAttempt)
+        await waitForDianxiaomiLoadingOverlayToClear(page, 3_000).catch(() => false)
+        await page.waitForTimeout(250)
+        await refreshLiveRows()
+        afterRow = liveRowsByKey.get(rowKey) ?? null
+        success = Boolean(afterRow && selectionSatisfiesPlan(afterRow.selectedText, targetText))
+        console.log(`variant-remap: tab ${tab.text} move row=${rowKey} success=${success} after=${afterRow?.selectedText ?? latestAttempt.afterText} try=${moveAttempt}`)
+        if (success) {
+          break
+        }
+
+        const afterKey = normalizeOptionKey(afterRow?.selectedText ?? latestAttempt.afterText)
+        if (moveAttempt >= 2 || (afterKey && afterKey !== beforeKey)) {
+          break
+        }
+
+        await page.waitForTimeout(400)
+      }
+
+      if (success) {
+        pendingRows.delete(rowKey)
+      }
+
+      return {
+        success,
+        freedKey: success ? beforeKey : "",
+        attempt: latestAttempt
+      }
+    }
+
+    await refreshLiveRows()
+    let guard = 0
+    while (pendingRows.size > 0 && guard < Math.max(8, rowsBeforeManualSelection.length * 4)) {
+      guard += 1
+      console.log(`variant-remap: tab ${tab.text} resolve pass=${guard} pending=${pendingRows.size}`)
+      let progressed = false
+
+      const freeStarters = [...pendingRows].filter((rowIndex) => {
+        const plan = assignmentPlans.get(rowIndex)
+        const targetKey = normalizeOptionKey(plan?.targetText ?? "")
+        if (!targetKey) {
+          return false
+        }
+        const owner = currentOwnerByKey.get(targetKey)
+        const liveRow = liveRowsByKey.get(rowIndex) ?? null
+        return owner === undefined || owner === liveRow?.rowIndex
+      })
+
+      if (freeStarters.length > 0) {
+        for (const starterIndex of freeStarters) {
+          let nextRowIndex: string | undefined = starterIndex
+          let starterProgressed = false
+          while (nextRowIndex !== undefined) {
+            const plan = assignmentPlans.get(nextRowIndex)
+            if (!plan?.targetText || !pendingRows.has(nextRowIndex)) {
+              break
+            }
+
+            const move = await moveRowToText(nextRowIndex, plan.targetText)
+            if (!move.success) {
+              break
+            }
+
+            progressed = true
+            starterProgressed = true
+            nextRowIndex = move.freedKey ? targetRowByKey.get(move.freedKey) : undefined
+            if (nextRowIndex !== undefined && !pendingRows.has(nextRowIndex)) {
+              break
+            }
+          }
+          if (starterProgressed) {
+            break
+          }
+        }
+      }
+
+      if (!progressed) {
+        const pivotCandidates = [...pendingRows]
+
+        for (const pivotIndex of pivotCandidates) {
+          const pivotRow = liveRowsByKey.get(pivotIndex) ?? null
+          const pivotPlan = assignmentPlans.get(pivotIndex)
+          if (!pivotRow || !pivotPlan?.targetText) {
+            continue
+          }
+
+          const latestAttempt = selectionAttempts.get(pivotIndex) ?? null
+          const currentSelectionKeys = new Set(
+            rowsAfterManualSelection
+              .map((row) => normalizeOptionKey(row.selectedText))
+              .filter(Boolean)
+          )
+          const plannedTargetKeys = new Set(
+            [...assignmentPlans.values()]
+              .map((plan) => normalizeOptionKey(plan.targetText ?? ""))
+              .filter(Boolean)
+          )
+          const latestOptions =
+            latestAttempt && latestAttempt.usableOptionTexts.length > 0
+              ? latestAttempt.usableOptionTexts
+              : (await readSelectOptions(pivotRow.select)).usableOptionTexts
+          const temporaryOptionTexts = pickTemporaryOptionTexts(
+            latestOptions,
+            currentSelectionKeys,
+            plannedTargetKeys,
+            pivotRow.selectedText,
+            pivotPlan.targetText
+          )
+
+          if (temporaryOptionTexts.length <= 0) {
+            console.log(`variant-remap: tab ${tab.text} no temporary option for pivot=${pivotIndex}`)
+            continue
+          }
+
+          const pivotCurrentKey = normalizeOptionKey(pivotRow.selectedText)
+          let tempMove:
+            | {
+              success: boolean
+              freedKey: string
+              attempt: null | {
+                selected: boolean
+                selectedText: string | null
+                afterText: string
+                optionTexts: string[]
+                usableOptionTexts: string[]
+              }
+            }
+            | null = null
+          let temporaryOptionText: string | null = null
+
+          for (const candidateTemporaryOptionText of temporaryOptionTexts.slice(0, 8)) {
+            const candidateMove = await moveRowToText(pivotIndex, candidateTemporaryOptionText)
+            if (!candidateMove.success) {
+              console.log(`variant-remap: tab ${tab.text} temporary move failed pivot=${pivotIndex} option=${candidateTemporaryOptionText}`)
+              continue
+            }
+            tempMove = candidateMove
+            temporaryOptionText = candidateTemporaryOptionText
+            break
+          }
+
+          if (!tempMove?.success) {
+            continue
+          }
+
+          progressed = true
+          console.log(`variant-remap: tab ${tab.text} temporary move succeeded pivot=${pivotIndex} option=${temporaryOptionText}`)
+          let freedKey = pivotCurrentKey
+          while (freedKey) {
+            const consumerRowIndex = targetRowByKey.get(freedKey)
+            if (consumerRowIndex === undefined || consumerRowIndex === pivotIndex || !pendingRows.has(consumerRowIndex)) {
+              break
+            }
+
+            const consumerPlan = assignmentPlans.get(consumerRowIndex)
+            if (!consumerPlan?.targetText) {
+              break
+            }
+
+            const move = await moveRowToText(consumerRowIndex, consumerPlan.targetText)
+            if (!move.success) {
+              freedKey = ""
+              break
+            }
+
+            freedKey = move.freedKey
+          }
+
+          const pivotFinalize = await moveRowToText(pivotIndex, pivotPlan.targetText)
+          if (!pivotFinalize.success) {
+            console.log(`variant-remap: tab ${tab.text} pivot finalize failed pivot=${pivotIndex} target=${pivotPlan.targetText}`)
+          }
+
+          break
+        }
+      }
+
+      if (pendingRows.size <= 0) {
+        break
+      }
+
+      if (!progressed) {
+        break
+      }
+    }
+
+    rowsAfterManualSelection = await collectRows()
+    console.log(`variant-remap: tab ${tab.text} rows after reconcile=${rowsAfterManualSelection.length} pending=${pendingRows.size}`)
+    const rowsAfterByKey = new Map(rowsAfterManualSelection.map((row) => [row.rowKey, row]))
+    for (const row of rowsBeforeManualSelection) {
+      const plan = assignmentPlans.get(row.rowKey)
+      const finalRow = rowsAfterByKey.get(row.rowKey)
+      const latestAttempt = selectionAttempts.get(row.rowKey)
+      rowSelections.push({
+        sourceText: row.sourceText,
+        beforeText: row.selectedText,
+        afterText: finalRow?.selectedText ?? latestAttempt?.afterText ?? row.selectedText,
+        selectedText: finalRow?.selectedText ?? latestAttempt?.selectedText ?? (row.selectedText || null),
+        targetText: plan?.targetText ?? null,
+        matchedBy: plan?.matchedBy ?? "none",
+        optionTexts: latestAttempt?.optionTexts ?? plan?.optionTexts ?? [],
+        customNameBefore: row.customNameText,
+        customNameAfter: finalRow?.customInput
+          ? cleanVisibleText(await finalRow.customInput.inputValue().catch(() => ""))
+          : row.customNameText
+      })
+    }
+
+    filledTabs.push({
+      tab: tab.text,
+      fillClicked,
+      rowCount: rowsAfterManualSelection.length,
+      placeholderRowsBefore: rowsBeforeManualSelection.filter((row) => !row.selectedText || row.selectedText.includes(SELECT_PLACEHOLDER_TEXT)).length,
+      placeholderRowsAfter: rowsAfterManualSelection.filter((row) => !row.selectedText || row.selectedText.includes(SELECT_PLACEHOLDER_TEXT)).length,
+      rowSelections
+    })
+  }
+
+  return filledTabs
+}
+
+const confirmVariantRemapFollowupDialogs = async (
+  page: Page,
+  baselineVisibleDialogs: number
+) => {
+  const handledTexts: string[] = []
+  for (let round = 0; round < 3; round += 1) {
+    const dialogs = await visibleModalCandidates(page)
+    const followup = dialogs.at(-1) ?? null
+    if (!followup) {
+      break
+    }
+
+    const text = normalizeFeedbackText(await followup.innerText().catch(() => ""))
+    if (!text) {
+      break
+    }
+    if (text.includes("清空") && (text.includes("对应关系") || text.includes("自定义名称"))) {
+      const actionNodes = followup.locator("button, [role='button'], input[type='button'], input[type='submit'], a")
+      const actionCount = Math.min(await actionNodes.count().catch(() => 0), 12)
+      let confirmDangerButton: Locator | null = null
+      for (let index = actionCount - 1; index >= 0; index -= 1) {
+        const action = actionNodes.nth(index)
+        if (!await action.isVisible().catch(() => false)) {
+          continue
+        }
+
+        const actionText = compactActionText(
+          await action.innerText().catch(async () => await action.getAttribute("value").catch(() => ""))
+        )
+        if (!actionText) {
+          continue
+        }
+
+        if (["确定", "确认", "继续", "ok", "confirm"].some((keyword) => actionText === keyword || actionText.includes(keyword))) {
+          confirmDangerButton = action
+          break
+        }
+      }
+      confirmDangerButton ??= await findInteractiveInRootByKeywords(followup, ["确定", "确认", "继续", "ok", "confirm"])
+      if (confirmDangerButton) {
+        await clickAfterDianxiaomiIdle(page, confirmDangerButton, 1).catch(async () => {
+          await confirmDangerButton.click({ force: true }).catch(() => undefined)
+        })
+        handledTexts.push(`confirm-danger:${text}`)
+        await page.waitForTimeout(800)
+        continue
+      }
+      handledTexts.push(`danger-unhandled:${text}`)
+      break
+    }
+    if (!text.includes("返回上一步") && !text.includes("信息将会清空") && !text.includes("确认")) {
+      if (dialogs.length <= baselineVisibleDialogs) {
+        break
+      }
+      break
+    }
+
+    const confirmButton = await findInteractiveInRootByKeywords(followup, VARIANT_REMAP_CONFIRM_KEYWORDS)
+    if (!confirmButton) {
+      handledTexts.push(text)
+      break
+    }
+
+    await clickAfterDianxiaomiIdle(page, confirmButton, 1).catch(async () => {
+      await confirmButton.click({ force: true }).catch(() => undefined)
+    })
+    handledTexts.push(text)
+    await page.waitForTimeout(1_000)
+    await waitForVisibleModalCandidateCountAtMost(page, Math.max(0, baselineVisibleDialogs), 4_000).catch(() => false)
+  }
+
+  return handledTexts
+}
+
+export const normalizeVariantRemap = async (
+  page: Page,
+  reason: string
+) => {
+  console.log(`variant-remap: normalize start reason=${reason}`)
+  const beforeRows = await findSkuRows(page)
+  const bodyText = normalizeFeedbackText(await page.locator("body").innerText().catch(() => ""))
+  const colorSection = page.locator(COLOR_SKC_SECTION_SELECTOR).first()
+  const colorSectionVisible = await colorSection.isVisible().catch(() => false)
+  const surfaceSignalsPresent = VARIANT_REMAP_SURFACE_HINT_KEYWORDS.some((keyword) => bodyText.includes(keyword))
+
+  if (beforeRows.length > 0) {
+    console.log(`variant-remap: skip rows already visible=${beforeRows.length}`)
+    return stepResult(
+      "normalize-variant-remap",
+      "Normalize variant remap",
+      "skipped",
+      `Variant rows are already visible (${beforeRows.length})`,
+      {
+        reason,
+        beforeRows: beforeRows.length
+      }
+    )
+  }
+
+  if (!colorSectionVisible && !surfaceSignalsPresent) {
+    console.log("variant-remap: skip because no visible trigger signals")
+    return stepResult(
+      "normalize-variant-remap",
+      "Normalize variant remap",
+      "skipped",
+      "Variant remap controls are not visible on the current Dianxiaomi page",
+      {
+        reason,
+        beforeRows: beforeRows.length,
+        colorSectionVisible,
+        surfaceSignalsPresent
+      }
+    )
+  }
+
+  const openDialogsBefore = (await visibleModalCandidates(page)).length
+  let remapAction = {
+    attempted: false,
+    clicked: false,
+    reason,
+    text: ""
+  }
+  if (colorSectionVisible) {
+    remapAction = await clickColorSkcRemapTrigger(page, colorSection, reason)
+  } else {
+    const pageTrigger = await findLooseActionInRootByKeywords(page, COLOR_SKC_REMAP_KEYWORDS)
+    if (pageTrigger && await pageTrigger.isVisible().catch(() => false)) {
+      const triggerText = cleanVisibleText(await pageTrigger.innerText().catch(() => ""))
+      await clickAfterDianxiaomiIdle(page, pageTrigger, 2).catch(async () => {
+        await pageTrigger.click({ force: true }).catch(() => undefined)
+      })
+      await page.waitForTimeout(1_200)
+      remapAction = {
+        attempted: true,
+        clicked: true,
+        reason,
+        text: triggerText
+      }
+    }
+  }
+
+  if (!remapAction.clicked) {
+    console.log("variant-remap: trigger click failed")
+    return stepResult(
+      "normalize-variant-remap",
+      "Normalize variant remap",
+      "failed",
+      "Variant remap trigger is visible in validation signals but could not be clicked",
+      {
+        reason,
+        beforeRows: beforeRows.length,
+        remapAction,
+        openDialogsBefore
+      }
+    )
+  }
+
+  const surface = await waitForVariantRemapSurface(page)
+  if (!surface) {
+    console.log("variant-remap: surface did not appear after trigger")
+    const rowsWithoutModal = await waitForVariantRowsReady(page, beforeRows.length, 4_000)
+    if (rowsWithoutModal.length > beforeRows.length) {
+      return stepResult(
+        "normalize-variant-remap",
+        "Normalize variant remap",
+        "done",
+        `Variant rows materialized after remap trigger (${beforeRows.length} -> ${rowsWithoutModal.length})`,
+        {
+          reason,
+          beforeRows: beforeRows.length,
+          afterRows: rowsWithoutModal.length,
+          remapAction,
+          openedModal: false
+        }
+      )
+    }
+
+    return stepResult(
+      "normalize-variant-remap",
+      "Normalize variant remap",
+      "failed",
+      "Clicked variant remap trigger but the remap surface did not appear",
+      {
+        reason,
+        beforeRows: beforeRows.length,
+        afterRows: rowsWithoutModal.length,
+        remapAction,
+        openedModal: false
+      }
+    )
+  }
+
+  const surfaceTextBefore = await readVariantRemapSurfaceText(surface)
+  console.log("variant-remap: surface opened")
+  const actionsClicked: string[] = []
+  const progressAction = await chooseVariantRemapAction(page, surface, VARIANT_REMAP_PROGRESS_KEYWORDS, VARIANT_REMAP_NEGATIVE_KEYWORDS)
+  if (progressAction) {
+    const actionText = cleanVisibleText(await progressAction.innerText().catch(async () => await progressAction.getAttribute("value").catch(() => "")))
+    await clickAfterDianxiaomiIdle(page, progressAction, 2).catch(async () => {
+      await progressAction.click({ force: true }).catch(() => undefined)
+    })
+    actionsClicked.push(actionText || "next")
+    await page.waitForTimeout(1_000)
+    console.log(`variant-remap: progressed to stage two via ${actionText || "next"}`)
+  }
+
+  let activeSurface = await waitForVariantRemapSurface(page, 3_000)
+  if (!activeSurface) {
+    console.log("variant-remap: surface closed after progress click")
+    const rowsAfterProgress = await waitForVariantRowsReady(page, beforeRows.length, 6_000)
+    return stepResult(
+      "normalize-variant-remap",
+      "Normalize variant remap",
+      rowsAfterProgress.length > beforeRows.length ? "done" : "failed",
+      rowsAfterProgress.length > beforeRows.length
+        ? `Variant rows materialized after remap flow (${beforeRows.length} -> ${rowsAfterProgress.length})`
+        : "Variant remap surface closed but variant rows are still missing",
+      {
+        reason,
+        beforeRows: beforeRows.length,
+        afterRows: rowsAfterProgress.length,
+        remapAction,
+        openedModal: true,
+        surfaceTextBefore,
+        actionsClicked
+      }
+    )
+  }
+
+  const filledTabs = await fillVariantRemapStageTwoTabs(page, activeSurface)
+  console.log(`variant-remap: filled tabs count=${filledTabs.length}`)
+  actionsClicked.push(...filledTabs.filter((item) => item.fillClicked).map((item) => `fill:${item.tab}`))
+  const unresolvedSelections = filledTabs
+    .flatMap((tab) => tab.rowSelections.map((row) => ({
+      tab: tab.tab,
+      sourceText: row.sourceText,
+      selectedText: row.selectedText,
+      targetText: row.targetText
+    })))
+    .filter((row) => !variantSelectionMatchesTarget(row.selectedText, row.targetText))
+
+  const confirmAction = await chooseVariantRemapAction(page, activeSurface, VARIANT_REMAP_CONFIRM_KEYWORDS, VARIANT_REMAP_NEGATIVE_KEYWORDS)
+  if (confirmAction) {
+    const actionText = cleanVisibleText(await confirmAction.innerText().catch(async () => await confirmAction.getAttribute("value").catch(() => "")))
+    await clickAfterDianxiaomiIdle(page, confirmAction, 2).catch(async () => {
+      await confirmAction.click({ force: true }).catch(() => undefined)
+    })
+    actionsClicked.push(actionText || "confirm")
+    await page.waitForTimeout(1_200)
+    console.log(`variant-remap: confirm clicked via ${actionText || "confirm"}`)
+  }
+
+  const followupDialogs = await confirmVariantRemapFollowupDialogs(page, openDialogsBefore)
+  await waitForVisibleModalCandidateCountAtMost(page, openDialogsBefore, 6_000).catch(() => false)
+  const rowsAfter = await waitForVariantRowsReady(page, beforeRows.length)
+  const finalSurface = await findVariantRemapSurface(page)
+  const finalSurfaceText = await readVariantRemapSurfaceText(finalSurface)
+  const categoryRecoveryState = await inspectCategoryPreparationState(page)
+  console.log(`variant-remap: finalize rowsAfter=${rowsAfter.length} modalStillVisible=${Boolean(finalSurface)}`)
+  const feedbackTexts = (await collectFeedbackTexts(page))
+    .map((item) => ({
+      source: item.source,
+      text: item.source === "body"
+        ? focusBodyFeedbackText(item.text, "变种", item.source)
+        : item.text
+    }))
+    .filter((item, index, values) =>
+      Boolean(item.text)
+      && /(变种|属性|尺码表|重点展示|请选择|清空)/.test(item.text)
+      && values.findIndex((candidate) => candidate.source === item.source && candidate.text === item.text) === index
+    )
+    .slice(0, 12)
+
+  return stepResult(
+    "normalize-variant-remap",
+    "Normalize variant remap",
+    rowsAfter.length > beforeRows.length
+      ? "done"
+      : unresolvedSelections.length === 0
+        ? "done"
+        : "failed",
+    rowsAfter.length > beforeRows.length
+      ? `Variant rows materialized after remap flow (${beforeRows.length} -> ${rowsAfter.length})`
+      : unresolvedSelections.length === 0
+        ? "Variant remap selections were fully reconciled, but variant rows are still not visible on the page"
+        : "Variant remap flow completed but variant rows are still missing",
+    {
+      reason,
+      beforeRows: beforeRows.length,
+      afterRows: rowsAfter.length,
+      remapAction,
+      openedModal: true,
+      surfaceTextBefore,
+      surfaceTextAfter: finalSurfaceText,
+      actionsClicked,
+      filledTabs,
+      unresolvedSelections,
+      followupDialogs,
+      modalStillVisible: Boolean(finalSurface),
+      categoryRecoveryState,
+      feedbackTexts
+    }
+  )
+}
+
 const waitForColorSkcReduction = async (
   page: Page,
   beforeState: Awaited<ReturnType<typeof collectColorSkcGroupState>>,
@@ -3878,7 +6545,7 @@ const trimColorSkcGroupsToLimit = async (
   )
 }
 
-const prepareRepairMediaPageSave = async (
+const prepareDraftPageWriteSurface = async (
   page: Page,
   draft: ListingDraft,
   config: DianxiaomiSelectorConfig
@@ -3913,8 +6580,15 @@ const prepareRepairMediaPageSave = async (
   // In the real Dianxiaomi repair flow the color table often renders before the
   // checkbox controls hydrate. Avoid refreshing here so a later save-failure
   // recovery can operate on the settled failure state instead of resetting it.
+  correctionSteps.push(await normalizeCategorySelection(page, draft))
   correctionSteps.push(await trimColorSkcGroupsToLimit(page, COLOR_SKC_MAX_GROUPS, 0))
+  correctionSteps.push(await normalizeVariantRemap(page, "prepare draft write surface"))
+  correctionSteps.push(await normalizeCategorySelection(page, draft, {
+    stepId: "normalize-category-selection-post-remap",
+    stepLabel: "Normalize category selection after variant remap"
+  }))
   correctionSteps.push(await normalizeSizeChart(page))
+  correctionSteps.push(await normalizeVariantAttributes(page))
   correctionSteps.push(await normalizeSiteWarehouse(page))
   correctionSteps.push(await normalizeShipmentPromise(page))
   correctionSteps.push(await normalizeFreightTemplate(page))
@@ -3958,8 +6632,8 @@ const prepareRepairMediaPageSave = async (
   const failedCount = correctionSteps.filter((step) => step.status === "failed").length
   const doneCount = correctionSteps.filter((step) => step.status === "done").length
   return stepResult(
-    "repair-media-page-save-prep",
-    "Prepare media repair page save",
+    "prepare-draft-write-surface",
+    "Prepare draft write surface",
     failedCount > 0 ? "failed" : doneCount > 0 ? "done" : "skipped",
     failedCount > 0
       ? `Prepared page save with ${doneCount} correction(s), ${failedCount} failed`
@@ -3969,6 +6643,21 @@ const prepareRepairMediaPageSave = async (
     {
       corrections: correctionSteps
     }
+  )
+}
+
+const prepareRepairMediaPageSave = async (
+  page: Page,
+  draft: ListingDraft,
+  config: DianxiaomiSelectorConfig
+) => {
+  const prepared = await prepareDraftPageWriteSurface(page, draft, config)
+  return stepResult(
+    "repair-media-page-save-prep",
+    "Prepare media repair page save",
+    prepared.status,
+    prepared.detail,
+    prepared.data
   )
 }
 
@@ -3997,6 +6686,8 @@ export const fillSkuPricing = async (page: Page, skus: ListingSkuPricing[], conf
   const usedRows = new Set<number>()
   let filledPrices = 0
   let filledStocks = 0
+  let fallbackPriceStatus: StepStatus | null = null
+  let fallbackStockStatus: StepStatus | null = null
   // P0-E: track the first SKU price field we successfully wrote so we can
   // re-read its DOM value as hard evidence. Picked lazily on first fill so
   // we only verify the field we actually wrote.
@@ -4055,12 +6746,20 @@ export const fillSkuPricing = async (page: Page, skus: ListingSkuPricing[], conf
       firstPriceField = fallback
       firstPriceExpected = skus[0].salePriceUsd.toFixed(2)
     } else {
-      await fillSingleField(page, "price", skus[0].salePriceUsd.toFixed(2), config)
+      const fallbackResult = await fillSingleField(page, "price", skus[0].salePriceUsd.toFixed(2), config)
+      fallbackPriceStatus = fallbackResult.status
+      if (fallbackResult.status === "done") {
+        filledPrices += 1
+      }
     }
   }
 
   if (filledStocks === 0 && skus[0]) {
-    await fillSingleField(page, "stock", String(skus[0].stock), config)
+    const fallbackResult = await fillSingleField(page, "stock", String(skus[0].stock), config)
+    fallbackStockStatus = fallbackResult.status
+    if (fallbackResult.status === "done") {
+      filledStocks += 1
+    }
   }
 
   const skuIdentifierSummary = await fillVisibleSkuIdentifierFields(page, skus)
@@ -4087,6 +6786,8 @@ export const fillSkuPricing = async (page: Page, skus: ListingSkuPricing[], conf
       filledPrices,
       filledStocks,
       ...skuIdentifierSummary,
+      fallbackPriceStatus,
+      fallbackStockStatus,
       firstPriceVerified,
       firstPriceExpected,
       firstPriceActual: firstPriceActual.slice(0, 40)
@@ -4181,7 +6882,8 @@ export const inspectDianxiaomiTargetSurface = async (
   const hasPricingSurface = fieldReadiness.skuRows > 0 || (fieldReadiness.price > 0 && fieldReadiness.stock > 0)
   const hasActionOrMediaSignal = fieldReadiness.saveButton > 0 || fieldReadiness.submitButton > 0 || fieldReadiness.mediaTools > 0
   const hasEnoughEditableFields = fieldReadiness.editableFields >= 3
-  const formReady = hasTitleOrDescription && hasPricingSurface && hasActionOrMediaSignal && hasEnoughEditableFields
+  const hasEditableListingShell = hasTitleOrDescription && hasActionOrMediaSignal && hasEnoughEditableFields
+  const formReady = hasEditableListingShell && (hasPricingSurface || hostMatchesDianxiaomi)
   const rawLoginKeywordDetected = LOGIN_OR_CAPTCHA_KEYWORDS.some((keyword) =>
     bodyText.includes(keyword.toLowerCase()) || pageTitle.toLowerCase().includes(keyword.toLowerCase())
   )
@@ -6715,7 +9417,7 @@ const findInteractiveInRootByKeywords = async (root: Page | Locator, keywords: s
       root.getByRole("button", { name: pattern }),
       root.getByRole("link", { name: pattern }),
       root.getByRole("menuitem", { name: pattern }),
-      root.locator("button, a, [role='button'], [role='menuitem']").filter({ hasText: pattern }),
+      root.locator("button, a, span.link, [role='button'], [role='link'], [role='menuitem']").filter({ hasText: pattern }),
       root.locator(valueSelector)
     ])
 
@@ -7284,6 +9986,25 @@ const SUBMIT_FEEDBACK_SELECTORS = [
 
 const normalizeFeedbackText = (value: string) =>
   value.replace(/\s+/g, " ").trim().slice(0, 500)
+
+const variantSelectionMatchesTarget = (selectedText: string | null | undefined, targetText: string | null | undefined) => {
+  if (!selectedText || !targetText) {
+    return false
+  }
+
+  const normalizedSelected = normalizeText(selectedText)
+  const normalizedTarget = normalizeText(targetText)
+  if (normalizedSelected && normalizedTarget && normalizedSelected === normalizedTarget) {
+    return true
+  }
+
+  const compactSelected = cleanVisibleText(selectedText).replace(/\s+/g, "")
+  const compactTarget = cleanVisibleText(targetText).replace(/\s+/g, "")
+  return Boolean(compactSelected && compactTarget && compactSelected === compactTarget)
+}
+
+const compactActionText = (value: string | null | undefined) =>
+  cleanVisibleText(value).replace(/\s+/g, "")
 
 const isColorSkcLimitSaveFailure = (message: string) => {
   const normalized = normalizeFeedbackText(message)
@@ -8452,6 +11173,25 @@ const saveDraftWithVerification = async (
         result: trimResult
       })
       console.log(`save-draft recovery after attempt ${attempt}: ${trimResult.status} ${trimResult.detail}`)
+      await page.waitForTimeout(1_200)
+      continue
+    }
+
+    if (attempt < boundedMax && result.state === "failure" && isMissingVariantSaveFailure(result.message)) {
+      const remapResult = await normalizeVariantRemap(page, "save failure: missing variant selection")
+      recoverySteps.push({
+        attempt,
+        trigger: "missing-variant-selection",
+        result: remapResult
+      })
+      console.log(`save-draft recovery after attempt ${attempt}: ${remapResult.status} ${remapResult.detail}`)
+      const variantAttributeResult = await normalizeVariantAttributes(page)
+      recoverySteps.push({
+        attempt,
+        trigger: "missing-variant-attributes",
+        result: variantAttributeResult
+      })
+      console.log(`save-draft recovery after attempt ${attempt}: ${variantAttributeResult.status} ${variantAttributeResult.detail}`)
       await page.waitForTimeout(1_200)
       continue
     }
@@ -11540,6 +14280,9 @@ export const fillDraft = async (
     return results
   }
 
+  const writeSurfacePreparation = await prepareDraftPageWriteSurface(page, taskDraft, config)
+  results.push(writeSurfacePreparation)
+
   results.push(await dismissStartupModalIfPresent(page))
 
   results.push(await fillSingleField(page, "title", taskDraft.listingTitle, config))
@@ -11621,6 +14364,9 @@ export const inspectPublishSurface = async (
     return results
   }
 
+  const writeSurfacePreparation = await prepareDraftPageWriteSurface(page, draft, config)
+  results.push(writeSurfacePreparation)
+
   results.push(await inspectField(page, "title", config))
   results.push(await inspectField(page, "description", config))
 
@@ -11641,14 +14387,28 @@ export const inspectPublishSurface = async (
   const priceField = rows.length > 0 ? null : await findField(page, "price", config)
   const stockField = rows.length > 0 ? null : await findField(page, "stock", config)
 
+  const writeSurfacePrepared =
+    writeSurfacePreparation.status === "done"
+    || writeSurfacePreparation.status === "skipped"
+  const skuRowsStatus: StepStatus =
+    rows.length > 0
+      ? "done"
+      : writeSurfacePrepared && draft.skuPricing.length > 0
+        ? "skipped"
+        : "failed"
   results.push(stepResult(
     "inspect-sku-rows",
     "Inspect SKU rows",
-    rows.length > 0 ? "done" : "failed",
-    rows.length > 0 ? `SKU rows found: ${rows.length}` : "SKU rows missing",
+    skuRowsStatus,
+    rows.length > 0
+      ? `SKU rows found: ${rows.length}`
+      : writeSurfacePrepared && draft.skuPricing.length > 0
+        ? "SKU rows are not visible yet; this Dianxiaomi page can still generate pricing inputs after fill/save preparation"
+        : "SKU rows missing",
     {
       expectedSkuCount: draft.skuPricing.length,
-      detectedRows: rows.length
+      detectedRows: rows.length,
+      writeSurfacePrepared
     }
   ))
 
@@ -11656,14 +14416,22 @@ export const inspectPublishSurface = async (
     results.push(stepResult(
       "inspect-price",
       "Inspect price",
-      priceField ? "done" : "failed",
-      priceField ? "Global price field found" : "Global price field missing"
+      priceField ? "done" : writeSurfacePrepared && draft.skuPricing.length > 0 ? "skipped" : "failed",
+      priceField
+        ? "Global price field found"
+        : writeSurfacePrepared && draft.skuPricing.length > 0
+          ? "Global price field is not visible yet; continue with fill/save preparation on this Dianxiaomi page"
+          : "Global price field missing"
     ))
     results.push(stepResult(
       "inspect-stock",
       "Inspect stock",
-      stockField ? "done" : "failed",
-      stockField ? "Global stock field found" : "Global stock field missing"
+      stockField ? "done" : writeSurfacePrepared && draft.skuPricing.length > 0 ? "skipped" : "failed",
+      stockField
+        ? "Global stock field found"
+        : writeSurfacePrepared && draft.skuPricing.length > 0
+          ? "Global stock field is not visible yet; continue with fill/save preparation on this Dianxiaomi page"
+          : "Global stock field missing"
     ))
   }
 

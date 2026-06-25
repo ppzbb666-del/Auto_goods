@@ -13,7 +13,31 @@ Updated: 2026-06-22
 
 依据:[CLAUDE.md](../CLAUDE.md) §4 试验闸门 + [real-dianxiaomi-calibration-runbook.md](real-dianxiaomi-calibration-runbook.md) Step 6 + [operating-principles.md](operating-principles.md)。
 
-挡在这个里程碑前的,是 8 项启动检查(`GET /automation/unattended-startup-check`)。其中 `real Dianxiaomi calibration` 和 `browser profile` **必须你本人登录一次**,其余我能驱动。
+挡在这个里程碑前的,是 8 项启动检查(`GET /automation/unattended-startup-check`)。
+
+---
+
+## A0 实测结果(2026-06-22,live server @8787)
+
+`canStart: false`,但**只剩 3 道硬门**,而且比预想轻 —— session 已登录、selector-config 已有效、131 个 ready 商品都到位:
+
+| 检查 | 状态 | 解法 | 谁 |
+|---|---|---|---|
+| ready-work-items | ✅ pass | 131 ready —— 够 | — |
+| selector-config | ✅ pass | 已有效(A1 的生成/验证其实已完成) | — |
+| dianxiaomi-session | ✅ pass | **已登录、可检视**(最难的人工门当前满足) | — |
+| task-file-snapshot | ✅ pass | — | — |
+| manual-budget-promotion-gate | ✅ pass | — | — |
+| **real-dianxiaomi-calibration** | ❌ block | 校准 4 天前过期(上限 24h)→ 重跑 snapshot+diagnose 刷新 | 你登录确认 / 我驱动 |
+| **browser-profile** | ❌ block | profile 路径未配置 → 配置持久 profile 路径 | 配置项,我能帮 |
+| **failure-budget** | ❌ block | 连续失败 3/3 → 走 recovery-run 或一次成功跑清零 | 我驱动 |
+| blocked-backlog | ⚠️ warning | 99 阻塞项 / 近 10 次失败流(校准过期很可能是诱因) | 校准修好后复查 |
+
+**关键洞察**:登录态当前是好的,所以校准只是「放久了要刷新」,不是从零做。三道门修好 → A4 试跑。
+
+### A0 测试发现(需修)
+`npm test`:扩展全绿;server `automation-runner.test.ts` 1 处断言失败(line ~3362)。
+根因:新增的会话用例在共享诊断目录留下 login/CAPTCHA 信号没清,泄漏进后面 baseline 的 selector-config 用例,而会话门优先级在 selector 之前(符合「会话是硬门」)。**是测试隔离问题,非产品回归**,修在测试侧(几行)。
 
 ---
 

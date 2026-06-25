@@ -4632,6 +4632,18 @@ export const classifyDianxiaomiWorkFailure = (reason, source = "queue-daemon"): 
             nextAction: "Close the other browser using this profile or clear the stale profile lock, then restart the daemon."
         };
     }
+    // P2-1: chromium crash / OOM / disconnect. Routes to browser-profile
+    // recovery (restart the browser) and is auto-retry-eligible because a
+    // crash is usually transient, not a content/selector problem.
+    if (includesAny(["browser crash", "browser-crash", "page crashed", "chromium crash", "browser process disconnected", "browser context closed unexpectedly", "out of memory", "oom"])) {
+        return {
+            ...base,
+            category: "browser-profile",
+            retryable: true,
+            autoRetryRecommended: true,
+            nextAction: "The automation browser crashed or ran out of memory. Restart the daemon to relaunch a fresh browser; if it recurs, reduce batch size or media tool concurrency."
+        };
+    }
     if (includesAny(["task file", "export automation task", "snapshot is stale", "unreadable task", "missing task", "could not export", "could not create automation task"])) {
         return {
             ...base,
@@ -4790,7 +4802,7 @@ const updateFullFlowStage = (flowId, stageName, patch) => {
 };
 const runFullFlowStage = async (flowId, mode, input) => {
   const targetFingerprint = buildAutomationTargetFingerprint(input);
-  const stageInput = mode === "save-draft" || mode === "submit-listing"
+  const stageInput = mode === "submit-listing"
         ? {
             ...input,
             skipDraftFill: true

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type SetStateAction } from "react"
+﻿import { useEffect, useRef, useState, type SetStateAction } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { automationSourceBucketOptions, normalizeAutomationItemUrls, normalizeAutomationSourceBuckets } from "@temu-ai-ops/shared"
 import type { AutomationDryRunStartInput, AutomationFullFlowJob, AutomationManualStepBudgetTrialProposal, AutomationManualStepBudgetTrialRequestResult, AutomationPreflightReport, AutomationQueueDaemonHealth, AutomationQueueDaemonState, AutomationQueueRunStartResult, AutomationRecoveryRun, AutomationSourceBucket, AutomationTaskFileExportResult, AutomationTaskSnapshotDiffResult, AutomationUnattendedStartupCheck, DianxiaomiAccountScanLink, DianxiaomiImageCheckJob, DianxiaomiListingRequirementRules, DianxiaomiPageContext, DianxiaomiProductWorkItem, DianxiaomiSelectorConfig, DianxiaomiStoreMetrics, DraftUpdateInput, ManualProductInput, PricingRules, ProductUpdateInput, PublishCheckResult, PublishTask, SelectorCalibrationJob, SelectorConfigChangeRisk, SelectorConfigDiffResult, SelectorWorkbench } from "@temu-ai-ops/shared"
@@ -485,7 +485,7 @@ const resolveDefaultReadyStoreScopeFromMetrics = (
   ?? null
 
 const formatStoreScopeLabel = (option: Pick<StoreScopeOption, "label" | "storeId" | "readyCount" | "workItemCount">) =>
-  `${option.label}${option.storeId ? ` (${option.storeId})` : ""} · ready ${option.readyCount} / items ${option.workItemCount}`
+  `${option.label}${option.storeId ? ` (${option.storeId})` : ""} 路 ready ${option.readyCount} / items ${option.workItemCount}`
 
 const formatStoreSyncTimestamp = (value?: string) => {
   if (!value) {
@@ -536,11 +536,11 @@ const summarizeImageCheckIssues = (
 const describeStoreQueueState = (option: StoreScopeOption) => {
   if (option.workItemCount === 0) {
     return option.collectedCount > 0
-      ? `已导入待处理 ${option.collectedCount}`
-      : "已识别店铺，暂无商品队列"
+      ? `宸插鍏ュ緟澶勭悊 ${option.collectedCount}`
+      : "宸茶瘑鍒簵閾猴紝鏆傛棤鍟嗗搧闃熷垪"
   }
 
-  return `ready ${option.readyCount} / 商品 ${option.workItemCount} / blocked ${option.blockedCount}`
+  return `ready ${option.readyCount} / 鍟嗗搧 ${option.workItemCount} / blocked ${option.blockedCount}`
 }
 
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
@@ -585,7 +585,7 @@ export function App() {
   const [manualProduct, setManualProduct] = useState<ManualProductInput>(defaultManualProduct)
   const [manualAttributesText, setManualAttributesText] = useState("")
   const [manualImagesText, setManualImagesText] = useState("")
-  const [manualSkusText, setManualSkusText] = useState("默认规格,0,0,")
+  const [manualSkusText, setManualSkusText] = useState("榛樿瑙勬牸,0,0,")
   const [productEditDraft, setProductEditDraft] = useState<ProductEditDraft | null>(null)
   const [listingEditDraft, setListingEditDraft] = useState<ListingEditDraft | null>(null)
   const [reviewNote, setReviewNote] = useState("")
@@ -1051,7 +1051,7 @@ export function App() {
 
   const runCurrentStoreScan = async () => {
     if (!activeDianxiaomiPageContext) {
-      throw new Error("未识别店小秘页面店铺，请先打开对应店铺页面")
+      throw new Error("鏈瘑鍒簵灏忕椤甸潰搴楅摵锛岃鍏堟墦寮€瀵瑰簲搴楅摵椤甸潰")
     }
 
     const result = await dianxiaomiAccountScanner.mutateAsync({
@@ -1081,7 +1081,7 @@ export function App() {
     const targetStoreId = override?.storeId ?? activeDianxiaomiPageContext?.storeId
     const targetStoreName = override?.storeName ?? activeDianxiaomiPageContext?.storeName
     if (!targetStoreId && !targetStoreName) {
-      throw new Error("未识别店小秘页面店铺，无法导入该页面店铺链接")
+      throw new Error("鏈瘑鍒簵灏忕椤甸潰搴楅摵锛屾棤娉曞鍏ヨ椤甸潰搴楅摵閾炬帴")
     }
 
     return dianxiaomiAccountScanImporter.mutateAsync({
@@ -1203,7 +1203,7 @@ export function App() {
       setManualProduct(defaultManualProduct)
       setManualAttributesText("")
       setManualImagesText("")
-      setManualSkusText("默认规格,0,0,")
+      setManualSkusText("榛樿瑙勬牸,0,0,")
     }
   })
 
@@ -1438,7 +1438,7 @@ export function App() {
     },
     onSuccess: async ({ workItem, exported, flow }) => {
       setSelectedTaskFileExportId(exported.exportId)
-      setDailySaveDraftProofMessage(`已启动保存草稿验证：${workItem.title}`)
+      setDailySaveDraftProofMessage(`宸插惎鍔ㄤ繚瀛樿崏绋块獙璇侊細${workItem.title}`)
       setAutomationFullFlowMessage(`save-draft proof started: ${flow.artifactDir}`)
       await refetch()
       await refetchAutomationTaskFileExports()
@@ -1708,7 +1708,7 @@ export function App() {
   const selectorConfigGenerator = useMutation({
     mutationFn: generateSelectorConfig,
     onSuccess: async (result) => {
-      setSelectorConfigMessage(`已生成选择器配置：${result.configPath}`)
+      setSelectorConfigMessage(`宸茬敓鎴愰€夋嫨鍣ㄩ厤缃細${result.configPath}`)
       await refetchSelectorConfig()
       await refetchSelectorConfigValidation()
       await refetchSelectorWorkbench()
@@ -1771,7 +1771,7 @@ export function App() {
         sourceBuckets
       }),
     onSuccess: async (result, variables) => {
-      setAccountScanMessage(`已导入 ${result.importedCount} 个链接，ready ${result.readyCount}，待修订 ${result.needsRevisionCount}`)
+      setAccountScanMessage(`宸插鍏?${result.importedCount} 涓摼鎺ワ紝ready ${result.readyCount}锛屽緟淇 ${result.needsRevisionCount}`)
       setSelectedAccountScanLinkIds([])
       if (variables.storeScopeKey) {
         setSelectedStoreScopeKey(variables.storeScopeKey)
@@ -1811,7 +1811,7 @@ export function App() {
         if (job.status === "failed") {
           currentStoreAutoImportRef.current = null
           setCurrentStoreImportJobId(null)
-          setAccountScanMessage(job.error ?? "店小秘页面店铺链接池扫描失败")
+          setAccountScanMessage(job.error ?? "搴楀皬绉橀〉闈㈠簵閾洪摼鎺ユ睜鎵弿澶辫触")
           await refetchDianxiaomiAccountScanJobs()
           return
         }
@@ -1948,7 +1948,7 @@ export function App() {
 
     setImageCheckMessage(
       candidates.length > 0
-        ? `正在批量准备 ${candidates.length} 个商品：先图片检测，再按店小秘分类尝试自动修复，必要时继续自动恢复。`
+        ? `正在批量准备 ${candidates.length} 个商品：先做图片检测，再按店小秘分类尝试自动修复，必要时继续自动恢复。`
         : `当前范围图片已处理，开始自动恢复 ${scopeBrowserRecoveryCandidateCount} 个阻塞商品。`
     )
 
@@ -2014,12 +2014,16 @@ export function App() {
       await refetchAutomationFullFlowJobs()
       await refetchAutomationQueueDaemonHealth()
       await refetchAutomationUnattendedStartupCheck()
-      setRepairMessage(summary.repaired > 0 || summary.requeued > 0
-        ? `自动修复完成：${summary.repaired} 个，回到 ready ${summary.requeued} 个。`
-        : "")
-      setAutomationRecoveryRunMessage(summary.recoveryQueued > 0
-        ? `自动恢复完成：成功 ${summary.recovered} / 发起 ${summary.recoveryQueued}。`
-        : "")
+      if (summary.repaired > 0 || summary.requeued > 0) {
+        setRepairMessage(`自动修复完成：${summary.repaired} 个，回到 ready ${summary.requeued} 个。`)
+      } else {
+        setRepairMessage("")
+      }
+      if (summary.recoveryQueued > 0) {
+        setAutomationRecoveryRunMessage(`自动恢复完成：成功 ${summary.recovered} / 发起 ${summary.recoveryQueued}。`)
+      } else {
+        setAutomationRecoveryRunMessage("")
+      }
       setImageCheckMessage(`批量准备完成：图片检测 ${summary.checked}，自动修复 ${summary.repaired}，回到 ready ${summary.requeued}，自动恢复 ${summary.recovered}/${summary.recoveryQueued}。`)
     } finally {
       setBatchPreparePending(false)
@@ -2056,7 +2060,7 @@ export function App() {
       mediaAutomationTools: automationStartInput.mediaAutomationTools
     }),
     onSuccess: async (result) => {
-      setRepairMessage(`自动修复已启动：${result.workItemId ?? result.id}`)
+      setRepairMessage(`鑷姩淇宸插惎鍔細${result.workItemId ?? result.id}`)
       await refetchAutomationRepairApplyJobs()
       await refetchAutomationRepairPreviewJobs()
       await refetchDianxiaomiProductWorkItems()
@@ -2256,7 +2260,7 @@ export function App() {
   const allStoreScopeMetrics = sumStoreScopeMetrics(storeMetrics)
   const selectedStoreScopeMetrics: StoreScopeOption = selectedStoreScope ?? {
     key: ALL_STORES_SCOPE_KEY,
-    label: "全部店铺",
+    label: "鍏ㄩ儴搴楅摵",
     workItemCount: allStoreScopeMetrics.workItemCount,
     readyCount: allStoreScopeMetrics.readyCount,
     collectedCount: allStoreScopeMetrics.collectedCount,
@@ -2288,10 +2292,10 @@ export function App() {
     : []
   const dianxiaomiProductWorkItems = scopeFilterEnabled ? scopedDianxiaomiProductWorkItems : []
   const selectedStoreScopeSummary = selectedStoreScopeKey === ALL_STORES_SCOPE_KEY
-    ? "全部店铺"
+    ? "鍏ㄩ儴搴楅摵"
     : selectedStoreScope
     ? formatStoreScopeLabel(selectedStoreScope)
-    : "全部店铺"
+    : "鍏ㄩ儴搴楅摵"
   const selectedStoreQueueInput = selectedStoreScope
     ? {
         storeId: selectedStoreScope.storeId,
@@ -2323,7 +2327,7 @@ export function App() {
     }
 
     if (nextKey === ALL_STORES_SCOPE_KEY) {
-      setStoreScopeMessage("当前运行范围已切换为全部店铺。不会切换店小秘页面店铺。")
+      setStoreScopeMessage("当前运行范围已切换为全部店铺，不会跟随店小秘页面店铺切换。")
       return
     }
 
@@ -2465,33 +2469,44 @@ export function App() {
     }
   })
   const latestSaveDraftProofStage = latestSaveDraftProofJob?.stages.find((stage) => stage.name === "save-draft") ?? null
-  const latestSaveDraftProofSummary = latestSaveDraftProofJob
-    ? latestSaveDraftProofJob.status === "completed"
-      ? `已保存草稿 ${new Date(latestSaveDraftProofJob.finishedAt ?? latestSaveDraftProofJob.startedAt).toLocaleString()}`
-      : latestSaveDraftProofJob.status === "failed"
-        ? `失败：${latestSaveDraftProofJob.error ?? latestSaveDraftProofStage?.error ?? "未知错误"}`
-        : `运行中：${latestSaveDraftProofJob.workItemId ?? latestSaveDraftProofJob.id}`
-    : latestSuccessfulSaveDraftReport
-      ? `已保存草稿 ${new Date(latestSuccessfulSaveDraftReport.createdAt).toLocaleString()}`
-      : "还没有保存草稿验证记录"
+  let latestSaveDraftProofSummary = "还没有保存草稿验证记录"
+  if (latestSaveDraftProofJob) {
+    if (latestSaveDraftProofJob.status === "completed") {
+      latestSaveDraftProofSummary = "已保存草稿 " + new Date(latestSaveDraftProofJob.finishedAt ?? latestSaveDraftProofJob.startedAt).toLocaleString()
+    } else if (latestSaveDraftProofJob.status === "failed") {
+      latestSaveDraftProofSummary = "失败：" + (latestSaveDraftProofJob.error ?? latestSaveDraftProofStage?.error ?? "未知错误")
+    } else {
+      latestSaveDraftProofSummary = "运行中：" + (latestSaveDraftProofJob.workItemId ?? latestSaveDraftProofJob.id)
+    }
+  } else if (latestSuccessfulSaveDraftReport) {
+    latestSaveDraftProofSummary = "已保存草稿 " + new Date(latestSuccessfulSaveDraftReport.createdAt).toLocaleString()
+  }
+
   const dailySaveDraftCandidateSummary = dailySaveDraftCandidate
-    ? `${dailySaveDraftCandidate.title} / ${dailySaveDraftCandidate.storeName ?? dailySaveDraftCandidate.storeId ?? "未识别店铺"}`
+    ? dailySaveDraftCandidate.title + " / " + (dailySaveDraftCandidate.storeName ?? dailySaveDraftCandidate.storeId ?? "未识别店铺")
     : "当前范围没有 ready 商品"
-  const dailySaveDraftProofStatusLabel = latestSaveDraftProofJob
-    ? latestSaveDraftProofJob.status === "completed"
-      ? "已验证"
-      : latestSaveDraftProofJob.status === "failed"
-        ? "验证失败"
-        : "验证中"
-    : latestSuccessfulSaveDraftReport
-      ? "已验证"
-      : "待验证"
+
+  let dailySaveDraftProofStatusLabel = "待验证"
+  if (latestSaveDraftProofJob) {
+    if (latestSaveDraftProofJob.status === "completed") {
+      dailySaveDraftProofStatusLabel = "已验证"
+    } else if (latestSaveDraftProofJob.status === "failed") {
+      dailySaveDraftProofStatusLabel = "验证失败"
+    } else {
+      dailySaveDraftProofStatusLabel = "验证中"
+    }
+  } else if (latestSuccessfulSaveDraftReport) {
+    dailySaveDraftProofStatusLabel = "已有验证记录"
+  }
+
   const dailySaveDraftProofRunning = dailySaveDraftProofRunner.isPending || latestSaveDraftProofJob?.status === "running"
-  const selectedScopeConfigurationMessage = !selectedQueueProductScopeReady
-    ? selectedQueueProductScopeMode === "item-urls"
-      ? "请输入要上的店小秘商品链接，一行一个。"
+
+  let selectedScopeConfigurationMessage: string | null = null
+  if (!selectedQueueProductScopeReady) {
+    selectedScopeConfigurationMessage = selectedQueueProductScopeMode === "item-urls"
+      ? "请输入要处理的店小秘商品链接，一行一个。"
       : "请至少勾选一个来源页面。"
-    : null
+  }
   const scopeBrowserRecoveryCandidateCount = blockedWorkItems.filter((item) => canRunBrowserRecovery(item)).length
   const backendConnectionError = [
     dianxiaomiProductWorkItemsError ? dianxiaomiProductWorkItemsQueryError : null,
@@ -2633,9 +2648,7 @@ export function App() {
   const scopeWorkItemCount = useStoreScopeSummaryCounts ? selectedStoreScopeMetrics.workItemCount : dianxiaomiProductWorkItems.length
   const scopeBlockedCount = useStoreScopeSummaryCounts ? selectedStoreScopeMetrics.blockedCount : blockedWorkItems.length
   const scopeNeedsRevisionCount = useStoreScopeSummaryCounts ? selectedStoreScopeMetrics.needsRevisionCount : needsRevisionWorkItems.length
-  const imageCheckPendingWorkItems = dianxiaomiProductWorkItems.filter((item) =>
-    needsImageCheck(item)
-  )
+  const imageCheckPendingWorkItems = dianxiaomiProductWorkItems.filter((item) => needsImageCheck(item))
   const imageCheckPendingCount = imageCheckPendingWorkItems.length
   const batchPrepareAvailableCount = Math.min(
     5,
@@ -2650,7 +2663,7 @@ export function App() {
   const dailyGuideSteps = [
     {
       title: "先在店小秘页内处理当前商品",
-      detail: "右侧插件会显示当前页面状态、下一步和默认动作。图片问题优先按店小秘图片检测的分类处理。"
+      detail: "右侧插件会显示当前页面状态、下一步和默认动作。图片问题优先按店小秘图片检测分类处理。"
     },
     {
       title: "这里默认只选店铺",
@@ -2667,253 +2680,67 @@ export function App() {
       ? "当前只处理你填入的商品链接。"
       : "当前只处理你勾选来源页的商品。"
   const currentPageStoreSyncTimestamp = formatStoreSyncTimestamp(dianxiaomiPageContext?.updatedAt)
-  const currentPageStoreScopeLabel = currentPageStoreDisplayScope
-    ? activeDianxiaomiPageContext
-      ? `${formatStoreScopeLabel(currentPageStoreDisplayScope)} · 已同步`
-      : currentPageStoreSyncTimestamp
-        ? `${formatStoreScopeLabel(currentPageStoreDisplayScope)} · 上次同步 ${currentPageStoreSyncTimestamp}`
-        : `${formatStoreScopeLabel(currentPageStoreDisplayScope)} · 等待重新同步`
-    : currentPageStoreSyncTimestamp
-      ? `未识别店小秘当前页面店铺 · 上次同步 ${currentPageStoreSyncTimestamp}`
-      : "未识别店小秘当前页面店铺"
-  const currentPageStorePoolLabel = activeDianxiaomiPageContext
-    ? currentPageStoreScanLinks.length > 0
-      ? currentPageStoreImportableLinks.length > 0
-        ? `已扫描 ${currentPageStoreScanLinks.length} / 待导入 ${currentPageStoreImportableLinks.length}`
-        : `已扫描 ${currentPageStoreScanLinks.length} / 当前没有新的可导入链接`
-      : "店小秘页面店铺还没有扫描结果"
-    : currentPageStoreDisplayScope
-      ? `店小秘页面上次停留在 ${formatStoreScopeLabel(currentPageStoreDisplayScope)}，请重新打开该店铺页面继续同步链接池`
-      : "先打开店小秘页面店铺"
-  const latestQueueSummary = latestQueueTick
-    ? `${latestQueueTick.category}: ${latestQueueTick.reason ?? latestQueueTick.error ?? "已记录"}`
-    : "还没有新的轮询记录。"
-  const latestFullFlowSummary = latestFullFlowJob
-    ? `${latestFullFlowJob.status}: ${latestFullFlowJob.error ?? latestFullFlowJob.id}`
-    : "还没有新的全流程结果。"
-  const dailyManualReviewSummary = publishFailureSummary?.firstManualBudgetItem
-    ? `${publishFailureSummary.firstManualBudgetItem.title}: ${publishFailureSummary.firstManualBudgetItem.operatorAction}`
-    : firstManualBudgetItem
-      ? `${firstManualBudgetItem.title}: ${firstManualBudgetItem.operatorAction}`
-      : "没有需要额外人工接手的发布结果。"
+  let currentPageStoreScopeLabel = "未识别店小秘当前页面店铺"
+  if (currentPageStoreDisplayScope) {
+    if (activeDianxiaomiPageContext) {
+      currentPageStoreScopeLabel = formatStoreScopeLabel(currentPageStoreDisplayScope) + " · 已同步"
+    } else if (currentPageStoreSyncTimestamp) {
+      currentPageStoreScopeLabel = formatStoreScopeLabel(currentPageStoreDisplayScope) + " · 上次同步 " + currentPageStoreSyncTimestamp
+    } else {
+      currentPageStoreScopeLabel = formatStoreScopeLabel(currentPageStoreDisplayScope) + " · 等待重新同步"
+    }
+  } else if (currentPageStoreSyncTimestamp) {
+    currentPageStoreScopeLabel = "未识别店小秘当前页面店铺 · 上次同步 " + currentPageStoreSyncTimestamp
+  }
+  let currentPageStorePoolLabel = "先打开店小秘页面店铺"
+  if (activeDianxiaomiPageContext) {
+    if (currentPageStoreScanLinks.length > 0) {
+      currentPageStorePoolLabel = currentPageStoreImportableLinks.length > 0
+        ? "已扫描 " + currentPageStoreScanLinks.length + " / 待导入 " + currentPageStoreImportableLinks.length
+        : "已扫描 " + currentPageStoreScanLinks.length + " / 当前没有新的可导入链接"
+    } else {
+      currentPageStorePoolLabel = "店小秘页面店铺还没有扫描结果"
+    }
+  } else if (currentPageStoreDisplayScope) {
+    currentPageStorePoolLabel = "店小秘页面上次停留在 " + formatStoreScopeLabel(currentPageStoreDisplayScope) + "，请重新打开该店铺页面继续同步链接池"
+  }
+  let dailyManualReviewSummary = "没有需要额外人工接手的发布结果。"
+  if (publishFailureSummary?.firstManualBudgetItem) {
+    dailyManualReviewSummary = publishFailureSummary.firstManualBudgetItem.title + ": " + publishFailureSummary.firstManualBudgetItem.operatorAction
+  } else if (firstManualBudgetItem) {
+    dailyManualReviewSummary = firstManualBudgetItem.title + ": " + firstManualBudgetItem.operatorAction
+  }
 
   return (
-    <div className={`app-shell ${showAdvancedConsole ? "advanced-mode" : ""}`}>
+    <div className={showAdvancedConsole ? "app-shell advanced-mode" : "app-shell"}>
       {!showAdvancedConsole ? (
         <main className="daily-workspace">
-          <section className={`daily-console ${dailyModeTone}`} style={{ display: "none" }}>
-            <div className="daily-console-head">
-              <div>
-                <p className="eyebrow">Default Entry</p>
-                <h1>无人值守主流程</h1>
-                <p>唯一默认入口：只处理店小秘已采集商品，自动修改、处理图片、保存并点发布；Temu 核价和最终上架保留人工确认。</p>
-              </div>
-              <strong className={`daily-mode-badge ${dailyModeTone}`}>{dailyModeLabel}</strong>
-            </div>
-
-            <div className="daily-scope-bar">
-              <label className="daily-scope-control">
-                <span>Store scope</span>
-                <select value={selectedStoreScopeKey} onChange={(event) => handleStoreScopeChange(event.target.value)}>
-                  <option value="auto">跟随店小秘页面店铺</option>
-                  <option value={ALL_STORES_SCOPE_KEY}>全部店铺</option>
-                  {storeScopeOptions.map((option) => (
-                    <option key={option.key} value={option.key}>{formatStoreScopeLabel(option)}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="daily-scope-control">
-                <span>Product scope</span>
-                <select
-                  value={selectedQueueProductScopeMode}
-                  onChange={(event) => setSelectedQueueProductScopeMode(event.target.value as QueueProductScopeMode)}
-                >
-                  <option value="ready-queue">运行店铺 ready 队列</option>
-                  <option value="item-urls">只上指定商品链接</option>
-                  <option value="source-buckets">按来源页面上品</option>
-                </select>
-              </label>
-              {selectedQueueProductScopeMode === "item-urls" ? (
-                <label className="daily-scope-control daily-scope-textarea">
-                  <span>商品链接</span>
-                  <textarea
-                    rows={4}
-                    value={selectedItemUrlsText}
-                    onChange={(event) => setSelectedItemUrlsText(event.target.value)}
-                    placeholder="一行一个店小秘商品编辑链接"
-                  />
-                </label>
-              ) : null}
-              {selectedQueueProductScopeMode === "source-buckets" ? (
-                <div className="daily-scope-control daily-scope-checkboxes">
-                  <span>来源页面</span>
-                  <div className="daily-scope-choice-list">
-                    {automationSourceBucketOptions.map((option) => {
-                      const checked = selectedSourceBuckets.includes(option.value)
-                      return (
-                        <label key={option.value} className="daily-scope-checkbox">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(event) => setSelectedSourceBuckets((current) =>
-                              event.target.checked
-                                ? Array.from(new Set<AutomationSourceBucket>([...current, option.value]))
-                                : current.filter((item) => item !== option.value)
-                            )}
-                          />
-                          <span>{option.label}</span>
-                        </label>
-                      )
-                    })}
-                  </div>
-                </div>
-              ) : null}
-              <div className="daily-scope-summary">
-                <strong>Current scope</strong>
-                <span>{selectedQueueScopeSummary}</span>
-                <span className="daily-scope-meta">ready {scopeReadyCount} / items {scopeWorkItemCount}</span>
-              </div>
-            </div>
-            {selectedScopeConfigurationMessage ? <p className="daily-message">{selectedScopeConfigurationMessage}</p> : null}
-
-            <div className="daily-section">
-              <div className="daily-section-head">
-                <strong>状态</strong>
-                <span>主指标只统计无人值守主流程</span>
-              </div>
-              <div className="daily-status-strip main-kpis">
-                <DailyMetric
-                  label="自动通过率"
-                  value={dailyAutomaticPass.rate === null ? "--" : `${Math.round(dailyAutomaticPass.rate * 100)}%`}
-                  detail={dailyAutomaticPass.finished > 0 ? `${dailyAutomaticPass.completed}/${dailyAutomaticPass.finished} completed` : "等待自动任务完成"}
-                  tone={dailyAutomaticPassTone}
-                />
-                <DailyMetric
-                  label="单品人工触发"
-                  value={dailyManualTriggers.productCount > 0 ? dailyManualTriggers.average.toFixed(2) : "0.00"}
-                  detail={`${dailyManualTriggers.triggerCount}/${dailyManualTriggers.productCount} triggers/products`}
-                  tone={dailyManualTriggerTone}
-                />
-                <DailyMetric label="待处理队列" value={String(scopeReadyCount)} detail="ready 商品" tone={scopeReadyCount > 0 ? "good" : "neutral"} />
-                <DailyMetric label="启动检查" value={dailyBackendOffline ? "离线" : automationUnattendedStartupCheck?.status ?? "检查中"} detail={dailyTrialLabel} tone={dailyBackendOffline || automationUnattendedStartupCheck?.status === "blocked" ? "bad" : automationUnattendedStartupCheck?.status === "ready" ? "good" : "warn"} />
-              </div>
-            </div>
-
-            <div className="daily-section">
-              <div className="daily-section-head">
-                <strong>告警</strong>
-                <span>{dailyAlerts.length > 0 ? `${dailyAlerts.length} 条` : "无阻断"}</span>
-              </div>
-              {dailyAlerts.length > 0 ? (
-                <div className="daily-alert-list">
-                  {dailyAlerts.slice(0, 4).map((alert) => (
-                    <div key={alert.id} className={`daily-alert ${alert.tone}`}>
-                      <strong>{alert.title}</strong>
-                      <span>{alert.message}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="daily-alert empty">
-                  <strong>可以按流程运行</strong>
-                  <span>当前没有需要员工判断的默认流程告警。</span>
-                </div>
-              )}
-            </div>
-
-            <div className="daily-section">
-              <div className="daily-section-head">
-                <strong>动作</strong>
-                <span>{`${selectedQueueScopeSummary} / ${dailyActionTitle}`}</span>
-              </div>
-              <div className={`daily-action-state ${dailyModeTone}`}>
-                <strong>{dailyActionTitle}</strong>
-                <p>{dailyActionDetail}</p>
-              </div>
-              <div className="daily-console-actions">
-                <button
-                  className="primary-button"
-                  onClick={() => void automationQueueDaemonStarter.mutateAsync(defaultQueueDaemonInput)}
-                  disabled={automationQueueDaemonStarter.isPending || !dailyCanStart || !selectedQueueProductScopeReady}
-                >
-                  {automationQueueDaemonStarter.isPending ? "正在启动..." : automationQueueDaemon?.status === "ACTIVE" ? "运行中" : dailyTrialGate.status === "passed" ? "开始无人值守" : "等待试跑通过"}
-                </button>
-                <button
-                  className="ghost-button"
-                  onClick={() => void automationQueueDaemonPauser.mutateAsync()}
-                  disabled={automationQueueDaemonPauser.isPending || automationQueueDaemon?.status !== "ACTIVE"}
-                >
-                  {automationQueueDaemonPauser.isPending ? "正在暂停..." : "暂停"}
-                </button>
-                <button
-                  className="ghost-button"
-                  onClick={() => void automationQueueRunner.mutateAsync(dailyTrialQueueRunInput)}
-                  disabled={automationQueueRunner.isPending || !dailyStartupCanStart || !selectedQueueProductScopeReady}
-                >
-                  {automationQueueRunner.isPending ? "试跑中..." : "小批量试跑"}
-                </button>
-                <button
-                  className="ghost-button"
-                  onClick={() => void selectorCalibrationRunner.mutateAsync(dailySelectorCalibrationInput)}
-                  disabled={selectorCalibrationRunner.isPending || dailyBackendOffline}
-                >
-                  {selectorCalibrationRunner.isPending ? "校准中..." : "生产校准"}
-                </button>
-                <button
-                  className="ghost-button"
-                  onClick={() => setShowDailyDetails((current) => !current)}
-                >
-                  {showDailyDetails ? "收起验收" : "验收明细"}
-                </button>
-                <button
-                  className="ghost-button"
-                  onClick={() => setShowAdvancedConsole(true)}
-                >
-                  高级区
-                </button>
-              </div>
-              <div className="daily-mini-feed compact">
-                <div>
-                  <strong>最近运行</strong>
-                  <span>{latestQueueTick ? `${latestQueueTick.category}: ${latestQueueTick.reason ?? latestQueueTick.error ?? "无异常"}` : "暂无自动轮询"}</span>
-                </div>
-                <div>
-                  <strong>最近任务</strong>
-                  <span>{latestFullFlowJob ? `${latestFullFlowJob.status}: ${latestFullFlowJob.error ?? latestFullFlowJob.id}` : "暂无自动任务"}</span>
-                </div>
-              </div>
-              {automationQueueDaemonMessage ? <p className="daily-message">{automationQueueDaemonMessage}</p> : null}
-              {automationQueueRunMessage ? <p className="daily-message">{automationQueueRunMessage}</p> : null}
-              {selectorCalibrationMessage ? <p className="daily-message">{selectorCalibrationMessage}</p> : null}
-            </div>
-          </section>
-
-          <section className={`daily-console ${dailyModeTone}`}>
+          <section className={"daily-console " + dailyModeTone}>
             <div className="daily-console-head">
               <div>
                 <p className="eyebrow">Daily Mode</p>
                 <h1>常用首页</h1>
                 <p>日常只走这一条路：在店小秘页里让插件处理图片和字段，这里先做小批量试跑，验收通过后再启动无人值守。</p>
               </div>
-              <strong className={`daily-mode-badge ${dailyModeTone}`}>{dailyModeLabel}</strong>
+              <strong className={"daily-mode-badge " + dailyModeTone}>{dailyModeLabel}</strong>
             </div>
 
             <div className="daily-status-strip main-kpis">
               <DailyMetric label="已就绪" value={String(scopeReadyCount)} detail="ready 商品" tone={scopeReadyCount > 0 ? "good" : "neutral"} />
               <DailyMetric
                 label="自动通过率"
-                value={dailyAutomaticPass.rate === null ? "--" : `${Math.round(dailyAutomaticPass.rate * 100)}%`}
-                detail={dailyAutomaticPass.finished > 0 ? `${dailyAutomaticPass.completed}/${dailyAutomaticPass.finished} 已完成` : "等待新的全流程结果"}
+                value={dailyAutomaticPass.rate === null ? "--" : String(Math.round(dailyAutomaticPass.rate * 100)) + "%"}
+                detail={dailyAutomaticPass.finished > 0 ? String(dailyAutomaticPass.completed) + "/" + String(dailyAutomaticPass.finished) + " 已完成" : "等待新的全流程结果"}
                 tone={dailyAutomaticPassTone}
               />
               <DailyMetric
                 label="待修复"
                 value={String(scopeNeedsRevisionCount + scopeBlockedCount)}
-                detail={`改造 ${scopeNeedsRevisionCount} / 阻塞 ${scopeBlockedCount}`}
+                detail={"待修订 " + String(scopeNeedsRevisionCount) + " / 阻塞 " + String(scopeBlockedCount)}
                 tone={scopeNeedsRevisionCount + scopeBlockedCount > 0 ? "warn" : "neutral"}
               />
               <DailyMetric
-                label="图片待检"
+                label="鍥剧墖寰呮"
                 value={String(imageCheckPendingCount)}
                 detail={imageCheckIssueSummary || "已过检或未发现问题"}
                 tone={imageCheckPendingCount > 0 ? "warn" : "good"}
@@ -2921,7 +2748,7 @@ export function App() {
               <DailyMetric
                 label="已识别店铺"
                 value={String(storeScopeOptions.length)}
-                detail={selectedStoreScope ? `运行：${formatStoreScopeLabel(selectedStoreScope)} / 页面：${currentPageStoreScopeLabel}` : `页面：${currentPageStoreScopeLabel}`}
+                detail={selectedStoreScope ? "运行：" + formatStoreScopeLabel(selectedStoreScope) + " / 页面：" + currentPageStoreScopeLabel : "页面：" + currentPageStoreScopeLabel}
                 tone={storeScopeOptions.length > 0 ? "good" : "warn"}
               />
             </div>
@@ -2930,8 +2757,8 @@ export function App() {
           <section className="daily-grid daily-home-grid">
             <article className="daily-panel">
               <div className="daily-panel-head">
-                <strong>今天怎么用</strong>
-                <span>只保留日常该点的动作</span>
+                <strong>今天怎么做</strong>
+                <span>按顺序处理</span>
               </div>
               <div className="daily-guide-list">
                 {dailyGuideSteps.map((step, index) => (
@@ -2944,7 +2771,7 @@ export function App() {
                   </div>
                 ))}
               </div>
-              <div className={`daily-action-state ${dailyModeTone}`}>
+              <div className={"daily-action-state " + dailyModeTone}>
                 <strong>{dailyActionTitle}</strong>
                 <p>{dailyActionDetail}</p>
               </div>
@@ -2954,27 +2781,24 @@ export function App() {
                   onClick={() => void automationQueueDaemonStarter.mutateAsync(defaultQueueDaemonInput)}
                   disabled={automationQueueDaemonStarter.isPending || !dailyCanStart || !selectedQueueProductScopeReady}
                 >
-                  {automationQueueDaemonStarter.isPending ? "正在启动..." : automationQueueDaemon?.status === "ACTIVE" ? "运行中" : dailyTrialGate.status === "passed" ? "开始无人值守" : "等待试跑通过"}
+                  {automationQueueDaemonStarter.isPending ? "启动中..." : automationQueueDaemon?.status === "ACTIVE" ? "运行中" : dailyTrialGate.status === "passed" ? "启动无人值守" : "先试跑再启动"}
                 </button>
                 <button
                   className="ghost-button"
                   onClick={() => void automationQueueDaemonPauser.mutateAsync()}
                   disabled={automationQueueDaemonPauser.isPending || automationQueueDaemon?.status !== "ACTIVE"}
                 >
-                  {automationQueueDaemonPauser.isPending ? "正在暂停..." : "暂停"}
+                  {automationQueueDaemonPauser.isPending ? "暂停中..." : "暂停"}
                 </button>
                 <button
                   className="ghost-button"
                   onClick={() => void automationQueueRunner.mutateAsync(dailyTrialQueueRunInput)}
                   disabled={automationQueueRunner.isPending || !dailyStartupCanStart || !selectedQueueProductScopeReady}
                 >
-                  {automationQueueRunner.isPending ? "试跑中..." : "小批量试跑"}
+                    {automationQueueRunner.isPending ? "试跑中..." : "开始试跑"}
                 </button>
-                <button
-                  className="ghost-button"
-                  onClick={() => setShowAdvancedConsole(true)}
-                >
-                  高级区
+                <button className="ghost-button" onClick={() => setShowAdvancedConsole(true)}>
+                    进入高级区
                 </button>
               </div>
               {automationQueueDaemonMessage ? <p className="daily-message">{automationQueueDaemonMessage}</p> : null}
@@ -2983,22 +2807,22 @@ export function App() {
 
             <article className="daily-panel">
               <div className="daily-panel-head">
-                <strong>运行范围</strong>
-                <span>默认推荐：运行店铺 ready 队列</span>
+                <strong>褰撳墠鑼冨洿</strong>
+                <span>鍙鐞嗗綋鍓嶉€変腑鐨?ready 鍟嗗搧</span>
               </div>
               <div className="daily-scope-bar daily-scope-bar-compact">
                 <label className="daily-scope-control">
-                  <span>店铺</span>
+                  <span>搴楅摵</span>
                   <select value={selectedStoreScopeKey} onChange={(event) => handleStoreScopeChange(event.target.value)}>
-                    <option value="auto">跟随店小秘页面店铺</option>
-                    <option value={ALL_STORES_SCOPE_KEY}>全部店铺</option>
+                    <option value="auto">鑷姩閫夋嫨褰撳墠搴楅摵</option>
+                    <option value={ALL_STORES_SCOPE_KEY}>鍏ㄩ儴搴楅摵</option>
                     {storeScopeOptions.map((option) => (
                       <option key={option.key} value={option.key}>{formatStoreScopeLabel(option)}</option>
                     ))}
                   </select>
                 </label>
                 <div className="daily-scope-summary">
-                  <strong>当前范围</strong>
+                  <strong>澶勭悊鑼冨洿</strong>
                   <span>{selectedQueueScopeSummary}</span>
                   <span className="daily-scope-meta">ready {scopeReadyCount} / items {scopeWorkItemCount}</span>
                 </div>
@@ -3007,11 +2831,11 @@ export function App() {
               {storeScopeMessage ? <p className="daily-message">{storeScopeMessage}</p> : null}
               <div className="daily-mini-feed compact">
                 <div>
-                  <strong>店小秘页面店铺链接池</strong>
+                  <strong>褰撳墠椤甸潰</strong>
                   <span>{currentPageStorePoolLabel}</span>
                 </div>
                 <div>
-                  <strong>店小秘当前页面店铺</strong>
+                  <strong>褰撳墠搴楅摵</strong>
                   <span>{currentPageStoreScopeLabel}</span>
                 </div>
               </div>
@@ -3020,7 +2844,7 @@ export function App() {
                   const selected = selectedStoreScope?.key === option.key
                   const tone = option.readyCount > 0 ? "good" : option.workItemCount > 0 ? "warn" : "neutral"
                   return (
-                    <div key={option.key} className={`daily-store-chip ${selected ? "selected" : ""} ${tone}`}>
+                    <div key={option.key} className={"daily-store-chip " + (selected ? "selected " : "") + tone}>
                       <strong>{option.label}</strong>
                       <span>{describeStoreQueueState(option)}</span>
                     </div>
@@ -3034,30 +2858,30 @@ export function App() {
                   disabled={dianxiaomiAccountScanner.isPending || dianxiaomiAccountScanImporter.isPending || !activeDianxiaomiPageContext}
                 >
                   {dianxiaomiAccountScanner.isPending || dianxiaomiAccountScanImporter.isPending
-                    ? "执行中..."
-                    : `一键扫描并导入页面店铺${currentPageStoreImportableLinks.length > 0 ? ` ${currentPageStoreImportableLinks.length}` : ""}`}
+                    ? "扫描中..."
+                    : "扫描并导入" + (currentPageStoreImportableLinks.length > 0 ? " " + String(currentPageStoreImportableLinks.length) : "")}
                 </button>
                 <button
                   className="ghost-button small-button"
                   onClick={() => void runBatchPrepareForCurrentScope()}
                   disabled={dianxiaomiAccountScanner.isPending || dianxiaomiAccountScanImporter.isPending || batchPreparePending || batchPrepareActionableCount === 0}
                 >
-                  {batchPreparePending ? "准备中..." : "批量准备当前范围"}
+                  {batchPreparePending ? "准备中..." : "批量准备"}
                 </button>
               </div>
               {accountScanMessage ? <p className="daily-message">{accountScanMessage}</p> : null}
               <details className="daily-inline-details">
-                <summary>限定链接或来源页</summary>
+                <summary>璋冩暣鑼冨洿</summary>
                 <div className="daily-inline-detail-body">
                   <label className="daily-scope-control">
-                    <span>商品范围</span>
+                    <span>閫夋嫨鏂瑰紡</span>
                     <select
                       value={selectedQueueProductScopeMode}
                       onChange={(event) => setSelectedQueueProductScopeMode(event.target.value as QueueProductScopeMode)}
                     >
-                  <option value="ready-queue">运行店铺 ready 队列</option>
-                      <option value="item-urls">只跑指定商品链接</option>
-                      <option value="source-buckets">按来源页处理</option>
+                      <option value="ready-queue">当前 ready 队列</option>
+                      <option value="item-urls">指定商品链接</option>
+                      <option value="source-buckets">按来源筛选</option>
                     </select>
                   </label>
                   {selectedQueueProductScopeMode === "item-urls" ? (
@@ -3067,13 +2891,13 @@ export function App() {
                         rows={4}
                         value={selectedItemUrlsText}
                         onChange={(event) => setSelectedItemUrlsText(event.target.value)}
-                        placeholder="一行一个店小秘商品编辑链接"
+                        placeholder="每行一个商品链接"
                       />
                     </label>
                   ) : null}
                   {selectedQueueProductScopeMode === "source-buckets" ? (
                     <div className="daily-scope-control daily-scope-checkboxes">
-                      <span>来源页</span>
+                      <span>来源范围</span>
                       <div className="daily-scope-choice-list">
                         {automationSourceBucketOptions.map((option) => {
                           const checked = selectedSourceBuckets.includes(option.value)
@@ -3102,18 +2926,30 @@ export function App() {
 
             <article className="daily-panel">
               <div className="daily-panel-head">
-                <strong>图片检测</strong>
-                <span>{imageCheckPendingCount > 0 ? `待检 ${imageCheckPendingCount} 个` : "当前已过检"}</span>
+                <strong>鑷姩澶勭悊</strong>
+                <span>{dailySaveDraftProofStatusLabel}</span>
               </div>
               <div className="daily-mini-feed compact">
                 <div>
-                  <strong>常见问题</strong>
-                  <span>{imageCheckIssueSummary || "轮播图、产品图、详情图、主图"}</span>
+                  <strong>图片检查</strong>
+                  <span>{imageCheckPendingCount > 0 ? "待检 " + String(imageCheckPendingCount) + " / " + (imageCheckIssueSummary || "有图片问题") : "当前已过检"}</span>
                 </div>
                 <div>
-                  <strong>默认动作</strong>
-                  <span>先处理最多 5 个待检商品，能自动修的直接修，遇到可恢复阻塞商品继续自动恢复。</span>
+                  <strong>鑽夌楠岃瘉</strong>
+                  <span>{dailySaveDraftCandidateSummary}</span>
                 </div>
+              </div>
+              <div className={"daily-trial-gate " + dailyTrialGate.status}>
+                <strong>{dailyTrialGate.recovery.title}</strong>
+                <span>{dailyTrialGate.message}</span>
+              </div>
+              <div className="daily-trial-summary">
+                {dailyTrialGate.details.map((item) => (
+                  <div key={item.label} className={"daily-trial-stat " + item.tone}>
+                    <span>{item.label}</span>
+                    <strong>{item.value}</strong>
+                  </div>
+                ))}
               </div>
               <div className="daily-panel-actions">
                 <button
@@ -3125,72 +2961,6 @@ export function App() {
                 </button>
                 <button
                   className="ghost-button small-button"
-                  onClick={() => void runCurrentScopeImageCheck()}
-                  disabled={imageCheckPendingCount === 0 || batchPreparePending || dianxiaomiImageChecker.isPending}
-                >
-                  {dianxiaomiImageChecker.isPending ? "检测中..." : "只跑图片检测"}
-                </button>
-                <button
-                  className="ghost-button small-button"
-                  onClick={() => setShowDailyDetails((current) => !current)}
-                >
-                  {showDailyDetails ? "收起详情" : "查看明细"}
-                </button>
-              </div>
-              {imageCheckMessage ? <p className="daily-message">{imageCheckMessage}</p> : null}
-              {repairMessage ? <p className="daily-message">{repairMessage}</p> : null}
-              {automationRecoveryRunMessage ? <p className="daily-message">{automationRecoveryRunMessage}</p> : null}
-            </article>
-
-            <article className="daily-panel">
-              <div className="daily-panel-head">
-                <strong>真实草稿验证</strong>
-                <span>{dailySaveDraftProofStatusLabel}</span>
-              </div>
-              <div className="daily-mini-feed compact">
-                <div>
-                  <strong>当前候选</strong>
-                  <span>{dailySaveDraftCandidateSummary}</span>
-                </div>
-                <div>
-                  <strong>最近保存草稿</strong>
-                  <span>{latestSaveDraftProofSummary}</span>
-                </div>
-              </div>
-              <div className="daily-trial-summary">
-                {dailySaveDraftProofStages.map((stage) => (
-                  <div key={stage.name} className={`daily-trial-stat ${stage.tone}`}>
-                    <span>{stage.name}</span>
-                    <strong>{stage.status}</strong>
-                  </div>
-                ))}
-              </div>
-              <p className="daily-message">这一步只验证到店小秘保存草稿成功，不提交。</p>
-              <div className={`daily-trial-gate ${dailyTrialGate.status}`}>
-                <strong>{dailyTrialGate.recovery.title}</strong>
-                <span>{dailyTrialGate.message}</span>
-              </div>
-              <div className="daily-mini-feed compact">
-                <div>
-                  <strong>最近轮询</strong>
-                  <span>{latestQueueSummary}</span>
-                </div>
-                <div>
-                  <strong>最近全流程</strong>
-                  <span>{latestFullFlowSummary}</span>
-                </div>
-              </div>
-              <div className="daily-trial-summary">
-                {dailyTrialGate.details.map((item) => (
-                  <div key={item.label} className={`daily-trial-stat ${item.tone}`}>
-                    <span>{item.label}</span>
-                    <strong>{item.value}</strong>
-                  </div>
-                ))}
-              </div>
-              <div className="daily-panel-actions">
-                <button
-                  className="primary-button small-button"
                   onClick={() => {
                     if (!dailySaveDraftCandidate) {
                       return
@@ -3201,33 +2971,25 @@ export function App() {
                 >
                   {dailySaveDraftProofRunning ? "验证中..." : "验证保存草稿"}
                 </button>
-                <button
-                  className="ghost-button small-button"
-                  onClick={() => setShowDailyDetails((current) => !current)}
-                >
-                  {showDailyDetails ? "收起验收" : "查看验收"}
-                </button>
-                <button
-                  className="ghost-button small-button"
-                  onClick={() => void selectorCalibrationRunner.mutateAsync(dailySelectorCalibrationInput)}
-                  disabled={selectorCalibrationRunner.isPending || dailyBackendOffline}
-                >
-                  {selectorCalibrationRunner.isPending ? "校准中..." : "页面校准"}
+                <button className="ghost-button small-button" onClick={() => setShowDailyDetails((current) => !current)}>
+                  {showDailyDetails ? "鏀惰捣鏄庣粏" : "鏌ョ湅鏄庣粏"}
                 </button>
               </div>
+              {imageCheckMessage ? <p className="daily-message">{imageCheckMessage}</p> : null}
+              {repairMessage ? <p className="daily-message">{repairMessage}</p> : null}
+              {automationRecoveryRunMessage ? <p className="daily-message">{automationRecoveryRunMessage}</p> : null}
               {dailySaveDraftProofMessage ? <p className="daily-message">{dailySaveDraftProofMessage}</p> : null}
-              {selectorCalibrationMessage ? <p className="daily-message">{selectorCalibrationMessage}</p> : null}
             </article>
 
             <article className="daily-panel">
               <div className="daily-panel-head">
-                <strong>需要你处理的事情</strong>
-                <span>{dailyTopAlerts.length > 0 ? `${dailyTopAlerts.length} 条` : "当前可直接跑"}</span>
+                <strong>需要处理</strong>
+                <span>{dailyTopAlerts.length > 0 ? String(dailyTopAlerts.length) + " 条" : "当前可直接运行"}</span>
               </div>
               {dailyTopAlerts.length > 0 ? (
                 <div className="daily-alert-list">
                   {dailyTopAlerts.map((alert) => (
-                    <div key={alert.id} className={`daily-alert ${alert.tone}`}>
+                    <div key={alert.id} className={"daily-alert " + alert.tone}>
                       <strong>{alert.title}</strong>
                       <span>{alert.message}</span>
                     </div>
@@ -3235,33 +2997,49 @@ export function App() {
                 </div>
               ) : (
                 <div className="daily-alert empty">
-                  <strong>当前没有额外阻塞</strong>
+                  <strong>褰撳墠娌℃湁棰濆闃诲</strong>
                   <span>继续让店小秘页内插件加队列，然后在这里试跑或启动无人值守。</span>
                 </div>
               )}
               <div className="daily-mini-feed compact">
                 <div>
-                  <strong>人工接手</strong>
+                  <strong>浜哄伐鎺ユ墜</strong>
                   <span>{dailyManualReviewSummary}</span>
                 </div>
                 <div>
-                  <strong>店小秘页内插件</strong>
-                  <span>在商品编辑页右侧查看当前动作、图片问题和下一步，不再单独切页面盯流程。</span>
+                  <strong>最近结果</strong>
+                  <span>{latestFullFlowSummary}</span>
                 </div>
               </div>
+              <div className="daily-panel-actions">
+                <button
+                  className="primary-button small-button"
+                  onClick={() => void selectorCalibrationRunner.mutateAsync(dailySelectorCalibrationInput)}
+                  disabled={selectorCalibrationRunner.isPending || dailyBackendOffline}
+                >
+                  {selectorCalibrationRunner.isPending ? "校准中..." : "页面校准"}
+                </button>
+                <button
+                  className="ghost-button small-button"
+                  onClick={() => void runCurrentScopeImageCheck()}
+                  disabled={imageCheckPendingCount === 0 || batchPreparePending || dianxiaomiImageChecker.isPending}
+                >
+                  {dianxiaomiImageChecker.isPending ? "检测中..." : "只跑图片检查"}
+                </button>
+              </div>
+              {selectorCalibrationMessage ? <p className="daily-message">{selectorCalibrationMessage}</p> : null}
             </article>
           </section>
-
           {showDailyDetails ? (
             <section className="daily-grid daily-validation-grid">
               <article className="daily-panel">
                 <div className="daily-panel-head">
-                  <strong>启动验收</strong>
+                  <strong>鍚姩楠屾敹</strong>
                   <span>{startupBlockingChecks.length} blocked / {startupWarningChecks.length} warning</span>
                 </div>
                 <div className="daily-check-list">
                   {startupCalibrationCheck ? (
-                    <div className={`daily-check ${startupCalibrationCheck.status}`}>
+                    <div className={"daily-check " + startupCalibrationCheck.status}>
                       <strong>真实店小秘页面校准</strong>
                       <span>{startupCalibrationCheck.message}</span>
                     </div>
@@ -3270,14 +3048,14 @@ export function App() {
                     .filter((item) => item.id !== "real-dianxiaomi-calibration")
                     .slice(0, 4)
                     .map((item) => (
-                      <div key={item.id} className={`daily-check ${item.status}`}>
+                      <div key={item.id} className={"daily-check " + item.status}>
                         <strong>{item.label}</strong>
                         <span>{item.message}</span>
                       </div>
                     ))}
                   {startupBlockingChecks.length === 0 && startupWarningChecks.length === 0 ? (
                     <div className="daily-check pass">
-                      <strong>启动条件正常</strong>
+                      <strong>鍚姩鏉′欢姝ｅ父</strong>
                       <span>可以启动无人值守队列。</span>
                     </div>
                   ) : null}
@@ -3288,7 +3066,7 @@ export function App() {
                     onClick={() => void selectorCalibrationRunner.mutateAsync({ headed: true })}
                     disabled={selectorCalibrationRunner.isPending}
                   >
-                    {selectorCalibrationRunner.isPending ? "校准中..." : "打开页面校准"}
+                    {selectorCalibrationRunner.isPending ? "鏍″噯涓?.." : "鎵撳紑椤甸潰鏍″噯"}
                   </button>
                   <button
                     className="ghost-button small-button"
@@ -3305,16 +3083,16 @@ export function App() {
                   <strong>小批量试跑</strong>
                   <span>{dailyTrialLabel}</span>
                 </div>
-                <p className={`daily-message daily-trial-gate ${dailyTrialGate.status}`}>{dailyTrialGate.message}</p>
+                <p className={"daily-message daily-trial-gate " + dailyTrialGate.status}>{dailyTrialGate.message}</p>
                 <div className="daily-trial-summary">
                   {dailyTrialGate.details.map((item) => (
-                    <div key={item.label} className={`daily-trial-stat ${item.tone}`}>
+                    <div key={item.label} className={"daily-trial-stat " + item.tone}>
                       <span>{item.label}</span>
                       <strong>{item.value}</strong>
                     </div>
                   ))}
                 </div>
-                <div className={`daily-trial-recovery ${dailyTrialGate.recovery.tone}`}>
+                <div className={"daily-trial-recovery " + dailyTrialGate.recovery.tone}>
                   <div>
                     <strong>{dailyTrialGate.recovery.title}</strong>
                     <span>{dailyTrialGate.recovery.message}</span>
@@ -3338,13 +3116,13 @@ export function App() {
         <div className="brand-panel">
           <p className="eyebrow">Advanced</p>
           <h1>高级区</h1>
-          <p className="subtle">manual、review、repair 和诊断工具只用于开发校准、故障恢复或临时兜底，不进入日常默认主路径。</p>
+          <p className="subtle">这里只保留人工处理、修复和诊断工具，不作为日常默认流程。</p>
         </div>
 
         <div className="queue-panel">
           <div className="queue-head">
-            <strong>商品任务</strong>
-            <p>{isLoading ? "正在加载..." : `${tasks.length} 个商品任务`}</p>
+              <strong>商品任务</strong>
+              <p>{isLoading ? "正在加载..." : String(tasks.length) + " 个商品任务"}</p>
           </div>
           <div className="review-actions">
             <button
@@ -3352,7 +3130,7 @@ export function App() {
               onClick={() => void batchReviewer.mutateAsync({ taskIds: selectedReviewableTaskIds, decision: "approve", note: reviewNote })}
               disabled={batchReviewer.isPending || selectedReviewableTaskIds.length === 0}
             >
-              批量通过
+              鎵归噺閫氳繃
             </button>
             <button
               className="ghost-button small-button"
@@ -3366,7 +3144,7 @@ export function App() {
               onClick={() => void batchReviewer.mutateAsync({ taskIds: selectedReviewableTaskIds, decision: "reject", note: reviewNote })}
               disabled={batchReviewer.isPending || selectedReviewableTaskIds.length === 0}
             >
-              批量驳回
+              鎵归噺椹冲洖
             </button>
           </div>
           <div className="review-actions">
@@ -3382,7 +3160,7 @@ export function App() {
               onClick={() => void batchDraftRestorer.mutateAsync(selectedTaskIds)}
               disabled={batchDraftRestorer.isPending || selectedTaskIds.length === 0}
             >
-              批量恢复 AI 草稿
+              鎵归噺鎭㈠ AI 鑽夌
             </button>
           </div>
           {batchRestoreMessage ? (
@@ -3406,8 +3184,8 @@ export function App() {
             </div>
           ) : null}
           <div className="queue-list">
-            {tasks.map((task) => (
-              <button key={task.id} className={`queue-item ${task.id === activeTask?.id ? "active" : ""}`} onClick={() => setActiveTaskId(task.id)}>
+              {tasks.map((task) => (
+                <button key={task.id} className={"queue-item " + (task.id === activeTask?.id ? "active" : "")} onClick={() => setActiveTaskId(task.id)}>
                 <div className="queue-item-top">
                   <input
                     type="checkbox"
@@ -3426,8 +3204,8 @@ export function App() {
 
         <div className="queue-panel">
           <div className="queue-head">
-            <strong>Dianxiaomi edit queue</strong>
-            <p>{scopeWorkItemCount} Dianxiaomi products waiting for requirement-based edits in {selectedQueueScopeSummary}.</p>
+            <strong>???????</strong>
+            <p>{scopeWorkItemCount} ????????????????? {selectedQueueScopeSummary}?</p>
           </div>
           {imageCheckMessage ? (
             <div className="import-result">
@@ -3462,35 +3240,35 @@ export function App() {
                     <>
                 <div>
                   <strong>{item.title}</strong>
-                  <span>{item.pageProfile ?? "Dianxiaomi product"} / {item.status} / {item.storeName ?? item.storeId ?? "unknown store"}</span>
-                  <small>{new Date(item.updatedAt).toLocaleString()} / required {item.requirements.summary.requiredPassed}/{item.requirements.summary.requiredTotal} / SKU {item.snapshot.skuCount} / images {item.snapshot.imageCount}</small>
+                  <span>{item.pageProfile ?? "?????"} / {item.status} / {item.storeName ?? item.storeId ?? "????"}</span>
+                  <small>{new Date(item.updatedAt).toLocaleString()} / ?? {item.requirements.summary.requiredPassed}/{item.requirements.summary.requiredTotal} / SKU {item.snapshot.skuCount} / ?? {item.snapshot.imageCount}</small>
                   {item.snapshot.imageCheck ? (
                     <small>
-                      image check: {item.snapshot.imageCheck.passed ? "passed" : imageCheckIssues.length > 0 ? imageCheckIssues.map((issue) => `${issue.category} ${issue.issue}`).join(" / ") : "failed"}
+                      图片检查：{item.snapshot.imageCheck.passed ? "通过" : imageCheckIssues.length > 0 ? imageCheckIssues.map((issue) => issue.category + " " + issue.issue).join(" / ") : "失败"}
                     </small>
                   ) : null}
                   {latestImageCheckJob ? (
                     <small>
-                      latest image check: {latestImageCheckJob.status}{latestImageCheckJob.result ? latestImageCheckJob.result.passed ? " / passed" : ` / ${latestImageCheckJob.result.summary.join(" / ")}` : ""}
+                      最近图片检查：{latestImageCheckJob.status}{latestImageCheckJob.result ? latestImageCheckJob.result.passed ? " / 通过" : " / " + latestImageCheckJob.result.summary.join(" / ") : ""}
                     </small>
                   ) : null}
                   {item.repairPlan ? (
                     <small>
-                      repair plan: {item.repairPlan.status} / {item.repairPlan.summary}{repairToolSummary ? ` / ${repairToolSummary}` : ""}
+                      修复计划：{item.repairPlan.status} / {item.repairPlan.summary}{repairToolSummary ? " / " + repairToolSummary : ""}
                     </small>
                   ) : null}
                   {latestRepairPreviewJob ? (
                     <small>
-                      latest repair preview: {latestRepairPreviewJob.status}{latestRepairPreviewJob.reportStatus ? ` / ${latestRepairPreviewJob.reportStatus}` : ""}
+                      最近预修复：{latestRepairPreviewJob.status}{latestRepairPreviewJob.reportStatus ? " / " + latestRepairPreviewJob.reportStatus : ""}
                     </small>
                   ) : null}
                   {latestRepairApplyJob ? (
                     <small>
-                      latest repair apply: {latestRepairApplyJob.status}{latestRepairApplyJob.reportStatus ? ` / ${latestRepairApplyJob.reportStatus}` : ""}
+                      最近执行修复：{latestRepairApplyJob.status}{latestRepairApplyJob.reportStatus ? " / " + latestRepairApplyJob.reportStatus : ""}
                     </small>
                   ) : null}
                   {item.suggestedEdits.length > 0 ? (
-                    <small>{item.suggestedEdits.slice(0, 3).map((edit) => `${edit.field}: ${edit.suggestedValue || edit.reason}`).join(" / ")}</small>
+                    <small>{item.suggestedEdits.slice(0, 3).map((edit) => edit.field + ": " + (edit.suggestedValue || edit.reason)).join(" / ")}</small>
                   ) : null}
                 </div>
                 <div className="task-export-actions">
@@ -3498,35 +3276,35 @@ export function App() {
                     className="ghost-button small-button"
                     onClick={() => window.open(item.pageUrl, "_blank", "noopener,noreferrer")}
                   >
-                    open
+                    打开页面
                   </button>
                   <button
                     className="ghost-button small-button"
                     onClick={() => void dianxiaomiImageChecker.mutateAsync({ workItemId: item.id })}
                     disabled={dianxiaomiImageChecker.isPending || latestImageCheckJob?.status === "running"}
                   >
-                    {latestImageCheckJob?.status === "running" ? "checking..." : "run image check"}
+                    {latestImageCheckJob?.status === "running" ? "检查中..." : "图片检查"}
                   </button>
                   <button
                     className="ghost-button small-button"
                     onClick={() => void dianxiaomiRepairPreviewRunner.mutateAsync({ workItemId: item.id })}
                     disabled={!item.repairPlan || repairRunning || dianxiaomiRepairPreviewRunner.isPending}
                   >
-                    {latestRepairPreviewJob?.status === "running" ? "previewing..." : "repair preview"}
+                    {latestRepairPreviewJob?.status === "running" ? "预览中..." : "预修复"}
                   </button>
                   <button
                     className="primary-button small-button"
                     onClick={() => void dianxiaomiRepairApplyRunner.mutateAsync({ workItemId: item.id })}
                     disabled={!autoRepairable || repairRunning || dianxiaomiRepairApplyRunner.isPending}
                   >
-                    {latestRepairApplyJob?.status === "running" ? "repairing..." : "run auto repair"}
+                    {latestRepairApplyJob?.status === "running" ? "???..." : "??????"}
                   </button>
                   <button
                     className="ghost-button small-button"
                     onClick={() => void dianxiaomiWorkItemTaskCreator.mutateAsync(item.id)}
                     disabled={dianxiaomiWorkItemTaskCreator.isPending}
                   >
-                    create edit task
+                    ??????
                   </button>
                 </div>
                     </>
@@ -3534,7 +3312,7 @@ export function App() {
                 })()}
               </div>
             )) : (
-              <div className="empty-report">Open a Dianxiaomi collected/product edit page and click the extension button to add it here.</div>
+              <div className="empty-report">?????????????????????????????</div>
             )}
           </div>
         </div>
@@ -3542,11 +3320,11 @@ export function App() {
         {dianxiaomiRequirementRulesDraft ? (
           <div className="queue-panel">
             <div className="queue-head">
-              <strong>Dianxiaomi listing rules</strong>
-              <p>Save recalculates all queued Dianxiaomi items.</p>
+              <strong>?????</strong>
+              <p>????????????????????</p>
             </div>
             <div className="pricing-form dianxiaomi-rules-form">
-              <label>Preset name<input value={dianxiaomiRequirementRulesDraft.presetName} onChange={(event) => setDianxiaomiRequirementPresetName(event.target.value)} /></label>
+              <label>????<input value={dianxiaomiRequirementRulesDraft.presetName} onChange={(event) => setDianxiaomiRequirementPresetName(event.target.value)} /></label>
               <label className="rule-toggle">Title required<input type="checkbox" checked={dianxiaomiRequirementRulesDraft.title.required} onChange={(event) => setDianxiaomiRequirementRequired("title", event.target.checked)} /></label>
               <label>Title min length<input type="number" step="1" value={dianxiaomiRequirementRulesDraft.title.minLength} onChange={(event) => setDianxiaomiRequirementNumber("title", "minLength", event.target.value)} /></label>
               <label>Title max length<input type="number" step="1" value={dianxiaomiRequirementRulesDraft.title.maxLength} onChange={(event) => setDianxiaomiRequirementNumber("title", "maxLength", event.target.value)} /></label>
@@ -3580,22 +3358,22 @@ export function App() {
               const input = buildDianxiaomiRequirementRulesPayload()
               if (input) void dianxiaomiRequirementRulesUpdater.mutateAsync(input)
             }} disabled={dianxiaomiRequirementRulesUpdater.isPending || !dianxiaomiRequirementRulesDraft.presetName.trim()}>
-              {dianxiaomiRequirementRulesUpdater.isPending ? "saving..." : "Save listing rules"}
+              {dianxiaomiRequirementRulesUpdater.isPending ? "???..." : "????"}
             </button>
           </div>
         ) : null}
 
         <div className="queue-panel">
           <div className="queue-head">
-            <strong>店小秘采集</strong>
-            <p>{dianxiaomiCollectedProducts.length} 个来自浏览器插件的采集商品，当前范围 {selectedQueueScopeSummary}。</p>
+            <strong>?????</strong>
+            <p>{dianxiaomiCollectedProducts.length} ?????????????????? {selectedQueueScopeSummary}?</p>
           </div>
           <div className="collected-product-list">
             {dianxiaomiCollectedProducts.length > 0 ? dianxiaomiCollectedProducts.slice(0, 6).map((product) => (
               <div key={product.id} className="collected-product-item">
                 <div>
                   <strong>{product.title}</strong>
-                  <span>{product.category} / {product.storeName ?? product.storeId ?? "unknown store"}</span>
+                  <span>{product.category} / {product.storeName ?? product.storeId ?? "????"}</span>
                   <small>{new Date(product.collectedAt).toLocaleString()} / {product.quality.status} {product.quality.score}% / SKU {product.skus.length} / images {product.images.length}</small>
                   {product.quality.checks.some((check) => !check.ok) ? (
                     <small>{product.quality.checks.filter((check) => !check.ok).map((check) => check.message).join(" / ")}</small>
@@ -3606,53 +3384,53 @@ export function App() {
                   onClick={() => void dianxiaomiCollectedTaskCreator.mutateAsync(product.id)}
                   disabled={dianxiaomiCollectedTaskCreator.isPending}
                 >
-                  生成任务
+                  ????
                 </button>
               </div>
             )) : (
-              <div className="empty-report">暂无店小秘采集商品，在插件面板点击“采集商品”。</div>
+              <div className="empty-report">????????????????????????????</div>
             )}
           </div>
         </div>
 
         <div className="queue-panel">
           <div className="queue-head">
-            <strong>手动录入</strong>
-            <p>临时录入一个商品，可填写多 SKU。</p>
+            <strong>????</strong>
+            <p>??????????????? SKU?</p>
           </div>
           <div className="pricing-form">
-            <label>商品标题<input value={manualProduct.title} onChange={(event) => setManualField("title", event.target.value)} /></label>
-            <label>类目<input value={manualProduct.category} onChange={(event) => setManualField("category", event.target.value)} /></label>
-            <label>默认 SKU 名称<input value={manualProduct.skuName ?? ""} onChange={(event) => setManualField("skuName", event.target.value)} /></label>
-            <label>成本价 CNY<input type="number" step="0.01" value={manualProduct.supplierPriceCny} onChange={(event) => setManualField("supplierPriceCny", event.target.value)} /></label>
-            <label>国内运费 CNY<input type="number" step="0.01" value={manualProduct.estimatedDomesticShippingCny} onChange={(event) => setManualField("estimatedDomesticShippingCny", event.target.value)} /></label>
-            <label>重量 kg<input type="number" step="0.01" value={manualProduct.estimatedWeightKg} onChange={(event) => setManualField("estimatedWeightKg", event.target.value)} /></label>
-            <label>库存<input type="number" step="1" value={manualProduct.stock} onChange={(event) => setManualField("stock", event.target.value)} /></label>
-            <label>来源链接<input value={manualProduct.sourceUrl ?? ""} onChange={(event) => setManualField("sourceUrl", event.target.value)} /></label>
-            <label>商品属性<textarea className="compact-textarea" placeholder="颜色:灰色;材质:尼龙" value={manualAttributesText} onChange={(event) => setManualAttributesText(event.target.value)} /></label>
-            <label>图片链接<textarea className="compact-textarea" placeholder="多个链接用换行、逗号或分号分隔" value={manualImagesText} onChange={(event) => setManualImagesText(event.target.value)} /></label>
-            <label>SKU 列表<textarea className="compact-textarea" placeholder="SKU名,成本价,库存,属性。例如：灰色 M,12.9,100,颜色:灰色;尺码:M" value={manualSkusText} onChange={(event) => setManualSkusText(event.target.value)} /></label>
+            <label>????<input value={manualProduct.title} onChange={(event) => setManualField("title", event.target.value)} /></label>
+            <label>??<input value={manualProduct.category} onChange={(event) => setManualField("category", event.target.value)} /></label>
+            <label>?? SKU ??<input value={manualProduct.skuName ?? ""} onChange={(event) => setManualField("skuName", event.target.value)} /></label>
+            <label>??? CNY<input type="number" step="0.01" value={manualProduct.supplierPriceCny} onChange={(event) => setManualField("supplierPriceCny", event.target.value)} /></label>
+            <label>???? CNY<input type="number" step="0.01" value={manualProduct.estimatedDomesticShippingCny} onChange={(event) => setManualField("estimatedDomesticShippingCny", event.target.value)} /></label>
+            <label>?? kg<input type="number" step="0.01" value={manualProduct.estimatedWeightKg} onChange={(event) => setManualField("estimatedWeightKg", event.target.value)} /></label>
+            <label>??<input type="number" step="1" value={manualProduct.stock} onChange={(event) => setManualField("stock", event.target.value)} /></label>
+            <label>????<input value={manualProduct.sourceUrl ?? ""} onChange={(event) => setManualField("sourceUrl", event.target.value)} /></label>
+            <label>????<textarea className="compact-textarea" placeholder="??:??;??:??" value={manualAttributesText} onChange={(event) => setManualAttributesText(event.target.value)} /></label>
+            <label>????<textarea className="compact-textarea" placeholder="????????????????" value={manualImagesText} onChange={(event) => setManualImagesText(event.target.value)} /></label>
+            <label>SKU ??<textarea className="compact-textarea" placeholder="SKU?,???,??,???????? M,12.9,100,??:??;??:M" value={manualSkusText} onChange={(event) => setManualSkusText(event.target.value)} /></label>
           </div>
           <button className="primary-button import-button" onClick={() => void manualCreator.mutateAsync(buildManualProductPayload())} disabled={manualCreator.isPending || !manualProduct.title || !manualProduct.category}>
-            {manualCreator.isPending ? "创建中..." : "创建手动任务"}
+            {manualCreator.isPending ? "???..." : "??????"}
           </button>
         </div>
 
         <div className="queue-panel">
           <div className="queue-head">
-            <strong>CSV / Excel 导入</strong>
-            <p>一行一个 SKU，同名商品会合并为一个任务。</p>
+            <strong>CSV / Excel ??</strong>
+            <p>???? SKU??????????????</p>
           </div>
-          <a className="template-link" href={csvTemplateUrl}>下载 CSV 模板</a>
+          <a className="template-link" href={csvTemplateUrl}>?? CSV ??</a>
           <textarea className="csv-import-box" value={csvText} onChange={(event) => setCsvText(event.target.value)} />
           <button className="primary-button import-button" onClick={() => void csvImporter.mutateAsync(csvText)} disabled={csvImporter.isPending}>
-            {csvImporter.isPending ? "导入中..." : "导入 CSV 商品"}
+            {csvImporter.isPending ? "???..." : "?? CSV ??"}
           </button>
           {csvImporter.data ? <ImportResult result={csvImporter.data} prefix="CSV" /> : null}
           <div className="excel-import-row">
             <input type="file" accept=".xlsx" onChange={(event) => setSelectedExcelFile(event.target.files?.[0] ?? null)} />
             <button className="ghost-button import-button" onClick={() => selectedExcelFile && void excelImporter.mutateAsync(selectedExcelFile)} disabled={!selectedExcelFile || excelImporter.isPending}>
-              {excelImporter.isPending ? "上传中..." : "导入 Excel"}
+              {excelImporter.isPending ? "???..." : "?? Excel"}
             </button>
           </div>
           {excelImporter.data ? <ImportResult result={excelImporter.data} prefix="Excel" /> : null}
@@ -3662,23 +3440,23 @@ export function App() {
           <div className="queue-panel">
             <div className="queue-head">
               <strong>核价规则</strong>
-              <p>保存后会重算待执行任务价格。</p>
+              <p>保存后会重新计算待执行任务的价格。</p>
             </div>
             <div className="pricing-form">
-              <label>汇率 CNY/USD<input type="number" step="0.01" value={pricingDraft.exchangeRateCnyPerUsd} onChange={(event) => setPricingField("exchangeRateCnyPerUsd", event.target.value)} /></label>
-              <label>物流 USD/kg<input type="number" step="0.01" value={pricingDraft.logisticsUsdPerKg} onChange={(event) => setPricingField("logisticsUsdPerKg", event.target.value)} /></label>
-              <label>平台费 USD<input type="number" step="0.01" value={pricingDraft.platformFeeUsd} onChange={(event) => setPricingField("platformFeeUsd", event.target.value)} /></label>
+              <label>姹囩巼 CNY/USD<input type="number" step="0.01" value={pricingDraft.exchangeRateCnyPerUsd} onChange={(event) => setPricingField("exchangeRateCnyPerUsd", event.target.value)} /></label>
+              <label>鐗╂祦 USD/kg<input type="number" step="0.01" value={pricingDraft.logisticsUsdPerKg} onChange={(event) => setPricingField("logisticsUsdPerKg", event.target.value)} /></label>
+              <label>骞冲彴璐?USD<input type="number" step="0.01" value={pricingDraft.platformFeeUsd} onChange={(event) => setPricingField("platformFeeUsd", event.target.value)} /></label>
               <label>目标毛利率<input type="number" step="0.01" value={pricingDraft.targetMarginRate} onChange={(event) => setPricingField("targetMarginRate", event.target.value)} /></label>
-              <label>售价倍数<input type="number" step="0.01" value={pricingDraft.priceMultiplier} onChange={(event) => setPricingField("priceMultiplier", event.target.value)} /></label>
-              <label>最低毛利率<input type="number" step="0.01" value={pricingDraft.minimumMarginRate} onChange={(event) => setPricingField("minimumMarginRate", event.target.value)} /></label>
-              <label>最低建议售价 USD<input type="number" step="0.01" value={pricingDraft.minimumSuggestedPriceUsd} onChange={(event) => setPricingField("minimumSuggestedPriceUsd", event.target.value)} /></label>
-              <label>物流分段<textarea className="compact-textarea" placeholder="最小重量,最大重量,基础费,每kg费用。例如：0,0.25,0.35,3.6" value={logisticsTiersText} onChange={(event) => setLogisticsTiersText(event.target.value)} /></label>
+              <label>鍞环鍊嶆暟<input type="number" step="0.01" value={pricingDraft.priceMultiplier} onChange={(event) => setPricingField("priceMultiplier", event.target.value)} /></label>
+              <label>鏈€浣庢瘺鍒╃巼<input type="number" step="0.01" value={pricingDraft.minimumMarginRate} onChange={(event) => setPricingField("minimumMarginRate", event.target.value)} /></label>
+              <label>鏈€浣庡缓璁敭浠?USD<input type="number" step="0.01" value={pricingDraft.minimumSuggestedPriceUsd} onChange={(event) => setPricingField("minimumSuggestedPriceUsd", event.target.value)} /></label>
+              <label>鐗╂祦鍒嗘<textarea className="compact-textarea" placeholder="鏈€灏忛噸閲?鏈€澶ч噸閲?鍩虹璐?姣弅g璐圭敤銆備緥濡傦細0,0.25,0.35,3.6" value={logisticsTiersText} onChange={(event) => setLogisticsTiersText(event.target.value)} /></label>
             </div>
             <button className="primary-button import-button" onClick={() => {
               const input = buildPricingPayload()
               if (input) void pricingUpdater.mutateAsync(input)
             }} disabled={pricingUpdater.isPending}>
-              {pricingUpdater.isPending ? "保存中..." : "保存核价规则"}
+              {pricingUpdater.isPending ? "淇濆瓨涓?.." : "淇濆瓨鏍镐环瑙勫垯"}
             </button>
           </div>
         ) : null}
@@ -3687,20 +3465,20 @@ export function App() {
       <main className="workspace">
         <div className="advanced-console-bar">
           <button className="ghost-button small-button" onClick={() => setShowAdvancedConsole(false)}>返回日常模式</button>
-          <span>高级区默认隐藏；新增人工步骤必须有自动化替代计划和下线时间。</span>
+          <span>高级区默认隐藏，新增人工步骤前必须有自动化替代计划和下线时间。</span>
         </div>
         <section className="panel advanced-recovery-panel">
           <div className="panel-head split-head">
             <div>
               <h3>故障恢复批跑</h3>
-              <p className="subtle">只处理 auto-ready 且浏览器可执行的 blocked 商品；repair-* 仍只作为故障恢复工具。</p>
+              <p className="subtle">这里只处理 auto-ready 且浏览器可执行的 blocked 商品，repair 工具仅用于故障恢复。</p>
             </div>
             <button
               className="primary-button small-button"
               onClick={() => void automationRecoveryRunner.mutateAsync(defaultRecoveryRunInput)}
               disabled={automationRecoveryRunner.isPending || displayedBrowserRecoveryCandidateCount === 0}
             >
-              {automationRecoveryRunner.isPending ? "starting recovery..." : `Run recovery (${displayedBrowserRecoveryCandidateCount})`}
+                {automationRecoveryRunner.isPending ? "starting recovery..." : "Run recovery (" + String(displayedBrowserRecoveryCandidateCount) + ")"}
             </button>
           </div>
           <div className="daily-status-strip advanced-recovery-stats">
@@ -3728,14 +3506,14 @@ export function App() {
           <>
             <section className="hero-panel">
               <div className="hero-copy">
-                <p className="eyebrow">当前商品</p>
+                <p className="eyebrow">褰撳墠鍟嗗搧</p>
                 <h2>{activeTask.product.title}</h2>
-                <p className="subtle">来源 {activeTask.product.source} / 类目 {activeTask.product.category}</p>
+                <p className="subtle">鏉ユ簮 {activeTask.product.source} / 绫荤洰 {activeTask.product.category}</p>
                 <p className="ready-note">{readyLabel}</p>
               </div>
               <div className="hero-actions">
                 <button className="ghost-button" onClick={() => void planner.mutateAsync(activeTask.product.id)} disabled={planner.isPending}>
-                  {planner.isPending ? "AI 处理中..." : "AI 重新生成方案"}
+                  {planner.isPending ? "AI 澶勭悊涓?.." : "AI 閲嶆柊鐢熸垚鏂规"}
                 </button>
                 <button className="primary-button" onClick={() => void syncer.mutateAsync(activeTask.id)} disabled={syncer.isPending || !canSyncToStore}>
                   {syncer.isPending ? "同步中..." : canSyncToStore ? "一键同步到店小秘" : "等待审核通过"}
@@ -3746,25 +3524,25 @@ export function App() {
             <section className="summary-grid">
               <SummaryCard label="建议售价" value={formatMoney(activeTask.pricing.suggestedPriceUsd)} detail="按当前核价规则计算" />
               <SummaryCard label="保本底价" value={formatMoney(activeTask.pricing.floorPriceUsd)} detail="采购、物流、平台费合计" />
-              <SummaryCard label="任务状态" value={statusLabel[activeTask.status]} detail="由任务和自动化报告回写" />
-              <SummaryCard label="执行进度" value={`${progress}%`} detail="根据任务步骤完成情况计算" />
+              <SummaryCard label="任务状态" value={statusLabel[activeTask.status]} detail="由任务和自动化报告回填" />
+              <SummaryCard label="执行进度" value={String(progress) + "%"} detail="根据任务步骤完成情况计算" />
             </section>
 
             <section className="main-grid">
               <article className="panel">
-                <div className="panel-head"><h3>AI 上品方案</h3></div>
-                <InfoBlock label="发布标题">{activeTask.draft.listingTitle}</InfoBlock>
-                <InfoBlock label="核心卖点">
+                <div className="panel-head"><h3>AI 涓婂搧鏂规</h3></div>
+                <InfoBlock label="鍙戝竷鏍囬">{activeTask.draft.listingTitle}</InfoBlock>
+                <InfoBlock label="鏍稿績鍗栫偣">
                   <div className="tag-list">{activeTask.draft.sellingPoints.map((point) => <span key={point} className="tag-chip">{point}</span>)}</div>
                 </InfoBlock>
-                <InfoBlock label="商品描述">{activeTask.draft.description}</InfoBlock>
-                <InfoBlock label="SKU 定价">
+                <InfoBlock label="鍟嗗搧鎻忚堪">{activeTask.draft.description}</InfoBlock>
+                <InfoBlock label="SKU 瀹氫环">
                   <div className="sku-list">
                     {activeTask.draft.skuPricing.map((sku) => (
                       <div key={sku.skuId} className="sku-item">
                         <strong>{sku.skuName}</strong>
                         <span>{sku.attributeSummary}</span>
-                        <span>{formatMoney(sku.salePriceUsd)} / 库存 {sku.stock}</span>
+                        <span>{formatMoney(sku.salePriceUsd)} / 搴撳瓨 {sku.stock}</span>
                       </div>
                     ))}
                   </div>
@@ -3772,14 +3550,14 @@ export function App() {
               </article>
 
               <article className="panel">
-                <div className="panel-head"><h3>草稿编辑</h3></div>
+                <div className="panel-head"><h3>鑽夌缂栬緫</h3></div>
                 {listingEditDraft ? (
                   <>
                     <div className="pricing-form">
-                      <label>发布标题<input value={listingEditDraft.listingTitle} onChange={(event) => setListingEditField("listingTitle", event.target.value)} /></label>
-                      <label>核心卖点<textarea className="compact-textarea" value={listingEditDraft.sellingPointsText} onChange={(event) => setListingEditField("sellingPointsText", event.target.value)} /></label>
-                      <label>商品描述<textarea className="compact-textarea tall-textarea" value={listingEditDraft.description} onChange={(event) => setListingEditField("description", event.target.value)} /></label>
-                      <label>类目路径<textarea className="compact-textarea" value={listingEditDraft.categoryPathText} onChange={(event) => setListingEditField("categoryPathText", event.target.value)} /></label>
+                      <label>鍙戝竷鏍囬<input value={listingEditDraft.listingTitle} onChange={(event) => setListingEditField("listingTitle", event.target.value)} /></label>
+                      <label>鏍稿績鍗栫偣<textarea className="compact-textarea" value={listingEditDraft.sellingPointsText} onChange={(event) => setListingEditField("sellingPointsText", event.target.value)} /></label>
+                      <label>鍟嗗搧鎻忚堪<textarea className="compact-textarea tall-textarea" value={listingEditDraft.description} onChange={(event) => setListingEditField("description", event.target.value)} /></label>
+                      <label>绫荤洰璺緞<textarea className="compact-textarea" value={listingEditDraft.categoryPathText} onChange={(event) => setListingEditField("categoryPathText", event.target.value)} /></label>
                       <label>草稿属性<textarea className="compact-textarea" value={listingEditDraft.attributesText} onChange={(event) => setListingEditField("attributesText", event.target.value)} /></label>
                       <label>SKU 售价<textarea className="compact-textarea tall-textarea" placeholder="skuId,SKU名,售价USD,库存,属性" value={listingEditDraft.skuPricingText} onChange={(event) => setListingEditField("skuPricingText", event.target.value)} /></label>
                     </div>
@@ -3787,10 +3565,10 @@ export function App() {
                       const input = buildDraftUpdatePayload()
                       if (input) void draftUpdater.mutateAsync({ taskId: activeTask.id, input })
                     }} disabled={draftUpdater.isPending || !listingEditDraft.listingTitle}>
-                      {draftUpdater.isPending ? "保存中..." : "保存草稿内容"}
+                      {draftUpdater.isPending ? "淇濆瓨涓?.." : "淇濆瓨鑽夌鍐呭"}
                     </button>
                     <div className="draft-history">
-                      <strong>草稿版本</strong>
+                      <strong>鑽夌鐗堟湰</strong>
                       {(activeTask.draftVersions ?? []).length > 0 ? (
                         <div className="draft-version-list">
                           {(activeTask.draftVersions ?? []).slice(0, 8).map((version) => (
@@ -3804,12 +3582,12 @@ export function App() {
                                 onClick={() => void draftRestorer.mutateAsync({ taskId: activeTask.id, versionId: version.id })}
                                 disabled={draftRestorer.isPending}
                               >
-                                恢复
+                                鎭㈠
                               </button>
                             </div>
                           ))}
                         </div>
-                      ) : <div className="empty-report">暂无草稿版本</div>}
+                      ) : <div className="empty-report">鏆傛棤鑽夌鐗堟湰</div>}
                     </div>
                   </>
                 ) : null}
@@ -3818,20 +3596,20 @@ export function App() {
 
             <section className="main-grid">
               <article className="panel">
-                <div className="panel-head"><h3>商品编辑</h3></div>
+                <div className="panel-head"><h3>鍟嗗搧缂栬緫</h3></div>
                 {productEditDraft ? (
                   <>
                     <div className="pricing-form two-col-form">
-                      <label>商品标题<input value={productEditDraft.title} onChange={(event) => setProductEditField("title", event.target.value)} /></label>
-                      <label>类目<input value={productEditDraft.category} onChange={(event) => setProductEditField("category", event.target.value)} /></label>
-                      <label>成本价 CNY<input type="number" step="0.01" value={productEditDraft.supplierPriceCny} onChange={(event) => setProductEditField("supplierPriceCny", event.target.value)} /></label>
-                      <label>国内运费 CNY<input type="number" step="0.01" value={productEditDraft.estimatedDomesticShippingCny} onChange={(event) => setProductEditField("estimatedDomesticShippingCny", event.target.value)} /></label>
-                      <label>重量 kg<input type="number" step="0.01" value={productEditDraft.estimatedWeightKg} onChange={(event) => setProductEditField("estimatedWeightKg", event.target.value)} /></label>
+                      <label>鍟嗗搧鏍囬<input value={productEditDraft.title} onChange={(event) => setProductEditField("title", event.target.value)} /></label>
+                      <label>绫荤洰<input value={productEditDraft.category} onChange={(event) => setProductEditField("category", event.target.value)} /></label>
+                      <label>鎴愭湰浠?CNY<input type="number" step="0.01" value={productEditDraft.supplierPriceCny} onChange={(event) => setProductEditField("supplierPriceCny", event.target.value)} /></label>
+                      <label>鍥藉唴杩愯垂 CNY<input type="number" step="0.01" value={productEditDraft.estimatedDomesticShippingCny} onChange={(event) => setProductEditField("estimatedDomesticShippingCny", event.target.value)} /></label>
+                      <label>閲嶉噺 kg<input type="number" step="0.01" value={productEditDraft.estimatedWeightKg} onChange={(event) => setProductEditField("estimatedWeightKg", event.target.value)} /></label>
                       <label>总库存<input type="number" step="1" value={productEditDraft.stock} onChange={(event) => setProductEditField("stock", event.target.value)} /></label>
-                      <label className="wide-field">来源链接<input value={productEditDraft.sourceUrl} onChange={(event) => setProductEditField("sourceUrl", event.target.value)} /></label>
+                      <label className="wide-field">鏉ユ簮閾炬帴<input value={productEditDraft.sourceUrl} onChange={(event) => setProductEditField("sourceUrl", event.target.value)} /></label>
                       <label className="wide-field">商品属性<textarea className="compact-textarea" value={productEditDraft.attributesText} onChange={(event) => setProductEditField("attributesText", event.target.value)} /></label>
-                      <label className="wide-field">图片链接<textarea className="compact-textarea" value={productEditDraft.imagesText} onChange={(event) => setProductEditField("imagesText", event.target.value)} /></label>
-                      <label className="wide-field">SKU 列表<textarea className="compact-textarea tall-textarea" value={productEditDraft.skusText} onChange={(event) => setProductEditField("skusText", event.target.value)} /></label>
+                      <label className="wide-field">鍥剧墖閾炬帴<textarea className="compact-textarea" value={productEditDraft.imagesText} onChange={(event) => setProductEditField("imagesText", event.target.value)} /></label>
+                      <label className="wide-field">SKU 鍒楄〃<textarea className="compact-textarea tall-textarea" value={productEditDraft.skusText} onChange={(event) => setProductEditField("skusText", event.target.value)} /></label>
                     </div>
                     <button className="primary-button import-button" onClick={() => {
                       const input = buildProductUpdatePayload()
@@ -3846,66 +3624,65 @@ export function App() {
               <article className="panel">
                 <div className="panel-head"><h3>审核工作台</h3></div>
                 <div className="review-history">
-                  <strong>鍙戝竷鍓嶆鏌?</strong>
+                  <strong>閸欐垵绔烽崜宥嗩梾閺?</strong>
                   {publishCheck ? (
                     <>
-                      <div className={`review-state ${publishCheck.canPublish ? "approved" : "rejected"}`}>
-                        <strong>{publishCheck.canPublish ? "可以发布" : "存在问题"}</strong>
+                      <div className={"review-state " + (publishCheck.canPublish ? "approved" : "rejected")}>
+                        <strong>{publishCheck.canPublish ? "鍙互鍙戝竷" : "瀛樺湪闂"}</strong>
                         <span>{new Date(publishCheck.checkedAt).toLocaleString()}</span>
                       </div>
                       <div className="risk-list-simple">
                         {publishCheck.issues.length > 0
                           ? publishCheck.issues.map((issue) => (
-                              <div key={issue.id} className={`risk-pill ${issue.level}`}>
+                              <div key={issue.id} className={"risk-pill " + issue.level}>
                                 {issue.message}
                               </div>
                             ))
-                          : <div className="empty-report">暂无问题，可以提交上架</div>}
+                          : <div className="empty-report">暂无问题，可以提交上架。</div>}
                       </div>
                     </>
                   ) : (
-                    <div className="empty-report">姝ｅ湪鏌ョ湅鍙戝竷鍓嶇姸鎬?</div>
+                    <div className="empty-report">暂未生成发布前检查结果。</div>
                   )}
                 </div>
                 <div className="review-box">
-                  <div className={`review-state ${activeTask.review?.status ?? "pending"}`}>
+                  <div className={"review-state " + (activeTask.review?.status ?? "pending")}>
                     <strong>{reviewStatusLabel[activeTask.review?.status ?? "pending"]}</strong>
-                    <span>{activeTask.review?.note || "暂无审核备注"}</span>
+                    <span>{activeTask.review?.note || "鏆傛棤瀹℃牳澶囨敞"}</span>
                   </div>
                   <textarea
                     className="compact-textarea"
-                    placeholder="填写审核备注、修改要求或驳回原因"
+                    placeholder="濉啓瀹℃牳澶囨敞銆佷慨鏀硅姹傛垨椹冲洖鍘熷洜"
                     value={reviewNote}
                     onChange={(event) => setReviewNote(event.target.value)}
                   />
                   <div className="review-actions">
                     <button className="primary-button" onClick={() => void reviewer.mutateAsync({ taskId: activeTask.id, decision: "approve", note: reviewNote })} disabled={reviewer.isPending}>
-                      审核通过
+                      瀹℃牳閫氳繃
                     </button>
                     <button className="ghost-button" onClick={() => void reviewer.mutateAsync({ taskId: activeTask.id, decision: "request_changes", note: reviewNote })} disabled={reviewer.isPending}>
-                      退回修改
-                    </button>
+                      閫€鍥炰慨鏀?                    </button>
                     <button className="ghost-button danger-button" onClick={() => void reviewer.mutateAsync({ taskId: activeTask.id, decision: "reject", note: reviewNote })} disabled={reviewer.isPending}>
-                      驳回
+                      椹冲洖
                     </button>
                   </div>
                   <div className="review-history">
                     {(activeTask.review?.history ?? []).length > 0 ? activeTask.review?.history.map((event) => (
-                      <div key={`${event.createdAt}-${event.decision}`} className="review-history-item">
+                        <div key={String(event.createdAt) + "-" + event.decision} className="review-history-item">
                         <strong>{reviewDecisionLabel[event.decision]}</strong>
-                        <span>{event.note || "无备注"}</span>
+                          <span>{event.note || "无备注"}</span>
                         <small>{new Date(event.createdAt).toLocaleString()}</small>
                       </div>
-                    )) : <div className="empty-report">暂无审核记录</div>}
+                    )) : <div className="empty-report">鏆傛棤瀹℃牳璁板綍</div>}
                   </div>
                 </div>
               </article>
 
               <article className="panel">
-                <div className="panel-head"><h3>执行步骤</h3></div>
+                <div className="panel-head"><h3>鎵ц姝ラ</h3></div>
                 <div className="flow-list">
                   {activeTask.steps.map((step) => (
-                    <div key={step.id} className={`flow-item step-${step.status}`}>
+                    <div key={step.id} className={"flow-item step-" + step.status}>
                       <strong>{step.title}</strong>
                       <p>{step.instruction}</p>
                       <span>{step.status}</span>
@@ -3917,15 +3694,15 @@ export function App() {
 
             <section className="bottom-grid">
               <article className="panel">
-                <div className="panel-head"><h3>核价说明</h3></div>
+                <div className="panel-head"><h3>鏍镐环璇存槑</h3></div>
                 <div className="explain-list">{activeTask.pricing.rationale.map((item) => <div key={item} className="explain-item">{item}</div>)}</div>
               </article>
               <article className="panel">
-                <div className="panel-head"><h3>风险提醒</h3></div>
+                <div className="panel-head"><h3>椋庨櫓鎻愰啋</h3></div>
                 <div className="risk-list-simple">
                   {activeTask.risks.length > 0
-                    ? activeTask.risks.map((risk) => <div key={risk.id} className={`risk-pill ${risk.level}`}>{risk.message}</div>)
-                    : <div className="empty-report">暂无风险提醒</div>}
+                    ? activeTask.risks.map((risk) => <div key={risk.id} className={"risk-pill " + risk.level}>{risk.message}</div>)
+                    : <div className="empty-report">鏆傛棤椋庨櫓鎻愰啋</div>}
                 </div>
               </article>
             </section>
@@ -4157,17 +3934,17 @@ export function App() {
                     <span>show blocked task files ({blockedTaskFileExportCount})</span>
                   </label>
                   {visibleTaskFileExports.map((item) => (
-                    <div key={item.exportId} className={`task-export-item ${taskFileLaunchClass(item)}`}>
+                    <div key={item.exportId} className={"task-export-item " + taskFileLaunchClass(item)}>
                       <div>
                         <div className="task-export-title">
                           <strong>{item.taskId}</strong>
-                          <span className={`task-export-status ${taskFileLaunchClass(item)}`}>{item.launchStatus.status}</span>
+                          <span className={"task-export-status " + taskFileLaunchClass(item)}>{item.launchStatus.status}</span>
                         </div>
                         <span>{item.taskFile}</span>
                         <small>{new Date(item.exportedAt).toLocaleString()} / {item.taskStatus} / {item.bytes} bytes / {item.sha256.slice(0, 12)}</small>
                         <small>{item.launchStatus.reason}</small>
                         {item.launchStatus.dianxiaomiUrlChecks.length > 0 ? (
-                          <small>{item.launchStatus.dianxiaomiUrlChecks.map((check) => `${check.label}: ${check.valid ? "valid" : check.reason ?? "invalid"}`).join(" / ")}</small>
+                            <small>{item.launchStatus.dianxiaomiUrlChecks.map((check) => check.label + ": " + (check.valid ? "valid" : check.reason ?? "invalid")).join(" / ")}</small>
                         ) : null}
                       </div>
                       <div className="task-export-actions">
@@ -4332,7 +4109,7 @@ export function App() {
               {automationReadiness ? (
                 <div className="automation-gate-grid">
                   {automationGateItems.map((item) => (
-                    <div key={item.label} className={`automation-gate ${item.readiness?.ready ? "ready" : "blocked"}`}>
+                    <div key={item.label} className={"automation-gate " + (item.readiness?.ready ? "ready" : "blocked")}>
                       <strong>{item.label}</strong>
                       <span>{item.readiness?.ready ? "ready" : "blocked"}</span>
                       <p>{item.readiness?.reason ?? "readiness loading"}</p>
@@ -4455,7 +4232,7 @@ export function App() {
                   const doneCount = report.steps.filter((step) => step.status === "done").length
                   const targetSurfaceStep = report.steps.find((step) => step.id === "target-surface")
                   return (
-                    <div key={report.id} className={`automation-report ${report.status}`}>
+                    <div key={report.id} className={"automation-report " + report.status}>
                       <div className="report-main">
                         <strong>{report.taskTitle}</strong>
                         <span>{new Date(report.createdAt).toLocaleString()}</span>
@@ -4469,7 +4246,7 @@ export function App() {
                       </div>
                     </div>
                   )
-                }) : <div className="empty-report">暂无自动化执行报告</div>}
+                }) : <div className="empty-report">暂无自动化执行报告。</div>}
               </div>
             </section>
 
@@ -4493,15 +4270,14 @@ export function App() {
                     onClick={() => void selectorCalibrationRunner.mutateAsync({ headed: true })}
                     disabled={selectorCalibrationRunner.isPending}
                   >
-                    {selectorCalibrationRunner.isPending ? "starting calibration..." : "启动页面校准"}
+                    {selectorCalibrationRunner.isPending ? "starting calibration..." : "鍚姩椤甸潰鏍″噯"}
                   </button>
                   <button
                     className="ghost-button small-button"
                     onClick={() => void selectorConfigGenerator.mutateAsync()}
                     disabled={selectorConfigGenerator.isPending || selectorDiagnoses.length === 0}
                   >
-                    生成选择器配置
-                  </button>
+                    鐢熸垚閫夋嫨鍣ㄩ厤缃?                  </button>
                 </div>
               </div>
               {selectorCalibrationMessage ? (
@@ -4593,7 +4369,7 @@ export function App() {
                       }}
                       disabled={dianxiaomiAccountScanImporter.isPending || selectedAccountScanLinkIds.length === 0}
                     >
-                      {dianxiaomiAccountScanImporter.isPending ? "importing..." : `导入已选 ${selectedAccountScanLinkIds.length} 个到队列`}
+                        {dianxiaomiAccountScanImporter.isPending ? "importing..." : "导入已选 " + String(selectedAccountScanLinkIds.length) + " 个到队列"}
                     </button>
                     <button
                       className="ghost-button small-button"
@@ -4606,14 +4382,13 @@ export function App() {
                       }}
                       disabled={selectedAccountScanLinkIds.length === 0}
                     >
-                      用已选链接作为运行范围
-                    </button>
+                      鐢ㄥ凡閫夐摼鎺ヤ綔涓鸿繍琛岃寖鍥?                    </button>
                   </div>
                 </>
               ) : null}
               <div className="report-list">
                 {selectorConfigValidation ? (
-                  <div className={`automation-report ${selectorConfigValidation.valid ? "completed" : "failed"}`}>
+                  <div className={"automation-report " + (selectorConfigValidation.valid ? "completed" : "failed")}>
                     <div className="report-main">
                       <strong>{selectorConfigValidation.valid ? "selector config validation passed" : "selector config needs attention"}</strong>
                       <span>{new Date(selectorConfigValidation.checkedAt).toLocaleString()}</span>
@@ -4637,7 +4412,7 @@ export function App() {
                     .filter(([, result]) => !result.ok)
                     .map(([kind]) => kind)
                   return (
-                    <div key={`${diagnosis.createdAt}-${diagnosis.pageUrl}`} className={`automation-report ${diagnosis.requiredOk ? "completed" : "failed"}`}>
+                    <div key={String(diagnosis.createdAt) + "-" + diagnosis.pageUrl} className={"automation-report " + (diagnosis.requiredOk ? "completed" : "failed")}>
                       <div className="report-main">
                         <strong>{diagnosis.requiredOk ? "关键字段可识别" : "需要校准选择器"}</strong>
                         <span>{new Date(diagnosis.createdAt).toLocaleString()}</span>

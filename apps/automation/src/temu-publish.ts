@@ -240,6 +240,23 @@ const runDianxiaomiFlow = async (context: BrowserContext, options: RunnerOptions
   let page = await acquireAutomationPage(context, options.targetUrl)
   const steps: AutomationStepResult[] = []
 
+  // P2-1: browser crash / disconnect detection. A chromium OOM or a killed
+  // browser process otherwise surfaces as an opaque Playwright timeout much
+  // later. We record the first crash signal here so the catch block can
+  // label the failure as a browser crash instead of a generic timeout, and
+  // so callers (queue daemon recovery classification) can route it to
+  // browser-profile recovery rather than retrying blindly.
+  let browserCrashReason: string | null = null
+  const markBrowserCrash = (reason: string) => {
+    if (!browserCrashReason) {
+      browserCrashReason = reason
+      console.warn(`Browser crash/disconnect detected: ${reason}`)
+    }
+  }
+  context.on("close", () => markBrowserCrash("browser context closed unexpectedly (possible chromium crash or OOM)"))
+  context.browser()?.on("disconnected", () => markBrowserCrash("browser process disconnected (possible chromium crash or OOM)"))
+  page.on("crash", () => markBrowserCrash("page crashed (possible chromium tab OOM)"))
+
   try {
     await waitForManualLoginIfNeeded(page)
     // The Dianxiaomi login flow can replace the original page or bounce to a
@@ -330,11 +347,17 @@ const runDianxiaomiFlow = async (context: BrowserContext, options: RunnerOptions
   } catch (error) {
     const screenshotPath = await safeCaptureArtifacts(page, options.screenshotDir, "dianxiaomi-error")
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
-    const message = error instanceof Error ? error.message : String(error)
+    // P2-1: if a browser crash/disconnect was detected, prefer that as the
+    // failure reason — the raw error is usually a downstream Playwright
+    // timeout that hides the real cause.
+    const rawMessage = error instanceof Error ? error.message : String(error)
+    const message = browserCrashReason
+      ? `${browserCrashReason}; underlying error: ${rawMessage}`
+      : rawMessage
 
     steps.push({
-      id: "runtime-error",
-      label: "Runtime error",
+      id: browserCrashReason ? "browser-crash" : "runtime-error",
+      label: browserCrashReason ? "Browser crash" : "Runtime error",
       status: "failed",
       detail: message
     })

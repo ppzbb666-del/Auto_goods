@@ -96,6 +96,7 @@ type WorkItemQualityInput = Pick<DianxiaomiProductWorkItemInput, "title" | "snap
   // defaults. Callers that don't know the category (e.g. preview-only flow)
   // simply omit it.
   category?: string
+  categoryHint?: DianxiaomiProductWorkItemInput["categoryHint"]
 }
 
 // P0-A: fallback caps for non-Dianxiaomi sources. Dianxiaomi sources already
@@ -467,8 +468,25 @@ const buildDianxiaomiRequirementChecks = (
     .map((term) => term.trim().toLowerCase())
     .filter(Boolean)
   const matchedBlockedTerms = blockedTerms.filter((term) => lowerText.includes(term))
+  const normalizedCategory = normalizeCategoryLabel(input.category)
+  const hasCategorySelectionSignal = !isPlaceholderDianxiaomiCategory(normalizedCategory)
+    || Boolean(input.categoryHint?.categoryId?.trim())
+    || Boolean(input.categoryHint?.fullCid?.trim())
 
   return [
+    {
+      id: "category-selection",
+      level: "required",
+      ok: hasCategorySelectionSignal,
+      message: hasCategorySelectionSignal
+        ? normalizedCategory
+          ? `category ready: ${normalizedCategory}`
+          : "category can be restored from Dianxiaomi category hint"
+        : "Temu category is still missing on this Dianxiaomi item",
+      recommendation: hasCategorySelectionSignal
+        ? "Restore or confirm the Temu category before unattended publish."
+        : "Open the Dianxiaomi category picker and choose the correct Temu category before unattended publish."
+    },
     {
       id: "title-present",
       level: requiredLevel(rules.title.required),
@@ -1362,7 +1380,11 @@ const rebuildDianxiaomiProductWorkItem = (
   item: DianxiaomiProductWorkItem,
   rules: DianxiaomiListingRequirementRules = dianxiaomiRequirementRules
 ): DianxiaomiProductWorkItem => {
-  const requirements = buildDianxiaomiWorkRequirements(item, rules)
+  const requirements = buildDianxiaomiWorkRequirements({
+    ...item,
+    category: item.categoryHint?.label,
+    categoryHint: item.categoryHint
+  }, rules)
   const suggestedEdits = buildDianxiaomiSuggestedEdits(requirements.checks)
   const updatedStatus = requirements.summary.ready ? "ready-for-automation" : "needs-revision"
 
@@ -1380,6 +1402,22 @@ const rebuildDianxiaomiProductWorkItem = (
     ...rebuilt,
     repairPlan
   })
+}
+
+const refreshDianxiaomiWorkItemReadiness = (
+  item: DianxiaomiProductWorkItem,
+  rules: DianxiaomiListingRequirementRules = dianxiaomiRequirementRules
+): DianxiaomiProductWorkItem => {
+  const rebuilt = rebuildDianxiaomiProductWorkItem(item, rules)
+  return {
+    ...rebuilt,
+    status: item.status === "blocked" || item.status === "edited"
+      ? item.status
+      : rebuilt.status,
+    failureDiagnosis: item.status === "blocked" ? item.failureDiagnosis ?? rebuilt.failureDiagnosis ?? null : rebuilt.failureDiagnosis,
+    publishOutcome: item.publishOutcome ?? rebuilt.publishOutcome ?? null,
+    manualBudgetReleases: item.manualBudgetReleases ?? rebuilt.manualBudgetReleases ?? []
+  }
 }
 
 // P1-6: dedupe key computed from the canonical page URL + the page
@@ -1586,7 +1624,7 @@ const debugSnapshots: PageDebugSnapshot[] = []
 const dianxiaomiCollectedProducts: DianxiaomiCollectedProduct[] = (persistedState?.dianxiaomiCollectedProducts ?? []).slice(0, 50)
 const dianxiaomiProductWorkItems = new Map<string, DianxiaomiProductWorkItem>(
   (persistedState?.dianxiaomiProductWorkItems ?? []).map((item): [string, DianxiaomiProductWorkItem] => {
-    const normalized = withDianxiaomiRepairActionGate(item)
+    const normalized = refreshDianxiaomiWorkItemReadiness(withDianxiaomiRepairActionGate(item))
     return [normalized.id, normalized]
   })
 )
@@ -1621,7 +1659,12 @@ const DIANXIAOMI_TASK_META_ATTRIBUTE_KEYS = new Set([
   "dianxiaomiWorkItemId",
   "dianxiaomiPageUrl",
   "dianxiaomiRequirementPreset",
-  "dianxiaomiCollectedProductId"
+  "dianxiaomiCollectedProductId",
+  "dianxiaomiCategoryId",
+  "dianxiaomiFullCid",
+  "dianxiaomiCategoryLabel",
+  "dianxiaomiCategoryHintSource",
+  "dianxiaomiCategoryMissing"
 ])
 
 const DIANXIAOMI_DEFAULT_DECLARED_PRICE_USD = 999
@@ -1637,6 +1680,52 @@ const withoutDianxiaomiTaskMetaAttributes = (attributes: Record<string, string> 
 
 const getDianxiaomiCollectedProduct = (id: string | undefined) =>
   id ? dianxiaomiCollectedProducts.find((item) => item.id === id) ?? null : null
+
+const DIANXIAOMI_PLACEHOLDER_CATEGORY_LABELS = new Set([
+  "dianxiaomi account scan",
+  "dianxiaomi collected",
+  "dianxiaomi product requiring edits",
+  "dianxiaomi product edit",
+  "dianxiaomi product"
+])
+
+function normalizeCategoryLabel(value?: string | null) {
+  return value?.trim() || undefined
+}
+
+function isPlaceholderDianxiaomiCategory(value?: string | null) {
+  const normalized = normalizeCategoryLabel(value)?.toLowerCase()
+  return !normalized || DIANXIAOMI_PLACEHOLDER_CATEGORY_LABELS.has(normalized)
+}
+
+function resolveDianxiaomiWorkItemCategoryLabel(workItem: DianxiaomiProductWorkItem) {
+  const collected = getDianxiaomiCollectedProduct(workItem.collectedProductId)
+  if (collected && !isPlaceholderDianxiaomiCategory(collected.category)) {
+    return normalizeCategoryLabel(collected.category)
+  }
+  if (!isPlaceholderDianxiaomiCategory(workItem.categoryHint?.label)) {
+    return normalizeCategoryLabel(workItem.categoryHint?.label)
+  }
+  return undefined
+}
+
+function hasResolvableDianxiaomiCategoryHint(workItem: Pick<DianxiaomiProductWorkItem, "categoryHint" | "collectedProductId">) {
+  return Boolean(
+    resolveDianxiaomiWorkItemCategoryLabel(workItem as DianxiaomiProductWorkItem)
+    || workItem.categoryHint?.categoryId?.trim()
+    || workItem.categoryHint?.fullCid?.trim()
+  )
+}
+
+function buildDianxiaomiCategoryTaskAttributes(workItem: DianxiaomiProductWorkItem) {
+  return {
+  ...(workItem.categoryHint?.categoryId ? { dianxiaomiCategoryId: workItem.categoryHint.categoryId } : {}),
+  ...(workItem.categoryHint?.fullCid ? { dianxiaomiFullCid: workItem.categoryHint.fullCid } : {}),
+  ...(workItem.categoryHint?.label ? { dianxiaomiCategoryLabel: workItem.categoryHint.label } : {}),
+  ...(workItem.categoryHint?.source ? { dianxiaomiCategoryHintSource: workItem.categoryHint.source } : {}),
+  ...(hasResolvableDianxiaomiCategoryHint(workItem) ? {} : { dianxiaomiCategoryMissing: "true" })
+  }
+}
 
 const normalizeCollectedAttributeLookupKey = (value: string) =>
   value.trim().toLowerCase().replace(/\s+/g, "")
@@ -2621,7 +2710,11 @@ export const saveDianxiaomiProductWorkItem = (input: DianxiaomiProductWorkItemIn
     rawTextSample: normalizedInput.rawTextSample,
     title: normalizedInput.title
   })
-  const requirements = buildDianxiaomiWorkRequirements(normalizedInput, selectedPreset)
+  const requirements = buildDianxiaomiWorkRequirements({
+    ...normalizedInput,
+    category: normalizedInput.categoryHint?.label,
+    categoryHint: normalizedInput.categoryHint
+  }, selectedPreset)
   const suggestedEdits = input.suggestedEdits?.length
     ? input.suggestedEdits
     : buildDianxiaomiSuggestedEdits(requirements.checks)
@@ -2638,6 +2731,12 @@ export const saveDianxiaomiProductWorkItem = (input: DianxiaomiProductWorkItemIn
     updatedAt: now,
     sourceBucket: normalizedInput.sourceBucket,
     pageProfile: input.pageProfile ?? existing?.pageProfile,
+    categoryHint: {
+      label: normalizeCategoryLabel(input.categoryHint?.label ?? existing?.categoryHint?.label),
+      categoryId: normalizeCategoryLabel(input.categoryHint?.categoryId ?? existing?.categoryHint?.categoryId),
+      fullCid: normalizeCategoryLabel(input.categoryHint?.fullCid ?? existing?.categoryHint?.fullCid),
+      source: input.categoryHint?.source ?? existing?.categoryHint?.source
+    },
     requirements,
     suggestedEdits: urlBlockReason
       ? [
@@ -2905,7 +3004,9 @@ export const mergeDianxiaomiProductWorkItemSnapshot = (
   })
   const requirements = buildDianxiaomiWorkRequirements({
     ...current,
-    snapshot: mergedSnapshot
+    snapshot: mergedSnapshot,
+    category: current.categoryHint?.label,
+    categoryHint: current.categoryHint
   }, selectedPreset)
   const suggestedEdits = buildDianxiaomiSuggestedEdits(requirements.checks)
   const urlBlockReason = dianxiaomiUrlBlockReason(current.pageUrl)
@@ -3065,12 +3166,13 @@ export const requeueDianxiaomiProductWorkItemAfterFix = (id: string): Dianxiaomi
 
 const createPlaceholderProductFromWorkItem = (workItem: DianxiaomiProductWorkItem): ProductCandidate => {
   const productId = `dxm-work-${slugify(workItem.title)}-${Date.now()}`
+  const categoryLabel = resolveDianxiaomiWorkItemCategoryLabel(workItem) || "Temu category pending selection"
   return {
     id: productId,
     source: "dianxiaomi",
     sourceUrl: workItem.pageUrl,
     title: workItem.title,
-    category: workItem.pageProfile || "Dianxiaomi product requiring edits",
+    category: categoryLabel,
     supplierPriceCny: 0,
     estimatedDomesticShippingCny: 0,
     estimatedWeightKg: 0.2,
@@ -3080,6 +3182,7 @@ const createPlaceholderProductFromWorkItem = (workItem: DianxiaomiProductWorkIte
       dianxiaomiWorkItemId: workItem.id,
       dianxiaomiPageUrl: workItem.pageUrl,
       dianxiaomiRequirementPreset: workItem.requirements.presetName,
+      ...buildDianxiaomiCategoryTaskAttributes(workItem),
       ...(workItem.collectedProductId ? { dianxiaomiCollectedProductId: workItem.collectedProductId } : {})
     },
     skus: Array.from({ length: Math.max(1, workItem.snapshot.skuCount) }, (_item, index) => ({
@@ -3097,6 +3200,7 @@ const createProductFromWorkItem = (workItem: DianxiaomiProductWorkItem): Product
     dianxiaomiWorkItemId: workItem.id,
     dianxiaomiPageUrl: workItem.pageUrl,
     dianxiaomiRequirementPreset: workItem.requirements.presetName,
+    ...buildDianxiaomiCategoryTaskAttributes(workItem),
     ...(workItem.collectedProductId ? { dianxiaomiCollectedProductId: workItem.collectedProductId } : {})
   }
   const collected = getDianxiaomiCollectedProduct(workItem.collectedProductId)
@@ -3167,11 +3271,13 @@ export const createTaskFromDianxiaomiProductWorkItem = (workItemId: string): Dia
 const buildTaskFromDianxiaomiProductWorkItem = (workItem: DianxiaomiProductWorkItem): PublishTask => {
   const product = createProductFromWorkItem(workItem)
   const task = buildTaskForProduct(product)
+  const categoryLabel = resolveDianxiaomiWorkItemCategoryLabel(workItem)
   const draftAttributes = {
     ...withoutDianxiaomiTaskMetaAttributes(product.attributes),
     dianxiaomiWorkItemId: workItem.id,
     dianxiaomiPageUrl: workItem.pageUrl,
     dianxiaomiRequirementPreset: workItem.requirements.presetName,
+    ...buildDianxiaomiCategoryTaskAttributes(workItem),
     ...(workItem.collectedProductId ? { dianxiaomiCollectedProductId: workItem.collectedProductId } : {})
   }
   const productSkuById = new Map(product.skus.map((sku) => [sku.skuId, sku]))
@@ -3184,6 +3290,7 @@ const buildTaskFromDianxiaomiProductWorkItem = (workItem: DianxiaomiProductWorkI
         "Dianxiaomi source item needs requirement-based edits before Temu listing.",
         ...workItem.suggestedEdits.slice(0, 6).map((edit) => `${edit.field}: ${edit.suggestedValue || edit.reason}`)
       ].filter(Boolean).join("\n\n")),
+      categoryPath: categoryLabel ? ["Temu", categoryLabel] : [],
       attributes: draftAttributes,
       skuPricing: task.draft.skuPricing.map((sku, index) => {
         const productSku = productSkuById.get(sku.skuId) ?? product.skus[index]
@@ -3202,6 +3309,11 @@ const buildTaskFromDianxiaomiProductWorkItem = (workItem: DianxiaomiProductWorkI
       })
     },
     risks: [
+      ...(categoryLabel ? [] : [{
+        id: "dxm-missing-category",
+        level: "high" as const,
+        message: "Dianxiaomi item has no usable Temu category yet; complete category selection before unattended publish."
+      }]),
       ...workItem.requirements.checks
         .filter((check) => !check.ok)
         .map((check) => ({

@@ -268,6 +268,12 @@ export type DianxiaomiProductWorkItem = {
   updatedAt: string
   rawTextSample: string
   notes: string[]
+  categoryHint?: {
+    label?: string
+    categoryId?: string
+    fullCid?: string
+    source?: "account-scan" | "collected-product" | "manual"
+  }
   // P1-6: stable dedupe key computed from pageUrl + first product-image
   // hash. Used by the work-item admission endpoint to detect duplicate
   // products (same source page or same primary image) and update the

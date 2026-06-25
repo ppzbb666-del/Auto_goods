@@ -27,6 +27,8 @@ type PageListItem = {
   platformEditUrl?: string
   sourceUrl?: string
   outerGoodsUrl?: string
+  categoryId?: number | string
+  fullCid?: string | null
   siteValue?: string
   siteName?: string
   platformSite?: string
@@ -121,6 +123,11 @@ const getInput = (): Required<Pick<DianxiaomiAccountScanStartInput, "headed" | "
 }
 
 const normalizeText = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim()
+
+const normalizeOptionalText = (value: string | number | null | undefined) => {
+  const normalized = normalizeText(value == null ? "" : String(value))
+  return normalized || null
+}
 
 const sameStore = (left: StoreProbe, right: { storeName?: string | null; shopId?: string | null }) => {
   const leftShopId = normalizeText(left.shopId)
@@ -333,6 +340,8 @@ const scanBucketForStore = async (
           typeof item.siteValue === "string" ? item.siteValue : item.siteName ?? item.platformSite ?? ""
         ) || null,
         sourcePlatform: normalizeText(item.sourcePlatform ?? "") || null,
+        categoryId: normalizeOptionalText(item.categoryId),
+        fullCid: normalizeOptionalText(item.fullCid),
         createdAt: formatTimestamp(item.createTime),
         updatedAt: formatTimestamp(item.updateTime)
       })

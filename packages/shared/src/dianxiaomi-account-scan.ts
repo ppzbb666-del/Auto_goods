@@ -10,6 +10,8 @@ export type DianxiaomiAccountScanLink = {
   sourceUrl: string | null
   siteLabel: string | null
   sourcePlatform: string | null
+  categoryId?: string | null
+  fullCid?: string | null
   createdAt: string | null
   updatedAt: string | null
 }
