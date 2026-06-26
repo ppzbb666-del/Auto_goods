@@ -436,6 +436,7 @@ const publishOutcomeWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-publish-outcome-work-item",
   pageTitle: "Publish outcome page",
   title: "Publish outcome work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -667,6 +668,7 @@ const publishAutoRetryRouteWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-publish-auto-retry-route-work-item",
   pageTitle: "Publish auto retry route page",
   title: "Publish auto retry route work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -704,6 +706,7 @@ const publishBrowserRouteWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-publish-browser-recovery-route-work-item",
   pageTitle: "Publish browser recovery route page",
   title: "Publish browser recovery route work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -750,6 +753,7 @@ const publishManualRouteWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-publish-manual-budget-route-work-item",
   pageTitle: "Publish manual budget route page",
   title: "Publish manual budget route work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -1217,6 +1221,7 @@ const autoRetryWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-auto-retry-task-file-work-item",
   pageTitle: "Auto retry task file page",
   title: "Auto retry task file work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   pageProfile: "ready listing profile",
   notes: [],
@@ -1263,6 +1268,7 @@ const manualTrialAutoRetryWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-manual-trial-auto-retry-work-item",
   pageTitle: "Manual trial auto retry page",
   title: "Manual trial auto retry work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -1300,6 +1306,7 @@ const manualFullFlowFailureWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-manual-full-flow-failure-work-item",
   pageTitle: "Manual full flow failure page",
   title: "Manual full flow failure work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -1492,6 +1499,7 @@ const retryAfterFixPublishWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-retry-after-fix-publish-work-item",
   pageTitle: "Retry after fix publish page",
   title: "Retry after fix publish work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -1623,6 +1631,7 @@ const autoProofWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-auto-proof-capture-work-item",
   pageTitle: "Auto proof capture page",
   title: "Auto proof capture work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -1765,6 +1774,7 @@ const noReleaseProofWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-no-release-proof-work-item",
   pageTitle: "No release proof page",
   title: "No release proof work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -1810,6 +1820,7 @@ for (let index = 0; index < 4; index += 1) {
     pageUrl: `https://www.dianxiaomi.com/product/edit/unit-proof-sort-weak-work-item-${index + 1}`,
     pageTitle: `Proof sort weak page ${index + 1}`,
     title: `Proof sort weak work item ${index + 1}`,
+    categoryHint: { label: "Home & Garden" },
     rawTextSample: "complete real listing with SKU and image signals",
     notes: [],
     snapshot: {
@@ -2297,6 +2308,7 @@ const retryAfterFixMediaWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-retry-after-fix-media-work-item",
   pageTitle: "Retry after fix media page",
   title: "Retry after fix media work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -2323,6 +2335,7 @@ const transientMediaRepairWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-transient-media-repair-plan-work-item",
   pageTitle: "Transient media repair page",
   title: "Transient media repair plan work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   pageProfile: "ready listing profile",
   notes: [],
@@ -2364,6 +2377,7 @@ const taskFileRecoverySkipWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-recovery-skip-task-file-work-item",
   pageTitle: "Recovery skip task file page",
   title: "Recovery skip task file work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -2440,6 +2454,7 @@ const daemonBrowserRecoveryWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-daemon-browser-recovery-work-item",
   pageTitle: "Daemon browser recovery page",
   title: "Daemon browser recovery work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -2646,6 +2661,7 @@ const secondReleasedDaemonRecoveryWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-daemon-browser-recovery-work-item-released-2",
   pageTitle: "Second released daemon browser recovery page",
   title: "Second released daemon browser recovery work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals after recovery pause",
   notes: ["new product after repeated recovery action failure"],
   snapshot: {
@@ -2711,6 +2727,7 @@ const repairPlanAutoReleaseWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-repair-plan-auto-release-work-item",
   pageTitle: "Repair plan auto release page",
   title: "Repair plan auto release work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -2758,6 +2775,7 @@ const invalidMediaRepairWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-invalid-media-repair-plan-work-item",
   pageTitle: "Invalid media repair page",
   title: "Invalid media repair plan work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -2787,6 +2805,7 @@ const storageQuotaMediaRepairWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-storage-quota-media-repair-plan-work-item",
   pageTitle: "Storage quota media repair page",
   title: "Storage quota media repair plan work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -2816,6 +2835,7 @@ const publishRepairWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-publish-repair-plan-work-item",
   pageTitle: "Publish repair page",
   title: "Publish repair plan work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -2843,6 +2863,7 @@ const publishAttributeRepairWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-publish-attribute-repair-plan-work-item",
   pageTitle: "Publish attribute repair page",
   title: "Publish attribute repair plan work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -2897,6 +2918,7 @@ const linkedPublishAttributeRepairWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-linked-publish-attribute-repair-plan-work-item",
   pageTitle: "Linked publish attribute repair page",
   title: "Linked publish attribute repair plan work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with linked collected attributes",
   notes: [],
   snapshot: {
@@ -2928,6 +2950,7 @@ const linkedPublishNoColonRepairWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-linked-publish-no-colon-repair-plan-work-item",
   pageTitle: "Linked publish no-colon repair page",
   title: "Linked publish no-colon repair plan work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with linked collected attributes",
   notes: [],
   snapshot: {
@@ -2974,6 +2997,7 @@ const linkedPublishOutcomeFallbackRepairWorkItem = saveDianxiaomiProductWorkItem
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-linked-publish-outcome-fallback-repair-plan-work-item",
   pageTitle: "Linked publish outcome fallback repair page",
   title: "Linked publish outcome fallback repair plan work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with linked collected attributes",
   notes: [],
   snapshot: {
@@ -3014,6 +3038,7 @@ const publishSkuImageRepairWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-publish-sku-image-repair-plan-work-item",
   pageTitle: "Publish sku image repair page",
   title: "Publish sku image repair plan work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -3041,6 +3066,7 @@ const retryAfterFixLoginWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-retry-after-fix-login-work-item",
   pageTitle: "Retry after fix login page",
   title: "Retry after fix login work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -3071,6 +3097,7 @@ const retryAfterFixBadUrlWorkItem = saveDianxiaomiProductWorkItem({
   pageUrl: "https://example.com/product/edit/unit-retry-after-fix-bad-url-work-item",
   pageTitle: "Retry after fix bad URL page",
   title: "Retry after fix bad URL work item",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -3153,6 +3180,7 @@ const readyWorkItemForCalibrationGate = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-real-url-work-item-for-calibration-gate",
   pageTitle: "Real URL calibration gate page",
   title: "Real URL work item for calibration gate",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -3172,6 +3200,7 @@ const blockedStartupBrowserRecoveryCandidate = saveDianxiaomiProductWorkItem({
   pageUrl: "https://www.dianxiaomi.com/product/edit/unit-browser-recovery-work-item-for-startup-block",
   pageTitle: "Browser recovery candidate for startup block",
   title: "Browser recovery candidate for startup block",
+  categoryHint: { label: "Home & Garden" },
   rawTextSample: "complete real listing with SKU and image signals",
   notes: [],
   snapshot: {
@@ -3270,6 +3299,7 @@ try {
     pageUrl: "https://www.dianxiaomi.com/product/edit/unit-login-session-block-work-item",
     pageTitle: "Login session blocker",
     title: "Login session blocker",
+    categoryHint: { label: "Home & Garden" },
     rawTextSample: "complete real listing but session expired",
     notes: [],
     snapshot: {

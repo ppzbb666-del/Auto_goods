@@ -559,3 +559,16 @@ Next, continue hardening the unattended publish success/failure loop: add route-
 - **根因**：`selector-config-generate.ts` 默认 `outputPath = ".runtime/dianxiaomi-selector-config.json"` 相对 CWD 解析。`npm run --workspace` 在 automation 工作目录下运行，所以写到 `apps/automation/.runtime/`。
 - **修复**：给 `selector-config-generate.ts` 加 `getRepoRoot()`（基于 `import.meta.url` 向上 3 层到项目根），默认 `outputPath` 改为 `path.join(getRepoRoot(), ".runtime/dianxiaomi-selector-config.json")`。`--output` 参数仍可覆盖。
 - **验证**：fixture 流程后跑 generator，`.runtime/dianxiaomi-selector-config.json` 现在 5 个 key 全有（fields、buttons、mediaTools、mediaToolActions、skuRows），`mediaTools.imageTranslation = ["button#imageTranslationTool"]` 等。`npm test` 通过。
+
+### 品类（category-selection）根因 + 回写 + 验证（2026/06/27）
+
+完整说明见新文档 [docs/dianxiaomi-category-selection.md](dianxiaomi-category-selection.md)。摘要：
+
+- **根因**：上一轮（`4e79568`）新加的 `required` 校验 `category-selection`（`planner.ts` 的 `hasCategorySelectionSignal`）会把"无品类信号（label / categoryId / fullCid 全空）"的 work item 卡在 `needs-revision`，进不了无人值守。不是 bug，是有意硬门 —— 缺品类硬跑会在店小秘"未选择分类"那步失败。卡的是**存量 work item 没带品类信号**。
+- **诊断脚本（只读）**：
+  - [probe-readonly-category-state.ts](../apps/automation/src/probe-readonly-category-state.ts)：纯读真实编辑页，确认到底有没有已选品类（`missingCategory` / 按钮可见性 / 附近文本），不点击不写。
+  - [verify-category-label-only.ts](../apps/automation/src/verify-category-label-only.ts)：半只读，验证"只给 label（无 categoryId/fullCid）时 `normalizeCategorySelection` 能否自己选中品类"，会开弹窗选品类但不填字段/不保存/不提交。
+- **回写脚本**：[scripts/backfill-category-hint.mjs](../scripts/backfill-category-hint.mjs) 走既有 `POST /dianxiaomi/product-work-items` 给存量 work item 批量补 `categoryHint.label`（`source=manual`），server 原地更新并重算 requirements + status，期望 `categorySelectionOk=true` / `newStatus=ready-for-automation`。属 `高级区` 一次性运维工具。
+- **测试固化**：[automation-runner.test.ts](../apps/server/test/automation-runner.test.ts) 所有"完整/ready"型 fixture 显式补 `categoryHint: { label: "Home & Garden" }`，否则被新必填校验拉回 `needs-revision`，破坏 publish/recovery 路由断言。
+- **验证**：`npm test --workspace @temu-ai-ops/server` 通过；`npm run typecheck --workspace @temu-ai-ops/automation` 通过（含两个新脚本）。
+- **退出条件**：采集/录入阶段稳定带品类信号，或 `normalizeCategorySelection` 公共品类回退足够稳，则这两个过渡工具可下线。

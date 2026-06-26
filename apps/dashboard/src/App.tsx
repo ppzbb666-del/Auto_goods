@@ -2406,6 +2406,20 @@ export function App() {
     return false
   }) ?? null
   const latestFullFlowJob = automationFullFlowJobsInScope[0] ?? null
+  let latestFullFlowSummary = "还没有 full-flow 运行记录。"
+  if (latestFullFlowJob) {
+    const fullFlowStatusLabel = latestFullFlowJob.status === "completed"
+      ? "成功"
+      : latestFullFlowJob.status === "failed"
+        ? "失败"
+        : "运行中"
+    const fullFlowStageHint = latestFullFlowJob.stages.find((stage) => stage.status === "failed")?.name
+      ?? [...latestFullFlowJob.stages].reverse().find((stage) => stage.status === "completed")?.name
+      ?? null
+    latestFullFlowSummary = `最近一次 full-flow ${fullFlowStatusLabel}`
+      + (fullFlowStageHint ? `（${fullFlowStageHint}）` : "")
+      + (latestFullFlowJob.error ? `: ${latestFullFlowJob.error}` : "")
+  }
   const latestSaveDraftProofJob = automationFullFlowJobsInScope.find((job) =>
     job.input.submitAfterSave === false
     && !job.input.repairPlanFile

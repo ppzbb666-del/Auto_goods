@@ -92,6 +92,7 @@ job 日志通用格式：`/jobs/:id/logs`。
 | 修会话过期/CAPTCHA | [docs/dianxiaomi-session-health-runbook.md](docs/dianxiaomi-session-health-runbook.md) |
 | 真实店小秘校准 | [docs/real-dianxiaomi-calibration-runbook.md](docs/real-dianxiaomi-calibration-runbook.md) |
 | 选择器配置 | [docs/dianxiaomi-selector-config.md](docs/dianxiaomi-selector-config.md) + [validation](docs/dianxiaomi-selector-config-validation.md) |
+| 品类校验/回写/诊断 | [docs/dianxiaomi-category-selection.md](docs/dianxiaomi-category-selection.md) |
 | 故障恢复批跑 | [docs/recovery-run.md](docs/recovery-run.md) |
 | 浏览器插件构建 | [docs/extension-build.md](docs/extension-build.md) |
 | Playwright 自动化 | [docs/playwright-temu-automation.md](docs/playwright-temu-automation.md) |
