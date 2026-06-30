@@ -177,6 +177,7 @@ type MediaToolSafetyItem = {
   retryable?: boolean
   error?: string | null
   preparation?: Record<string, unknown>
+  selectAllChecked?: boolean | null
   locator: LocatorDescriptor | null
 }
 
@@ -728,6 +729,69 @@ const fetchDianxiaomiProductCategorySnapshot = async (page: Page) => {
       status: null,
       error: error instanceof Error ? error.message : String(error)
     }
+  }
+}
+
+// Read existing product image URLs from Dianxiaomi's edit.json. Legacy "page
+// reference" work items carry no images, but the listing's edit.json exposes
+// them: mainProductSkuSpecReqsList groups them by color variant (each color's
+// previewImgUrls is a "|"-joined URL list), and materialImgUrl is a fallback.
+// Returns a flat, deduped URL list — fillSkuImageLinks handles 3:4 conversion
+// (via weserv) and reuse-to-3, so a flat list is enough to clear the save gate.
+const fetchProductImagesFromEditJson = async (page: Page): Promise<string[]> => {
+  const productId = (() => {
+    try {
+      return toNonEmptyText(new URL(page.url()).searchParams.get("id"))
+    } catch {
+      return null
+    }
+  })()
+  if (!productId) {
+    return []
+  }
+
+  try {
+    const response = await page.context().request.get(
+      `https://www.dianxiaomi.com/api/popTemuProduct/edit.json?id=${productId}`
+    )
+    if (!response.ok()) {
+      return []
+    }
+    const payload = await response.json().catch(() => null) as {
+      data?: { product?: Record<string, unknown> }
+    } | null
+    const product = payload?.data?.product
+    if (!product || typeof product !== "object") {
+      return []
+    }
+
+    const urls: string[] = []
+    const pushPipeJoined = (value: unknown) => {
+      const text = toNonEmptyText(value)
+      if (!text) {
+        return
+      }
+      for (const part of text.split("|")) {
+        const url = part.trim()
+        if (/^https?:\/\//i.test(url)) {
+          urls.push(url)
+        }
+      }
+    }
+
+    const specList = product.mainProductSkuSpecReqsList ?? product.mainProductSkuSpecReqs
+    if (Array.isArray(specList)) {
+      for (const spec of specList) {
+        pushPipeJoined((spec as Record<string, unknown>)?.previewImgUrls)
+      }
+    }
+    pushPipeJoined(product.materialImgUrl)
+    pushPipeJoined(product.mainImage)
+    pushPipeJoined(product.extraImages)
+
+    return Array.from(new Set(urls))
+  } catch {
+    return []
   }
 }
 
@@ -12903,6 +12967,13 @@ const applyUnattendedMediaTools = async (
       }
 
       const mediaSurface = await getLatestMediaDialog(page)
+      // The 批量编辑 (image editor) dialog requires images to be selected before
+      // the 确定 apply button does anything; clicking apply with 已选中：0 returns
+      // "请选择要编辑的图片". batch-resize handles this inside prepareBatchResizeDialog,
+      // so only the image-editor dialog path needs the explicit 选择全部 tick here.
+      if (tool.id === "image-editor" && mediaSurface) {
+        tool.selectAllChecked = await ensureCheckboxNearText(mediaSurface, "选择全部", true)
+      }
       const applyButton = await findMediaApplyButtonForTool(page, config, tool)
       tool.applyButton = await describeLocator(applyButton)
       if (!applyButton) {
@@ -14298,13 +14369,24 @@ export const fillDraft = async (
   results.push(await normalizeOriginProvince(page))
   results.push(await fillSkuPricing(page, taskDraft.skuPricing, config))
   console.log("fill-draft stage: sku pricing completed")
-  if (productImages.length > 0) {
-    results.push(await fillSkuImageLinks(page, productImages))
+  // Legacy "page reference" work items carry no product images, so fillSkuImageLinks
+  // would skip and save-draft fails the "每色3图" gate. Recover the listing's own
+  // images from edit.json on the spot when none were passed in.
+  let effectiveProductImages = productImages
+  if (effectiveProductImages.length === 0) {
+    const recoveredImages = await fetchProductImagesFromEditJson(page)
+    if (recoveredImages.length > 0) {
+      effectiveProductImages = recoveredImages
+      console.log(`fill-draft stage: recovered ${recoveredImages.length} product image(s) from edit.json`)
+    }
+  }
+  if (effectiveProductImages.length > 0) {
+    results.push(await fillSkuImageLinks(page, effectiveProductImages))
     console.log("fill-draft stage: sku image links completed")
-    results.push(await normalizeDescriptionImageModules(page, productImages))
+    results.push(await normalizeDescriptionImageModules(page, effectiveProductImages))
     console.log("fill-draft stage: description image modules normalized")
   } else {
-    results.push(stepResult("fill-sku-image-links", "Fill SKU image links", "skipped", "Task has no product images"))
+    results.push(stepResult("fill-sku-image-links", "Fill SKU image links", "skipped", "Task has no product images and none could be recovered from edit.json"))
     results.push(stepResult("normalize-description-image-modules", "Normalize description image modules", "skipped", "Task has no product images"))
   }
   results.push(await normalizeSizeChart(page))

@@ -572,3 +572,12 @@ Next, continue hardening the unattended publish success/failure loop: add route-
 - **测试固化**：[automation-runner.test.ts](../apps/server/test/automation-runner.test.ts) 所有"完整/ready"型 fixture 显式补 `categoryHint: { label: "Home & Garden" }`，否则被新必填校验拉回 `needs-revision`，破坏 publish/recovery 路由断言。
 - **验证**：`npm test --workspace @temu-ai-ops/server` 通过；`npm run typecheck --workspace @temu-ai-ops/automation` 通过（含两个新脚本）。
 - **退出条件**：采集/录入阶段稳定带品类信号，或 `normalizeCategorySelection` 公共品类回退足够稳，则这两个过渡工具可下线。
+
+### 阻塞墙推进：媒体 + 图片缺失（2026/06/29）
+
+完整诊断见 [docs/blocking-walls-diagnosis.md](blocking-walls-diagnosis.md)。本轮把真实写链路从 `save-draft` 卡点继续往前推：
+
+- **墙 2 媒体工具（部分解）**：image-editor「批量编辑」弹窗第一层 bug（没选图就点确定 → 店小秘报「请选择要编辑的图片」，已选中 0）已修——apply 前调 `ensureCheckboxNearText(mediaSurface, "选择全部", true)`（[dianxiaomi-adapter.ts](../apps/automation/src/adapters/dianxiaomi-adapter.ts) `applyUnattendedMediaTools` 内，仅 `tool.id === "image-editor"` 路径）。第二层「点确定弹窗不推进」未真修，临时方案仍是把 image-editor 移出 `mediaAutomationTools` 白名单放行 submit。
+- **墙 3 图片缺失（已写修复，未真实验证）**：234/238 个「页面引用型」work item 完全没有图片 URL → fill 阶段 `fillSkuImageLinks` skip → save-draft 被「服装类颜色属性必须上传3张图片」拒。修复：新增 `fetchProductImagesFromEditJson(page)` 从店小秘 `edit.json`（`mainProductSkuSpecReqsList[].previewImgUrls`，`|` 分隔按色变体；`materialImgUrl`/`mainImage`/`extraImages` 兜底）即时把现有图捞回，`fillDraft` 在 `productImages` 为空时调用它，恢复后正常走 `fillSkuImageLinks` + `normalizeDescriptionImageModules`。`npm run typecheck --workspace @temu-ai-ops/automation` 通过。**尚未在真实页面跑过 fill→save 验证能否过「每色3图」门**。
+- **墙 4 主题颜色（新发现，仅探针）**：save 还会被「主题颜色至少需要选一个」拒。只读探针 [probe-theme-color-structure.ts](../apps/automation/src/probe-theme-color-structure.ts) 已就位（dump 主题颜色提及 + `.skuAttrItem_1001` SKC 勾选态 + color-table 行），**适配代码未写**，下轮处理。
+- **辅助探针**：[probe-category-detection-compare.ts](../apps/automation/src/probe-category-detection-compare.ts) 对比 `textContent` vs `innerText` 两种「未选择分类」判定差异（只读）。
