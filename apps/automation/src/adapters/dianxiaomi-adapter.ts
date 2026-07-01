@@ -12,6 +12,20 @@ import {
 } from "../common"
 import { findByConfiguredSelectors, loadSelectorConfig, type DianxiaomiSelectorConfig } from "../selector-config"
 
+// tsx runs with esbuild keepNames=true, which wraps named functions/consts in a
+// `__name(fn, "name")` helper defined only at module top level. When Playwright
+// serializes an evaluate callback whose body declares a named function/const, the
+// injected `__name(...)` call reaches the browser without its helper and throws
+// `ReferenceError: __name is not defined` — silently failing surface probes. Define
+// a no-op `__name` in the page (current doc + every future navigation) so those
+// callbacks resolve it. Idempotent; safe to call repeatedly.
+const ESBUILD_NAME_HELPER_SOURCE =
+  "globalThis.__name = globalThis.__name || function (target) { return target }"
+const hardenPageForEsbuildEvaluate = async (page: Page) => {
+  await page.addInitScript(ESBUILD_NAME_HELPER_SOURCE).catch(() => undefined)
+  await page.evaluate(ESBUILD_NAME_HELPER_SOURCE).catch(() => undefined)
+}
+
 export type FieldKind = "title" | "description" | "price" | "stock" | "attribute"
 
 export type StepStatus = "done" | "failed" | "skipped"
@@ -3328,6 +3342,30 @@ const WOMENS_BOTTOM_SIZE_CHART_DEFAULTS: Record<string, [string, string, string,
 
 const WOMENS_BOTTOM_SIZE_CHART_FALLBACK = ["68", "100", "100", "68"] as const
 
+// 女上装 (women's tops) size charts expose two required metrics: 胸围全围 (full
+// bust) and 衣长 (garment length), in cm. Values below follow a conventional
+// finished-garment progression so a listing whose category offers no reusable
+// template can still clear the "请完善尺码表" save gate.
+const WOMENS_TOP_SIZE_CHART_DEFAULTS: Record<string, [string, string]> = {
+  XXS: ["84", "58"],
+  XS: ["88", "60"],
+  S: ["92", "62"],
+  M: ["96", "64"],
+  L: ["100", "66"],
+  XL: ["104", "68"],
+  XXL: ["108", "70"],
+  "ONE-SIZE": ["96", "64"],
+  "ONE SIZE": ["96", "64"],
+  "ASIAN XS": ["86", "58"],
+  "ASIAN S": ["90", "60"],
+  "ASIAN M": ["94", "62"],
+  "ASIAN L": ["98", "64"],
+  "ASIAN XL": ["102", "66"],
+  "ASIAN XXL": ["106", "68"]
+}
+
+const WOMENS_TOP_SIZE_CHART_FALLBACK = ["96", "64"] as const
+
 const normalizeSizeLabelKey = (value: string) =>
   normalizeFeedbackText(value)
     .replace(/\s+/g, " ")
@@ -3483,6 +3521,105 @@ const applyManualSizeChartFallback = async (modal: Locator, sizeCategoryText: st
       rows: filledRows
     }
   }
+
+  const isWomensTopCategory =
+    category.includes("女上装")
+    || category.includes("上装")
+    || category.includes("上衣")
+    || category.includes("针织")
+    || category.includes("T恤")
+    || category.toLowerCase().includes("top")
+
+  if (isWomensTopCategory) {
+    const rows = modal.locator("table tr")
+    const rowCount = Math.min(await rows.count().catch(() => 0), 16)
+    let filledInputs = 0
+    const filledRows: Array<{
+      sizeLabel: string
+      values: string[]
+    }> = []
+
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      const row = rows.nth(rowIndex)
+      if (!await row.isVisible().catch(() => false)) {
+        continue
+      }
+
+      const cells = row.locator("td")
+      if (await cells.count().catch(() => 0) < 2) {
+        continue
+      }
+
+      const sizeLabel = normalizeFeedbackText(await cells.first().innerText().catch(() => ""))
+      if (!sizeLabel) {
+        continue
+      }
+
+      const fallbackValues = WOMENS_TOP_SIZE_CHART_DEFAULTS[normalizeSizeLabelKey(sizeLabel)]
+        ?? [...WOMENS_TOP_SIZE_CHART_FALLBACK]
+      const inputCandidates = row.locator("input")
+      const inputCount = Math.min(await inputCandidates.count().catch(() => 0), 8)
+      const editableInputs: Locator[] = []
+      for (let inputIndex = 0; inputIndex < inputCount; inputIndex += 1) {
+        const input = inputCandidates.nth(inputIndex)
+        if (!await input.isVisible().catch(() => false)) {
+          continue
+        }
+
+        const inputType = await input.evaluate((element) => (element as HTMLInputElement).type || "").catch(() => "")
+        if (["checkbox", "radio", "search", "hidden", "button", "submit", "file"].includes(inputType.toLowerCase())) {
+          continue
+        }
+
+        editableInputs.push(input)
+      }
+
+      if (editableInputs.length === 0) {
+        continue
+      }
+
+      const appliedValues: string[] = []
+      for (let inputIndex = 0; inputIndex < Math.min(editableInputs.length, fallbackValues.length); inputIndex += 1) {
+        const input = editableInputs[inputIndex]
+        const currentValue = await readFieldValue(input).catch(() => "")
+        if (currentValue.trim()) {
+          appliedValues.push(currentValue.trim())
+          continue
+        }
+
+        const nextValue = fallbackValues[inputIndex] ?? fallbackValues.at(-1) ?? ""
+        if (!nextValue) {
+          continue
+        }
+
+        await fillTextField(input, nextValue)
+        const actualValue = await readFieldValue(input).catch(() => "")
+        if (actualValue.trim()) {
+          filledInputs += 1
+          appliedValues.push(actualValue.trim())
+        }
+      }
+
+      if (appliedValues.length > 0) {
+        filledRows.push({
+          sizeLabel,
+          values: appliedValues
+        })
+      }
+    }
+
+    return {
+      applied: filledInputs > 0,
+      reason: filledInputs > 0
+        ? `Filled ${filledInputs} blank metric inputs from women-top defaults`
+        : "No compatible blank metric inputs were filled",
+      category,
+      filledInputs,
+      templateNameApplied: null,
+      rows: filledRows
+    }
+  }
+
   if (!category.includes("文胸")) {
     return {
       applied: false,
@@ -6912,6 +7049,7 @@ export const inspectDianxiaomiTargetSurface = async (
   page: Page,
   config: DianxiaomiSelectorConfig = {}
 ) => {
+  await hardenPageForEsbuildEvaluate(page)
   const pageUrl = page.url()
   const pageTitle = await page.title().catch(() => "")
   const host = getCurrentHost(pageUrl)
@@ -6926,8 +7064,8 @@ export const inspectDianxiaomiTargetSurface = async (
   const rows = await findSkuRows(page, config)
   const priceField = rows.length > 0 ? null : await findField(page, "price", config)
   const stockField = rows.length > 0 ? null : await findField(page, "stock", config)
-  const saveButton = await findButtonByKeywords(page, SAVE_BUTTON_KEYWORDS, config.buttons?.save)
-  const submitButton = await findButtonByKeywords(page, SUBMIT_BUTTON_KEYWORDS, config.buttons?.submit)
+  const saveButton = await findInteractiveByKeywords(page, SAVE_BUTTON_KEYWORDS, config.buttons?.save)
+  const submitButton = await findInteractiveByKeywords(page, SUBMIT_BUTTON_KEYWORDS, config.buttons?.submit)
   const mediaToolCount = (await collectMediaToolCandidates(page, config)).filter((tool) => tool.locator).length
   const fieldReadiness: TargetSurfaceInspection["fieldReadiness"] = {
     title: await presentFlag(titleField),
@@ -7019,6 +7157,8 @@ export const waitForPublishPage = async (
   let prompted = false
   let autoNavigationAttempts = 0
   let autoRefreshMatchingTargetAttempts = 0
+
+  await hardenPageForEsbuildEvaluate(page)
 
   while (Date.now() < deadline) {
     if (await hasPublishSurface(page, config)) {
@@ -7279,7 +7419,7 @@ const findInteractiveByKeywords = async (page: Page, keywords: string[], selecto
       page.getByRole("menuitem", { name: pattern }),
       page.locator("button, a, [role='button'], [role='menuitem'], input[type='button']").filter({ hasText: pattern }),
       page.locator(valueSelector),
-      page.locator("[onclick], [tabindex]:not([tabindex='-1']), [class*='btn' i], [class*='button' i], [class*='tool' i], [class*='action' i], [class*='operate' i], [class*='menu' i]").filter({ hasText: pattern })
+      page.locator("[onclick], [tabindex]:not([tabindex='-1']), [class*='btn' i], [class*='button' i], [class*='link' i], [class*='tool' i], [class*='action' i], [class*='operate' i], [class*='menu' i]").filter({ hasText: pattern })
     ])
 
     if (match) {

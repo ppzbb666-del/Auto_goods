@@ -49,7 +49,12 @@ type ExecutionReport = {
 }
 
 const NON_BLOCKING_FAILURE_STEPS = new Set([
-  "media-processing-plan"
+  "media-processing-plan",
+  // Deleting an invalid description image module is best-effort cosmetic cleanup
+  // of the description body; it is not a Dianxiaomi save precondition (the hard
+  // gate is the SKU "每色3图" variant images). A failure here must not drop the
+  // fill report to "partial" and stop the full-flow from reaching save-draft.
+  "normalize-description-image-modules"
 ])
 
 const getReportStatus = (steps: AutomationStepResult[]): ExecutionReport["status"] => {
