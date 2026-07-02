@@ -11472,8 +11472,19 @@ const clickSubmitConfirmIfPresent = async (page: Page) => {
 const runSubmitAttempt = async (
   page: Page,
   config: DianxiaomiSelectorConfig,
-  attempt: number
+  attempt: number,
+  editPageTarget?: { productId: string; editUrl: string } | null
 ): Promise<SubmitAttemptResult> => {
+  // Observed live: a submit click (or a stray confirm click) can navigate off
+  // the edit page entirely (product list / ERP home) — later attempts then
+  // search a page that has no submit button. Steer back to the edit page
+  // before doing anything else.
+  if (editPageTarget && dianxiaomiProductIdFromUrl(page.url()) !== editPageTarget.productId) {
+    console.log(`submit attempt ${attempt}: page drifted to ${page.url()}; navigating back to the edit page`)
+    await page.goto(editPageTarget.editUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined)
+    await page.waitForTimeout(2_500)
+  }
+
   // The 运营公告 notice modal (and any leftover success dialog) overlays a
   // freshly loaded edit page and intercepts pointer events — the submit click
   // then times out ("locator resolved ... attempting click action"). Clear
@@ -11545,6 +11556,12 @@ const runSubmitAttempt = async (
 // (dxmOfflineState / errMsg).
 const SUBMIT_ACCEPTED_TOAST_PATTERN = /已提交发布/
 const PUBLISH_FAIL_STATE = "publishFail"
+// States that prove the submission entered Temu's publish pipeline. A product
+// sitting at waitPublish has merely been saved/queued locally — observed live:
+// a 发布 click that failed to register left the item at offline/waitPublish
+// for 40+ minutes, while a real submission moves it to publishing within
+// seconds (then publishSuccess/publishFail).
+const PUBLISH_PIPELINE_STATES = new Set(["publishing", "publishSuccess", PUBLISH_FAIL_STATE])
 const PUBLISH_STATE_POLL_INTERVAL_MS = 5_000
 const PUBLISH_STATE_POLL_TIMEOUT_MS = 90_000
 
@@ -11555,19 +11572,24 @@ type DianxiaomiPublishStateSnapshot = {
   errMsg: string | null
 }
 
-const readDianxiaomiPublishState = async (page: Page): Promise<DianxiaomiPublishStateSnapshot> => {
+const dianxiaomiProductIdFromUrl = (value: string): string | null => {
+  try {
+    return toNonEmptyText(new URL(value).searchParams.get("id"))
+  } catch {
+    return null
+  }
+}
+
+const readDianxiaomiPublishState = async (page: Page, productIdOverride?: string | null): Promise<DianxiaomiPublishStateSnapshot> => {
   const unavailable: DianxiaomiPublishStateSnapshot = {
     available: false,
     dxmState: null,
     dxmOfflineState: null,
     errMsg: null
   }
-  let productId: string | null = null
-  try {
-    productId = toNonEmptyText(new URL(page.url()).searchParams.get("id"))
-  } catch {
-    return unavailable
-  }
+  // A successful submit navigates away from the edit page (page.url() loses
+  // the id param), so callers capture the product id up front and pass it in.
+  const productId = productIdOverride ?? dianxiaomiProductIdFromUrl(page.url())
   if (!productId) {
     return unavailable
   }
@@ -11605,9 +11627,46 @@ type DianxiaomiPublishOutcome = {
   polls: number
 }
 
+const sameDianxiaomiPublishState = (left: DianxiaomiPublishStateSnapshot, right: DianxiaomiPublishStateSnapshot) =>
+  left.dxmState === right.dxmState
+  && left.dxmOfflineState === right.dxmOfflineState
+  && left.errMsg === right.errMsg
+
+// Short poll for ANY publish-state transition away from the pre-submit
+// baseline. Observed live: clicking 发布+确认 navigates to the product list
+// (no toast readable, submit button gone) while the product moves
+// draft → offline/waitPublish — the state change is the only reliable
+// evidence the submission registered.
+const waitForDianxiaomiPublishStateChange = async (
+  page: Page,
+  productId: string | null,
+  baseline: DianxiaomiPublishStateSnapshot,
+  timeoutMs: number
+): Promise<{ changed: boolean; current: DianxiaomiPublishStateSnapshot }> => {
+  const startedAt = Date.now()
+  let current: DianxiaomiPublishStateSnapshot = {
+    available: false,
+    dxmState: null,
+    dxmOfflineState: null,
+    errMsg: null
+  }
+  if (!baseline.available) {
+    return { changed: false, current }
+  }
+  while (Date.now() - startedAt < timeoutMs) {
+    current = await readDianxiaomiPublishState(page, productId)
+    if (current.available && !sameDianxiaomiPublishState(current, baseline)) {
+      return { changed: true, current }
+    }
+    await page.waitForTimeout(2_500)
+  }
+  return { changed: false, current }
+}
+
 const waitForDianxiaomiPublishOutcome = async (
   page: Page,
   baseline: DianxiaomiPublishStateSnapshot,
+  productId: string | null,
   timeoutMs = PUBLISH_STATE_POLL_TIMEOUT_MS
 ): Promise<DianxiaomiPublishOutcome> => {
   const startedAt = Date.now()
@@ -11621,7 +11680,7 @@ const waitForDianxiaomiPublishOutcome = async (
   let polls = 0
 
   while (Date.now() - startedAt < timeoutMs) {
-    const current = await readDianxiaomiPublishState(page)
+    const current = await readDianxiaomiPublishState(page, productId)
     polls += 1
     if (current.available) {
       if (
@@ -11645,7 +11704,7 @@ const waitForDianxiaomiPublishOutcome = async (
           || baseline.dxmOfflineState !== PUBLISH_FAIL_STATE
           || current.errMsg !== baseline.errMsg
         )
-      if (freshFailure || current.dxmState === "online") {
+      if (freshFailure || current.dxmState === "online" || current.dxmOfflineState === "publishSuccess") {
         break
       }
     }
@@ -11655,11 +11714,23 @@ const waitForDianxiaomiPublishOutcome = async (
   if (!final.available) {
     return { verdict: "unverifiable", baseline, final, observedChange, polls }
   }
+  // Conservative: any publishFail at the end of the window is a failure, even
+  // when it matches a stale baseline — a false "blocked" beats a false success
+  // that leaves the item sitting silently in the 发布失败 tab. And "no fail"
+  // alone is not success evidence: an item stuck at waitPublish for the whole
+  // window never entered Temu's pipeline, so the submission cannot be called
+  // verified.
+  const verdict: DianxiaomiPublishOutcome["verdict"] = final.dxmOfflineState === PUBLISH_FAIL_STATE
+    ? "publish-fail"
+    : (
+      observedChange
+      || final.dxmState === "online"
+      || PUBLISH_PIPELINE_STATES.has(final.dxmOfflineState ?? "")
+    )
+      ? "no-fail-detected"
+      : "unverifiable"
   return {
-    // Conservative: any publishFail at the end of the window is a failure,
-    // even when it matches a stale baseline — a false "blocked" beats a false
-    // success that leaves the item sitting silently in the 发布失败 tab.
-    verdict: final.dxmOfflineState === PUBLISH_FAIL_STATE ? "publish-fail" : "no-fail-detected",
+    verdict,
     baseline,
     final,
     observedChange,
@@ -11674,54 +11745,31 @@ const submitListingWithVerification = async (
 ) => {
   const attempts: SubmitAttemptResult[] = []
   const maxAttempts = Math.max(1, Math.min(10, options.submitMaxAttempts))
-  const baselinePublishState = await readDianxiaomiPublishState(page)
+  // Capture the product id BEFORE clicking: a successful submit navigates to
+  // the product list page, so page.url() loses the ?id= afterwards.
+  const productId = dianxiaomiProductIdFromUrl(page.url())
+    ?? dianxiaomiProductIdFromUrl(options.targetUrl ?? "")
+  const editPageTarget = productId
+    ? { productId, editUrl: `https://www.dianxiaomi.com/web/popTemu/edit?id=${productId}` }
+    : null
+  const baselinePublishState = await readDianxiaomiPublishState(page, productId)
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const result = await runSubmitAttempt(page, config, attempt)
-    attempts.push(result)
-    console.log(`submit-listing attempt ${attempt}/${maxAttempts}: ${result.state} ${result.message}`)
+  const resolveAcceptedSubmission = async (acceptMessage: string) => {
+    const dismissal = await dismissSaveSuccessModalIfPresent(page)
+    const publishOutcome = await waitForDianxiaomiPublishOutcome(page, baselinePublishState, productId)
+    console.log(`submit-listing publish verdict: ${publishOutcome.verdict} (state=${publishOutcome.final.dxmOfflineState ?? publishOutcome.final.dxmState ?? "unknown"})`)
 
-    const submissionAccepted = (result.state === "success" && result.feedbackChanged)
-      || SUBMIT_ACCEPTED_TOAST_PATTERN.test(result.message ?? "")
-
-    if (submissionAccepted) {
-      const dismissal = await dismissSaveSuccessModalIfPresent(page)
-      const publishOutcome = await waitForDianxiaomiPublishOutcome(page, baselinePublishState)
-      console.log(`submit-listing publish verdict: ${publishOutcome.verdict} (state=${publishOutcome.final.dxmOfflineState ?? publishOutcome.final.dxmState ?? "unknown"})`)
-
-      if (publishOutcome.verdict === "publish-fail") {
-        return stepResult(
-          "submit-listing",
-          "Submit listing",
-          "failed",
-          `Dianxiaomi accepted the submission but Temu publish failed: ${publishOutcome.final.errMsg ?? PUBLISH_FAIL_STATE}`,
-          {
-            attempts,
-            maxAttempts,
-            success: false,
-            verified: true,
-            submissionAccepted: true,
-            publishOutcome,
-            dismissedSuccessModal: dismissal.dismissed,
-            matchedSuccessModal: dismissal.matched,
-            successModalText: dismissal.dialogText || null
-          }
-        )
-      }
-
-      const publishStateNote = publishOutcome.verdict === "no-fail-detected"
-        ? `publish state: ${publishOutcome.final.dxmOfflineState ?? publishOutcome.final.dxmState ?? "unknown"}`
-        : "publish state could not be verified via edit.json"
+    if (publishOutcome.verdict === "publish-fail") {
       return stepResult(
         "submit-listing",
         "Submit listing",
-        "done",
-        `Dianxiaomi submit succeeded: ${result.message || "success"} (${publishStateNote})`,
+        "failed",
+        `Dianxiaomi accepted the submission but Temu publish failed: ${publishOutcome.final.errMsg ?? PUBLISH_FAIL_STATE}`,
         {
           attempts,
           maxAttempts,
-          success: true,
-          verified: publishOutcome.verdict === "no-fail-detected",
+          success: false,
+          verified: true,
           submissionAccepted: true,
           publishOutcome,
           dismissedSuccessModal: dismissal.dismissed,
@@ -11731,7 +11779,85 @@ const submitListingWithVerification = async (
       )
     }
 
+    if (publishOutcome.verdict === "unverifiable") {
+      return stepResult(
+        "submit-listing",
+        "Submit listing",
+        "failed",
+        `Dianxiaomi appeared to accept the submission but the publish state never entered Temu's pipeline (stuck at ${publishOutcome.final.dxmOfflineState ?? publishOutcome.final.dxmState ?? "unknown"}); treating the submission as not registered`,
+        {
+          attempts,
+          maxAttempts,
+          success: false,
+          verified: false,
+          submissionAccepted: true,
+          publishOutcome,
+          dismissedSuccessModal: dismissal.dismissed,
+          matchedSuccessModal: dismissal.matched,
+          successModalText: dismissal.dialogText || null
+        }
+      )
+    }
+
+    return stepResult(
+      "submit-listing",
+      "Submit listing",
+      "done",
+      `Dianxiaomi submit succeeded: ${acceptMessage || "success"} (publish state: ${publishOutcome.final.dxmOfflineState ?? publishOutcome.final.dxmState ?? "unknown"})`,
+      {
+        attempts,
+        maxAttempts,
+        success: true,
+        verified: true,
+        submissionAccepted: true,
+        publishOutcome,
+        dismissedSuccessModal: dismissal.dismissed,
+        matchedSuccessModal: dismissal.matched,
+        successModalText: dismissal.dialogText || null
+      }
+    )
+  }
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const result = await runSubmitAttempt(page, config, attempt, editPageTarget)
+    attempts.push(result)
+    console.log(`submit-listing attempt ${attempt}/${maxAttempts}: ${result.state} ${result.message}`)
+
+    let submissionAccepted = (result.state === "success" && result.feedbackChanged)
+      || SUBMIT_ACCEPTED_TOAST_PATTERN.test(result.message ?? "")
+
+    // Ambiguous click: 发布 (+确认) was clicked but no readable feedback
+    // appeared. Observed live: the click navigates to the product list, the
+    // toast is missed, and the edit page (with its submit button) is gone —
+    // yet the submission DID register (dxmState flipped draft → offline).
+    // Ask edit.json whether the publish state moved off the baseline before
+    // declaring the attempt dead; retrying blindly just burns attempts on a
+    // page that no longer has a submit button.
+    if (!submissionAccepted && result.clickedSubmit && result.state !== "failure") {
+      const transition = await waitForDianxiaomiPublishStateChange(page, productId, baselinePublishState, 20_000)
+      if (transition.changed) {
+        console.log(`submit-listing attempt ${attempt}: no page feedback, but edit.json state moved ${baselinePublishState.dxmOfflineState ?? baselinePublishState.dxmState} -> ${transition.current.dxmOfflineState ?? transition.current.dxmState}; treating the submission as registered`)
+        submissionAccepted = true
+      }
+    }
+
+    if (submissionAccepted) {
+      return resolveAcceptedSubmission(result.message ?? "")
+    }
+
     await page.waitForTimeout(1500)
+  }
+
+  // Safety net: even when every attempt read as dead (e.g. a spurious failure
+  // keyword on attempt 1, then "no submit button" after navigation), the click
+  // may still have registered. One last edit.json check before declaring
+  // failure.
+  if (baselinePublishState.available) {
+    const finalState = await readDianxiaomiPublishState(page, productId)
+    if (finalState.available && !sameDianxiaomiPublishState(finalState, baselinePublishState)) {
+      console.log(`submit-listing: attempts exhausted but edit.json state moved ${baselinePublishState.dxmOfflineState ?? baselinePublishState.dxmState} -> ${finalState.dxmOfflineState ?? finalState.dxmState}; treating the submission as registered`)
+      return resolveAcceptedSubmission("publish state changed after submit clicks")
+    }
   }
 
   const lastAttempt = attempts[attempts.length - 1]
