@@ -4265,6 +4265,16 @@ const getSubmitListingStep = (report) => report?.steps.find((step) => step.id ==
 const isVerifiedSubmitAttemptSuccess = (attempt) => Boolean(attempt
     && typeof attempt === "object"
     && attempt.state === "success");
+// The adapter's edit.json-verified verdict: the acceptance toast (「产品已提交
+// 发布…」) trips the failure-keyword matcher, so the last attempt's state can
+// read "failure" even when the submission registered and the publish state was
+// verified via edit.json. Trust the polled verdict over the toast parse.
+const isEditJsonVerifiedPublishOutcome = (data) => Boolean(data
+    && typeof data === "object"
+    && data.submissionAccepted === true
+    && data.publishOutcome
+    && typeof data.publishOutcome === "object"
+    && data.publishOutcome.verdict === "no-fail-detected");
 const getPublishOutcomeRoute = (status, diagnosis) => {
     if (status === "not-attempted") {
         return "not-attempted";
@@ -4293,7 +4303,9 @@ export const buildDianxiaomiPublishOutcomeForFullFlow = (job, failureDiagnosis =
     const maxAttempts = readPositiveNumber(data.maxAttempts, attempts);
     const verified = data.verified === true;
     const lastAttempt = attemptRecords[attemptRecords.length - 1];
-    const success = data.success === true && verified && isVerifiedSubmitAttemptSuccess(lastAttempt);
+    const success = data.success === true
+        && verified
+        && (isVerifiedSubmitAttemptSuccess(lastAttempt) || isEditJsonVerifiedPublishOutcome(data));
     const status = submitStage.status === "pending" || submitStage.status === "skipped"
         ? "not-attempted"
         : success
