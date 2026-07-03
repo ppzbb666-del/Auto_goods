@@ -166,15 +166,30 @@ export function SelectorCalibrationJobCard({ job }: { job: SelectorCalibrationJo
   })
 
   return (
-    <JobCardShell
-      status={job.status}
-      startedAt={job.startedAt}
-      exitCode={job.exitCode}
-      id={job.id}
-      logPath={job.logPath}
-      artifactDir={job.artifactDir}
-      error={job.error}
-      log={log}
-    />
+    <div className="job-stack">
+      <JobCardShell
+        status={job.status}
+        startedAt={job.startedAt}
+        exitCode={job.exitCode}
+        id={job.id}
+        logPath={job.logPath}
+        artifactDir={job.artifactDir}
+        error={job.error}
+        log={log}
+      />
+      {job.saveConfig ? (
+        <div className={`automation-report ${job.selectorConfigResult ? "completed" : job.selectorConfigError ? "failed" : "partial"}`}>
+          <div className="report-main">
+            <strong>selector config</strong>
+            <span>{job.selectorConfigResult ? "saved" : job.selectorConfigError ? "not saved" : "waiting"}</span>
+          </div>
+          <div className="report-detail">
+            {job.selectorConfigResult ? <span>{job.selectorConfigResult.configPath}</span> : null}
+            {job.selectorConfigResult ? <span>{job.selectorConfigResult.sourceDiagnosisCreatedAt}</span> : null}
+            {job.selectorConfigError ? <span>{job.selectorConfigError}</span> : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
   )
 }

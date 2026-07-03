@@ -1,9 +1,35 @@
 # Current Status
 
-Updated: 2026-06-05
+Updated: 2026-06-06
 
 ## Completed In This Iteration
 
+- Playwright snapshot collection and the browser extension queue-admission path now both extract typed Dianxiaomi image stats (`mainImage`, `detailImage`, `skuImage`) from visible product images. The extractor records per-type count, min/max dimensions, unknown dimension count, and visible file-size hints when Dianxiaomi shows them on the page.
+- Image type classification now avoids broad page/container text and skips neighboring blocks that contain images, tables, or form controls. This prevents nearby SKU/detail sections from polluting main/detail/SKU image readiness checks.
+- Selector calibration smoke now asserts typed image extraction end to end: fixture main/detail/SKU images are classified separately, dimensions are captured, and the SKU `500KB` hint is normalized to `0.488MB`.
+- Real Dianxiaomi calibration against `https://www.dianxiaomi.com/web/popTemu/edit?id=161406453047896278` completed in read-only media mode (`sample-media-actions=false`). It recognized `targetSurface=real-dianxiaomi`, found typed image stats (`mainImage=1`, `detailImage=4`, `skuImage=31`), and kept media tool execution selectors out of the generated real config because safe sampled tool actions were not requested.
+- Real Dianxiaomi description handling now accepts the sampled page's existing module/image description preview. Snapshot diagnosis reports `description=ok`, selector config generation logs `description=preserved`, and the fill/inspect adapter preserves the existing Dianxiaomi module description instead of requiring a direct text editor.
+- Real Dianxiaomi metadata extraction now also captures `variantCount`, `manualDocument`, `video`, `sizeChart`, and `fulfillment` on the sampled Temu edit page. The latest read-only calibration observed `variantCount=29`, `manualDocument=missing`, `video=present`, `sizeChart=present`, and `fulfillment=semi-managed`.
+- Real media calibration now distinguishes dialog tools from instant page actions. On the sampled real page, `一键翻译` and `图片检测` are recognized but marked `instant-action-blocked`, so calibration does not click them and selector config generation does not promote them into unattended execution.
+- Current real-page gap: executable media selectors for white background, image editor, and batch resize are still not visible on the sampled edit page and remain unpromoted until a safe open/close surface is found or an intentional instant-action execution path is proven.
+- Added [docs/temu-dianxiaomi-requirements-matrix.md](docs/temu-dianxiaomi-requirements-matrix.md) to pin the current high-confidence Temu and Dianxiaomi rules, tool limits, instant-action blockers, and remaining model gaps.
+- Dianxiaomi requirement preset inference is now live for queue scoring. Items whose page/profile/text hints contain `Temu local`, `local listing`, `contribution sku`, or size-chart markers are rescored with the local preset automatically, including the `500`-character title limit, while the default unattended path stays on the semi-managed preset.
+- Dianxiaomi work item snapshots now persist optional preflight metadata for `variantCount`, `manualDocument`, `video`, `sizeChart`, and `fulfillment`. These fields survive later work-item updates instead of being dropped on the next save.
+- Server-side listing readiness now enforces metadata-driven checks when those snapshot fields are present:
+  - variants must stay at or below `20`
+  - manual documents must stay `PDF`, `<= 15 MB`, and English-only
+  - videos must stay within `1:1`, `3:4`, or `16:9`, and `<= 500 MB`
+  - required size charts must exist, use exactly one `jpg/jpeg/png` image, and stay `<= 3 MB`
+  - fulfillment routing marked invalid now blocks unattended readiness
+- Those metadata thresholds now live inside the Dianxiaomi requirement-rule payload itself (`listingMetadata`) instead of hardcoded planner constants, so future semi-managed/local/store-specific presets can change the variant cap or manual/video/size-chart limits without another core readiness rewrite.
+- Missing metadata still does not block the default unattended path by itself. The new checks activate only after a collector or calibration pass supplies those fields, which keeps the current Dianxiaomi flow conservative while still catching known invalid assets when they are visible.
+- Smoke coverage now proves both sides of the new rule path: `Temu local` hints switch a long-title item into the local preset successfully, bad local metadata (too many variants, wrong manual/video/size-chart assets, invalid fulfillment) rescales the item to `needs-revision`, and a real-page-style `web/popTemu/edit` sample keeps valid video/size-chart/fulfillment metadata while still blocking `variantCount=29`.
+- Dianxiaomi requirement rules now include per-image-type rules for `mainImage`, `detailImage`, and `skuImage`. Each rule can define minimum count, fixed width/height, maximum file size, whether Dianxiaomi one-click image translation is expected, whether white background is expected, whether batch resize/normalization is expected, and which native Dianxiaomi tools should satisfy the check.
+- Dianxiaomi work item snapshots now accept optional `imageTypeStats` for main/detail/SKU images. When these typed stats are present, the queue can score image count, fixed dimensions, file size, and native media-tool confirmation separately by image type.
+- Missing typed image stats do not block the unattended path by default. They become blocking only when that image type is explicitly marked `required`, keeping the real-page flow stable until the next media calibration proves the selectors and tool actions.
+- Server smoke coverage now verifies typed image rules: stricter main-image fixed size and file-size requirements rescore an existing queue item to `needs-revision`, and corrected typed image stats plus Dianxiaomi media-tool signals return it to `ready-for-automation`.
+- Real Dianxiaomi media diagnosis now recognizes page-level `one-click translation` and `image check` buttons as media-tool candidates. Selector config generation still refuses to write those real-page media selectors unless media-action sampling proves the tool opens a closeable dialog, so ambiguous one-click buttons stay out of unattended execution.
+- Real media calibration against `https://www.dianxiaomi.com/web/popTemu/edit?id=161406453047896278` completed with `targetSurface=real-dianxiaomi`. Diagnosis saw `imageTranslation=ok` and `imageManagement=ok`, but generated media tool selectors stayed empty because no safe sampled dialog/action was confirmed.
 - Unattended startup now has a dedicated `dianxiaomi-session` gate. If the latest selector diagnosis, blocked work item, or queue audit shows `login-or-captcha`, unattended startup stays blocked until a newer real Dianxiaomi diagnosis proves the logged-in profile is healthy again.
 - Queue daemon health, alerts, and recommendation priority now surface session loss as a first-class blocker. `resolve-login-or-captcha` is raised before normal queue/resume guidance, so the default unattended path does not keep trying to run with an expired Dianxiaomi session.
 - Queue daemon activation and queue-level startup prechecks now stop on unresolved Dianxiaomi login/CAPTCHA signals, not only on missing profile/config/calibration blockers.
@@ -176,6 +202,14 @@ Updated: 2026-06-05
 
 ## Validation
 
+- `npm run typecheck --workspace @temu-ai-ops/automation`
+- `npm run typecheck --workspace @temu-ai-ops/shared`
+- `npm run typecheck --workspace @temu-ai-ops/server`
+- `npm run typecheck --workspace @temu-ai-ops/dashboard`
+- `npm run build --workspace @temu-ai-ops/extension`
+- `npm run test:smoke --workspace @temu-ai-ops/server`
+- Read-only real Dianxiaomi calibration: `npm run real-calibration --workspace @temu-ai-ops/automation -- --url="https://www.dianxiaomi.com/web/popTemu/edit?id=161406453047896278" --profile=".runtime/playwright/dianxiaomi-profile" --screenshots=".runtime/real-dianxiaomi-description-preview" --headed=false --keep-open=false --sample-media-actions=false --media-automation-tools=image-translation,batch-resize,white-background,image-editor --output=".runtime/real-dianxiaomi-description-preview-selector-config.json"`; result showed `description=ok` in diagnosis and `description=preserved` in generated config.
+- Instant-action media calibration: `npm run real-calibration --workspace @temu-ai-ops/automation -- --url="https://www.dianxiaomi.com/web/popTemu/edit?id=161406453047896278" --profile=".runtime/playwright/dianxiaomi-profile" --screenshots=".runtime/real-dianxiaomi-instant-media-block" --headed=false --keep-open=false --sample-media-actions=true --media-automation-tools=image-translation,image-management --output=".runtime/real-dianxiaomi-instant-media-block-selector-config.json"`; result showed `imageTranslation=instant-blocked` and `imageManagement=instant-blocked`.
 - `npx tsc -p apps/automation/tsconfig.json --noEmit`
 - `npx tsc -p packages/shared/tsconfig.json --noEmit`
 - `npx tsc -p apps/server/tsconfig.json --noEmit`
@@ -406,7 +440,7 @@ Updated: 2026-06-05
 
 ## Next Development Target
 
-Next, continue hardening the unattended publish success/failure loop: add route-level coverage that a queue/full-flow submit result persists `publishOutcome`, updates the work item route, and feeds auto-retry/browser-recovery/manual-budget counts without adding default-screen controls.
+Next, harden how the unattended queue uses the live Dianxiaomi metadata that is now available: keep validating real-page samples against work-item readiness, decide where store/category-specific rules should replace today's global `variantCount <= 20` gate, and keep media execution conservative until safe open/close/apply surfaces are proven for white background, image editor, and batch resize.
 
 ## Code Health Refactor (2026-06-04)
 
@@ -458,7 +492,7 @@ Next, continue hardening the unattended publish success/failure loop: add route-
 ### 真实 Dianxiaomi 页面校准 runbook
 
 - 已创建 [docs/real-dianxiaomi-calibration-runbook.md](real-dianxiaomi-calibration-runbook.md)，从采集 → 诊断 → 生成 selector config → 验证 → 试跑 6 步。
-- 当前 `.runtime/dianxiaomi-selector-config.json` 是从 fixture 校准的占位符（`input[name="productTitle"]` 等），需要真实 Dianxiaomi 页面校准才能验证。
+- 当前 `.runtime/dianxiaomi-selector-config.json` 已可由真实 Dianxiaomi 页面校准生成；生产默认路径统一为 `.runtime/playwright/dianxiaomi-profile`、`.runtime/dianxiaomi-selector-config.json`、`output/playwright/`。
 - 校准工具链已就位：`apps/automation/src/snapshot.ts`（Playwright headed 模式采集）、`snapshot-diagnose.ts`（诊断）、`selector-config-generate.ts`（生成）。
 - 启动无人值守 daemon 之前必须满足的 `real Dianxiaomi calibration` 启动检查路径已明确。
 - 真实环境要求：已登录的 Chromium browser profile + 真实 Dianxiaomi 商品编辑/刊登页 URL。Headless 环境无法跑真实校准。

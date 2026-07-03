@@ -47,6 +47,7 @@ const {
   createTaskFromDianxiaomiProductWorkItem,
   exportDianxiaomiRepairPreview,
   getDianxiaomiProductWorkItem,
+  listDianxiaomiCollectedProducts,
   requeueDianxiaomiProductWorkItemAfterFix,
   saveDianxiaomiCollectedProduct,
   saveDianxiaomiProductWorkItem,
@@ -291,13 +292,15 @@ writeFileSync(publishSuccessReportPath, JSON.stringify({
             attempt: 1,
             clickedSubmit: true,
             clickedConfirm: true,
+            feedbackChanged: true,
             state: "success",
             message: "success",
             source: "toast"
           }
         ],
         maxAttempts: 3,
-        success: true
+        success: true,
+        verified: true
       }
     }
   ]
@@ -334,6 +337,72 @@ assert.equal(publishSuccessOutcome?.status, "succeeded", "successful submit repo
 assert.equal(publishSuccessOutcome?.route, "published", "successful submit reports should route to published")
 assert.equal(publishSuccessOutcome?.attempts, 1, "successful publish outcome should keep attempt count")
 assert.equal(publishSuccessOutcome?.submitStageJobId, "submit-job-success", "publish outcome should keep the submit job id")
+
+const publishUnverifiedSuccessReportPath = path.join(testDir, "publish-unverified-success-report.json")
+writeFileSync(publishUnverifiedSuccessReportPath, JSON.stringify({
+  id: "publish-unverified-success-report",
+  taskId: "task-unverified-success",
+  taskTitle: "Publish unverified success",
+  platform: "dianxiaomi",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/publish-unverified-success",
+  pageTitle: "Publish unverified success",
+  status: "completed",
+  createdAt: new Date().toISOString(),
+  screenshotPath: "",
+  steps: [
+    {
+      id: "submit-listing",
+      label: "Submit listing",
+      status: "done",
+      detail: "Dianxiaomi submit succeeded: stale success text",
+      data: {
+        attempts: [
+          {
+            attempt: 1,
+            clickedSubmit: true,
+            clickedConfirm: true,
+            feedbackChanged: false,
+            state: "success",
+            message: "stale success text",
+            source: "body"
+          }
+        ],
+        maxAttempts: 3,
+        success: true
+      }
+    }
+  ]
+}, null, 2), "utf8")
+const publishUnverifiedSuccessOutcome = buildDianxiaomiPublishOutcomeForFullFlow({
+  id: "flow-publish-unverified-success",
+  startedAt: new Date().toISOString(),
+  targetFingerprint: "publish-unverified-success",
+  artifactDir: testDir,
+  status: "completed",
+  finishedAt: new Date().toISOString(),
+  error: null,
+  input: {
+    submitAfterSave: true
+  },
+  source: "queue-run",
+  workItemId: "work-publish-unverified-success",
+  taskId: "task-unverified-success",
+  taskFile: null,
+  stages: [
+    {
+      name: "submit-listing",
+      status: "completed",
+      jobId: "submit-job-unverified-success",
+      reportPath: publishUnverifiedSuccessReportPath,
+      reportStatus: "completed",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      error: null
+    }
+  ]
+})
+assert.equal(publishUnverifiedSuccessOutcome?.status, "failed", "submit reports without verified=true should not create a succeeded publish outcome")
+assert.equal(publishUnverifiedSuccessOutcome?.route, "manual-budget", "unverified submit success should not route to published")
 
 const publishFailureReportPath = path.join(testDir, "publish-failure-report.json")
 writeFileSync(publishFailureReportPath, JSON.stringify({
@@ -444,6 +513,65 @@ assert.equal(publishOutcomeUpdatedWorkItem?.publishOutcome?.attempts, 2, "work i
 const publishOutcomeHealth = getDianxiaomiQueueDaemonHealth()
 assert(publishOutcomeHealth.workItems.publishFailed >= 1, "queue health should count failed publish outcomes")
 assert(publishOutcomeHealth.workItems.publishRecoveryCandidates >= 1, "queue health should count publish outcomes that can feed recovery handling")
+
+const multiStoreCollectedAlpha = saveDianxiaomiCollectedProduct({
+  id: "unit-multi-store-collected-alpha",
+  storeId: "store-alpha",
+  storeName: "Alpha Store",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-multi-store-shared-url",
+  pageTitle: "Alpha shared product",
+  title: "Alpha shared product",
+  category: "Alpha category",
+  images: ["https://example.com/alpha.jpg"],
+  attributes: {
+    color: "black"
+  },
+  skus: [{
+    skuName: "Alpha SKU",
+    priceCny: 11.5,
+    stock: 4,
+    attributes: {
+      color: "black"
+    },
+    rowText: "Alpha SKU 11.5 4"
+  }],
+  rawTextSample: "alpha store raw text",
+  notes: ["alpha"]
+})
+const multiStoreCollectedBeta = saveDianxiaomiCollectedProduct({
+  id: "unit-multi-store-collected-beta",
+  storeId: "store-beta",
+  storeName: "Beta Store",
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-multi-store-shared-url",
+  pageTitle: "Beta shared product",
+  title: "Beta shared product",
+  category: "Beta category",
+  images: ["https://example.com/beta.jpg"],
+  attributes: {
+    color: "white"
+  },
+  skus: [{
+    skuName: "Beta SKU",
+    priceCny: 12.5,
+    stock: 6,
+    attributes: {
+      color: "white"
+    },
+    rowText: "Beta SKU 12.5 6"
+  }],
+  rawTextSample: "beta store raw text",
+  notes: ["beta"]
+})
+assert.equal(
+  listDianxiaomiCollectedProducts(20, { storeId: "store-alpha" })[0]?.id,
+  multiStoreCollectedAlpha.id,
+  "collected products should be filterable by store id"
+)
+assert.equal(
+  listDianxiaomiCollectedProducts(20, { storeId: "store-beta" })[0]?.id,
+  multiStoreCollectedBeta.id,
+  "collected products should keep separate store buckets even with the same page URL"
+)
 
 const publishAutoRetryRouteOutcome = {
   ...publishFailureOutcome,
@@ -778,7 +906,7 @@ writeFileSync(incompleteSelectorTarget.selectorConfig, JSON.stringify({
 const incompleteSelectorReadiness = getAutomationModeReadiness("save-draft", incompleteSelectorTarget)
 assert.equal(incompleteSelectorReadiness.ready, false, "save-draft should block when required selectors are missing")
 assert(
-  incompleteSelectorReadiness.selectorBlockers?.some((issue) => issue.id === "field-description-missing"),
+  incompleteSelectorReadiness.selectorBlockers?.some((issue) => issue.id === "field-price-missing"),
   "missing required field selectors should be exposed as selector blockers"
 )
 assert(
@@ -1114,6 +1242,126 @@ const blockedManualFlowItem = await waitForWorkItemStatus(manualFullFlowFailureW
 assert(blockedManualFlowItem.failureDiagnosis, "manual queue-run safety failure should persist a work item diagnosis")
 assert.equal(blockedManualFlowItem.failureDiagnosis?.source, "queue-daemon", "manual queue-run diagnosis should keep queue source")
 assert.equal(blockedManualFlowItem.failureDiagnosis?.autoRetryRecommended, false, "manual queue-run wrong-surface failures should not auto retry")
+
+const multiStoreReadyAlpha = saveDianxiaomiProductWorkItem({
+  id: "unit-multi-store-ready-alpha",
+  storeId: "store-alpha",
+  storeName: "Alpha Store",
+  collectedProductId: multiStoreCollectedAlpha.id,
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-multi-store-ready-alpha",
+  pageTitle: "Alpha ready page",
+  title: "Alpha ready work item",
+  rawTextSample: "alpha ready work item",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    mediaToolSignals: ["image translation"]
+  },
+  status: "ready-for-automation"
+})
+const multiStoreReadyBeta = saveDianxiaomiProductWorkItem({
+  id: "unit-multi-store-ready-beta",
+  storeId: "store-beta",
+  storeName: "Beta Store",
+  collectedProductId: multiStoreCollectedBeta.id,
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-multi-store-ready-beta",
+  pageTitle: "Beta ready page",
+  title: "Beta ready work item",
+  rawTextSample: "beta ready work item",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    mediaToolSignals: ["image translation"]
+  },
+  status: "ready-for-automation"
+})
+const multiStoreQueueRun = startDianxiaomiQueueRun({
+  limit: 5,
+  url: "https://example.com/not-dianxiaomi",
+  selectorConfig: validSelectorConfigPath
+})
+assert.equal(multiStoreQueueRun.skipped, 1, "queue run without an explicit store should only pick one store cohort")
+const processedDefaultStoreWorkItemId = multiStoreQueueRun.skippedItems[0]?.workItemId
+assert(
+  [multiStoreReadyAlpha.id, multiStoreReadyBeta.id].includes(processedDefaultStoreWorkItemId ?? ""),
+  "queue run without an explicit store should process one of the ready store cohorts"
+)
+const untouchedDefaultStoreWorkItemId = processedDefaultStoreWorkItemId === multiStoreReadyAlpha.id
+  ? multiStoreReadyBeta.id
+  : multiStoreReadyAlpha.id
+assert.equal(getDianxiaomiProductWorkItem(processedDefaultStoreWorkItemId ?? "")?.status, "blocked", "selected anchor-store item should be processed by the queue run")
+assert.equal(getDianxiaomiProductWorkItem(untouchedDefaultStoreWorkItemId)?.status, "ready-for-automation", "other-store ready items should remain untouched when no store is requested")
+updateDianxiaomiProductWorkItemStatus(multiStoreReadyAlpha.id, "edited", "multi-store default queue fixture complete")
+updateDianxiaomiProductWorkItemStatus(multiStoreReadyBeta.id, "edited", "multi-store default queue fixture complete")
+
+const explicitStoreQueueAlpha = saveDianxiaomiProductWorkItem({
+  id: "unit-explicit-store-ready-alpha",
+  storeId: "store-alpha",
+  storeName: "Alpha Store",
+  collectedProductId: multiStoreCollectedAlpha.id,
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-explicit-store-ready-alpha",
+  pageTitle: "Explicit Alpha ready page",
+  title: "Explicit Alpha ready work item",
+  rawTextSample: "explicit alpha ready work item",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    mediaToolSignals: ["image translation"]
+  },
+  status: "ready-for-automation"
+})
+const explicitStoreQueueBeta = saveDianxiaomiProductWorkItem({
+  id: "unit-explicit-store-ready-beta",
+  storeId: "store-beta",
+  storeName: "Beta Store",
+  collectedProductId: multiStoreCollectedBeta.id,
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-explicit-store-ready-beta",
+  pageTitle: "Explicit Beta ready page",
+  title: "Explicit Beta ready work item",
+  rawTextSample: "explicit beta ready work item",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    mediaToolSignals: ["image translation"]
+  },
+  status: "ready-for-automation"
+})
+const explicitStoreRun = startDianxiaomiQueueRun({
+  limit: 5,
+  storeId: "store-beta",
+  url: "https://example.com/not-dianxiaomi",
+  selectorConfig: validSelectorConfigPath
+})
+assert.equal(explicitStoreRun.skipped, 1, "queue run with store id should process only the requested store")
+assert.deepEqual(
+  explicitStoreRun.skippedItems.map((item) => item.workItemId),
+  [explicitStoreQueueBeta.id],
+  "explicit store queue run should target only matching work items"
+)
+assert.equal(getDianxiaomiProductWorkItem(explicitStoreQueueAlpha.id)?.status, "ready-for-automation", "non-requested store items should stay untouched")
+assert.equal(getDianxiaomiProductWorkItem(explicitStoreQueueBeta.id)?.status, "blocked", "requested store items should be the only ones processed")
+updateDianxiaomiProductWorkItemStatus(explicitStoreQueueAlpha.id, "edited", "explicit store queue fixture complete")
+updateDianxiaomiProductWorkItemStatus(explicitStoreQueueBeta.id, "edited", "explicit store queue fixture complete")
 
 const retryAfterFixPublishWorkItem = saveDianxiaomiProductWorkItem({
   id: "unit-retry-after-fix-publish-work-item",
@@ -2607,6 +2855,101 @@ assert.equal(linkedPublishOutcomeFallbackRepairWorkItem.repairPlan?.canAutoRepai
 assert(linkedPublishOutcomeFallbackRepairWorkItem.repairPlan?.actions.some((action) => action.payload?.attributeKey === "Color" && action.payload.expectedValue === "black"), "publish outcome failure reason should preserve the Color expected value")
 updateDianxiaomiProductWorkItemStatus(linkedPublishOutcomeFallbackRepairWorkItem.id, "edited", "linked publish outcome fallback fixture complete")
 
+const publishKnownFieldFailure = classifyDianxiaomiWorkFailure("publish failed: 标题不能为空; 商品描述必填; 申报价必填; 库存不能为空", "full-flow")
+const publishKnownFieldRepairWorkItem = saveDianxiaomiProductWorkItem({
+  id: "unit-publish-known-field-repair-plan-work-item",
+  collectedProductId: linkedPublishCollectedProduct.id,
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-publish-known-field-repair-plan-work-item",
+  pageTitle: "Publish known field repair page",
+  title: "Linked publish known field repair plan work item",
+  rawTextSample: "complete real listing with linked collected attributes and task draft support",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color", "material"],
+    mediaToolSignals: ["image translation"]
+  },
+  status: "blocked",
+  failureDiagnosis: {
+    ...publishKnownFieldFailure,
+    updatedAt: new Date().toISOString()
+  },
+  publishOutcome: {
+    status: "failed",
+    checkedAt: new Date().toISOString(),
+    flowJobId: "unit-publish-known-field-flow",
+    route: "browser-recovery",
+    message: "submit-listing failed: known fields",
+    failureReason: "标题不能为空; 商品描述必填; 申报价必填; 库存不能为空",
+    attempts: 2,
+    maxAttempts: 2,
+    submitStageJobId: "submit-job-known-field",
+    reportPath: null
+  }
+})
+assert.equal(publishKnownFieldRepairWorkItem.repairPlan?.status, "auto-ready", "known publish fields with safe source values should become auto-ready")
+assert.equal(publishKnownFieldRepairWorkItem.repairPlan?.canAutoRepair, true, "known publish fields should be fully auto repairable")
+assert(publishKnownFieldRepairWorkItem.repairPlan?.actions.every((action) => action.automation === "auto"), "known publish field repairs should stay automatic")
+assert(publishKnownFieldRepairWorkItem.repairPlan?.actions.some((action) => action.field === "title" && action.payload?.writer === "fill-single-field" && action.payload.fieldKind === "title"), "publish repair should auto-map title validation failures")
+assert(publishKnownFieldRepairWorkItem.repairPlan?.actions.some((action) => action.field === "description" && action.payload?.writer === "fill-single-field" && action.payload.fieldKind === "description"), "publish repair should auto-map description validation failures")
+assert(publishKnownFieldRepairWorkItem.repairPlan?.actions.some((action) => action.field === "price" && action.payload?.writer === "fill-single-field" && action.payload.fieldKind === "price"), "publish repair should auto-map price validation failures")
+assert(publishKnownFieldRepairWorkItem.repairPlan?.actions.some((action) => action.field === "stock" && action.payload?.writer === "fill-single-field" && action.payload.fieldKind === "stock"), "publish repair should auto-map stock validation failures")
+assert.equal(
+  getDianxiaomiQueueDaemonHealth().workItems.browserRecoveryCandidates >= 1,
+  true,
+  "known publish field auto repairs should feed browser recovery candidates"
+)
+updateDianxiaomiProductWorkItemStatus(publishKnownFieldRepairWorkItem.id, "edited", "publish known field auto-ready fixture complete")
+
+const publishComplianceFailure = classifyDianxiaomiWorkFailure("publish failed: size chart required; video is required; manual document missing; warehouse invalid", "full-flow")
+const publishComplianceRepairWorkItem = saveDianxiaomiProductWorkItem({
+  id: "unit-publish-compliance-repair-plan-work-item",
+  collectedProductId: linkedPublishCollectedProduct.id,
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-publish-compliance-repair-plan-work-item",
+  pageTitle: "Publish compliance repair page",
+  title: "Linked publish compliance repair plan work item",
+  rawTextSample: "complete real listing with linked collected attributes and media signals",
+  notes: [],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color", "material"],
+    mediaToolSignals: ["image translation", "batch resize"]
+  },
+  status: "blocked",
+  failureDiagnosis: {
+    ...publishComplianceFailure,
+    updatedAt: new Date().toISOString()
+  },
+  publishOutcome: {
+    status: "failed",
+    checkedAt: new Date().toISOString(),
+    flowJobId: "unit-publish-compliance-flow",
+    route: "browser-recovery",
+    message: "submit-listing failed: compliance",
+    failureReason: "size chart required; video is required; manual document missing; warehouse invalid",
+    attempts: 2,
+    maxAttempts: 2,
+    submitStageJobId: "submit-job-compliance",
+    reportPath: null
+  }
+})
+assert.equal(publishComplianceRepairWorkItem.repairPlan?.status, "manual", "compliance-heavy publish failures should remain manual or assisted, not auto-ready")
+assert.equal(publishComplianceRepairWorkItem.repairPlan?.canAutoRepair, false, "compliance-heavy publish failures should not auto repair")
+assert(publishComplianceRepairWorkItem.repairPlan?.actions.some((action) => action.field === "image" && action.target === "尺码表" && action.type === "review-image"), "publish repair should classify size chart failures into image review actions")
+assert(publishComplianceRepairWorkItem.repairPlan?.actions.some((action) => action.field === "compliance" && action.target === "视频素材" && action.automation === "manual"), "publish repair should keep video validation manual")
+assert(publishComplianceRepairWorkItem.repairPlan?.actions.some((action) => action.field === "compliance" && action.target === "说明文档" && action.payload?.writer === "manual"), "publish repair should keep manual document validation manual")
+assert(publishComplianceRepairWorkItem.repairPlan?.actions.some((action) => action.field === "compliance" && action.target === "发货设置" && action.automation === "manual"), "publish repair should keep fulfillment validation manual")
+assert.equal(publishComplianceRepairWorkItem.repairActionGate?.status, "manual", "compliance-heavy publish failures should expose a manual gate")
+updateDianxiaomiProductWorkItemStatus(publishComplianceRepairWorkItem.id, "edited", "publish compliance fixture complete")
+
 const publishSkuImageFailure = classifyDianxiaomiWorkFailure("publish failed: SKU variation missing; main image required")
 const publishSkuImageRepairWorkItem = saveDianxiaomiProductWorkItem({
   id: "unit-publish-sku-image-repair-plan-work-item",
@@ -2634,6 +2977,67 @@ assert(publishSkuImageRepairWorkItem.repairPlan?.actions.some((action) => action
 assert(publishSkuImageRepairWorkItem.repairPlan?.actions.some((action) => action.field === "image" && action.type === "review-image"), "publish repair should classify image failures")
 assert(publishSkuImageRepairWorkItem.repairPlan?.actions.some((action) => action.payload?.writer === "fill-sku-pricing" && action.payload.selectorGroup === "skuRows"), "publish repair should expose SKU writer payload")
 assert(publishSkuImageRepairWorkItem.repairPlan?.actions.some((action) => action.payload?.writer === "run-media-tool" && action.payload.mediaTool === "imageManagement"), "publish repair should expose image media payload")
+updateDianxiaomiProductWorkItemStatus(publishSkuImageRepairWorkItem.id, "edited", "publish sku image repair fixture complete")
+
+const publishSizeChartRecoveryWorkItem = saveDianxiaomiProductWorkItem({
+  id: "unit-publish-size-chart-recovery-work-item",
+  collectedProductId: linkedPublishCollectedProduct.id,
+  pageUrl: "https://www.dianxiaomi.com/product/edit/unit-publish-size-chart-recovery-work-item",
+  pageTitle: "Publish size chart recovery page",
+  title: "Temu local women clothing publish recovery work item",
+  pageProfile: "Temu local listing",
+  rawTextSample: "temu local listing women clothing apparel category with linked collected attributes",
+  notes: ["temu local listing"],
+  snapshot: {
+    hasTitle: true,
+    imageCount: 2,
+    skuCount: 1,
+    priceFieldCount: 1,
+    stockFieldCount: 1,
+    attributeKeys: ["color"],
+    imageStats: {
+      minWidthPx: 1000,
+      minHeightPx: 1000,
+      maxWidthPx: 1200,
+      maxHeightPx: 1200,
+      unknownDimensionCount: 0
+    },
+    mediaToolSignals: ["image translation", "batch resize"]
+  },
+  status: "blocked",
+  failureDiagnosis: {
+    ...publishFailure,
+    updatedAt: new Date().toISOString()
+  },
+  publishOutcome: {
+    status: "failed",
+    flowJobId: "unit-publish-size-chart-recovery-flow",
+    route: "browser-recovery",
+    message: "submit-listing failed: partial",
+    failureReason: "Publish failed: missing required attribute Color",
+    attempts: 2,
+    maxAttempts: 2,
+    submitStageJobId: "submit-job-size-chart-recovery",
+    checkedAt: new Date().toISOString(),
+    reportPath: null
+  }
+})
+assert.equal(publishSizeChartRecoveryWorkItem.requirements.summary.ready, false, "publish size chart recovery fixture should remain blocked by required listing checks")
+assert.equal(publishSizeChartRecoveryWorkItem.repairPlan?.status, "auto-ready", "publish size chart recovery fixture should still produce an auto-ready repair plan")
+assert(
+  publishSizeChartRecoveryWorkItem.repairPlan?.actions.some((action) =>
+    action.type === "apply-media-tool"
+    && action.payload?.writer === "run-media-tool"
+    && action.payload.mediaTool === "imageManagement"
+  ),
+  "required image repairs should preserve executable media payload metadata"
+)
+assert.equal(
+  getDianxiaomiQueueDaemonHealth().workItems.browserRecoveryCandidates >= 1,
+  true,
+  "publish browser-recovery items with auto-ready required image fixes should feed browser recovery candidates even before readiness is restored"
+)
+updateDianxiaomiProductWorkItemStatus(publishSizeChartRecoveryWorkItem.id, "edited", "publish size chart recovery fixture complete")
 
 const retryAfterFixLoginWorkItem = saveDianxiaomiProductWorkItem({
   id: "unit-retry-after-fix-login-work-item",

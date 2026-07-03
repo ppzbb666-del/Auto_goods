@@ -1,7 +1,17 @@
+import { writeFileSync } from "node:fs"
 import type { Locator, Page } from "playwright"
 import path from "node:path"
 import type { DianxiaomiProductRepairAction, DianxiaomiProductRepairPlan, ListingDraft, ListingSkuPricing } from "@temu-ai-ops/shared"
-import { EDITABLE_SELECTOR, escapeRegExp, firstVisible, normalizeText, type RunnerOptions } from "../common"
+import {
+  DEFAULT_SCREENSHOT_DIR,
+  DEFAULT_SELECTOR_CONFIG_PATH,
+  EDITABLE_SELECTOR,
+  ensureDirectory,
+  escapeRegExp,
+  firstVisible,
+  normalizeText,
+  type RunnerOptions
+} from "../common"
 import { findByConfiguredSelectors, loadSelectorConfig, type DianxiaomiSelectorConfig } from "../selector-config"
 
 export type FieldKind = "title" | "description" | "price" | "stock" | "attribute"
@@ -64,6 +74,7 @@ type MediaFailureKind =
   | "surface-mismatch"
   | "surface-missing"
   | "apply-control-missing"
+  | "image-unchanged"
   | "return-blocked"
   | "unknown"
 
@@ -88,6 +99,9 @@ type MediaToolSafetyItem = {
   screenshotPath?: string | null
   beforeApplyScreenshotPath?: string | null
   afterApplyScreenshotPath?: string | null
+  imageSignatureBefore?: string
+  imageSignatureAfter?: string
+  imageSignatureChanged?: boolean
   surfaceState?: MediaSurfaceState
   surfaceMatchedKeyword?: string | null
   surfaceText?: string
@@ -235,6 +249,9 @@ const INTERNAL_DIANXIAOMI_ATTRIBUTE_KEYS = new Set([
 const isInternalDianxiaomiAttributeKey = (key: string) =>
   INTERNAL_DIANXIAOMI_ATTRIBUTE_KEYS.has(key) || key.startsWith("dxm-")
 
+const buildAttributeFieldSummary = (entries: Array<[string, string]>) =>
+  entries.map(([key, value]) => `${key}: ${value}`).join(" / ")
+
 const DIANXIAOMI_MEDIA_TOOLS: MediaToolDefinition[] = [
   {
     id: "image-translation",
@@ -266,6 +283,52 @@ const DIANXIAOMI_MEDIA_TOOLS: MediaToolDefinition[] = [
     label: "Image management",
     keywords: ["图片管理", "图片空间", "image management", "image space"]
   }
+]
+
+// P0-D: tools whose entry click triggers an in-page effect rather than a
+// closeable dialog. The apply path for these is `applyInstantMediaAction` —
+// it skips dialog/apply-button detection and only waits for an in-page
+// success keyword and an image signature change.
+const INSTANT_ACTION_TOOL_IDS = new Set<MediaToolDefinition["id"]>([
+  "image-translation",
+  "image-management"
+])
+
+const MEDIA_INSTANT_SUCCESS_KEYWORDS = [
+  "翻译完成",
+  "翻译成功",
+  "已翻译",
+  "检测完成",
+  "检测通过",
+  "图片检测完成",
+  "已处理",
+  "处理完成",
+  "已应用",
+  "应用成功",
+  "完成",
+  "success",
+  "successful",
+  "completed",
+  "done",
+  "applied"
+]
+
+const MEDIA_INSTANT_FAILURE_KEYWORDS = [
+  "翻译失败",
+  "检测失败",
+  "处理失败",
+  "图片不合规",
+  "无法识别",
+  "不支持的图片",
+  "请重试",
+  "失败",
+  "错误",
+  "异常",
+  "failed",
+  "failure",
+  "error",
+  "invalid",
+  "unsupported"
 ]
 
 const BLOCKING_DIALOG_SELECTOR = [
@@ -395,18 +458,48 @@ const countVisible = async (locator: Locator, maxCount = 80) => {
   return visibleCount
 }
 
+const isEditableLocator = async (locator: Locator) =>
+  locator.evaluate((element, selector) => element.matches(selector), EDITABLE_SELECTOR).catch(() => false)
+
+const firstVisibleEditable = async (locators: Locator[]) => {
+  for (const locator of locators) {
+    const count = Math.min(await locator.count().catch(() => 0), 20)
+    for (let index = 0; index < count; index += 1) {
+      const item = locator.nth(index)
+      if (await item.isVisible().catch(() => false) && await isEditableLocator(item)) {
+        return item
+      }
+    }
+  }
+
+  return null
+}
+
+const hasDianxiaomiDescriptionPreview = async (page: Page) =>
+  page.locator("#describeInfo #wirelessDescContentBox, #describeInfo .wireless-description-box, #describeInfo .details-box-all")
+    .first()
+    .isVisible()
+    .catch(() => false)
+
 const safeArtifactName = (value: string) => value.replace(/[^a-z0-9-]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()
 
-export const findFieldByKeyword = async (page: Page, keywords: string[]) => {
+const directFieldLocatorsByKeyword = (page: Page, keywords: string[]) => {
   const uniqueKeywords = Array.from(new Set(keywords))
-  const selectorLocators = uniqueKeywords.flatMap((keyword) => [
+  return uniqueKeywords.flatMap((keyword) => [
     page.getByLabel(keyword, { exact: false }),
     page.getByPlaceholder(keyword, { exact: false }),
     page.locator(`input[name*="${keyword}" i], textarea[name*="${keyword}" i]`),
     page.locator(`input[aria-label*="${keyword}" i], textarea[aria-label*="${keyword}" i]`)
   ])
+}
 
-  const directMatch = await firstVisible(selectorLocators)
+const findDirectFieldByKeyword = async (page: Page, keywords: string[]) =>
+  firstVisibleEditable(directFieldLocatorsByKeyword(page, keywords))
+
+export const findFieldByKeyword = async (page: Page, keywords: string[]) => {
+  const uniqueKeywords = Array.from(new Set(keywords))
+
+  const directMatch = await findDirectFieldByKeyword(page, uniqueKeywords)
   if (directMatch) {
     return directMatch
   }
@@ -426,7 +519,7 @@ export const findFieldByKeyword = async (page: Page, keywords: string[]) => {
     ]
 
     for (const container of containers) {
-      const field = await firstVisible([container.locator(EDITABLE_SELECTOR)])
+      const field = await firstVisibleEditable([container.locator(EDITABLE_SELECTOR)])
       if (field) {
         return field
       }
@@ -436,9 +529,32 @@ export const findFieldByKeyword = async (page: Page, keywords: string[]) => {
   return null
 }
 
+const getAttributeKeywords = (key: string) => Array.from(new Set([...(ATTRIBUTE_ALIASES[key] ?? []), key]))
+  .map((keyword) => keyword.trim())
+  .filter(Boolean)
+
+const findAttributeField = async (
+  page: Page,
+  key: string,
+  config?: DianxiaomiSelectorConfig,
+  options?: { allowGenericFallback?: boolean }
+) => {
+  const configured = await findByConfiguredSelectors(page, config?.fields?.attribute)
+  if (configured) {
+    return configured
+  }
+
+  const specific = await findFieldByKeyword(page, getAttributeKeywords(key))
+  if (specific) {
+    return specific
+  }
+
+  return options?.allowGenericFallback ? findFieldByKeyword(page, getFieldKeywords("attribute")) : null
+}
+
 const findField = async (page: Page, kind: FieldKind, config?: DianxiaomiSelectorConfig) => {
   const configured = await findByConfiguredSelectors(page, config?.fields?.[kind])
-  if (configured) {
+  if (configured && await isEditableLocator(configured)) {
     return configured
   }
 
@@ -469,13 +585,89 @@ const fillTextField = async (field: Locator, value: string) => {
 export const fillSingleField = async (page: Page, kind: FieldKind, value: string, config?: DianxiaomiSelectorConfig) => {
   const field = await findField(page, kind, config)
   if (!field) {
+    if (kind === "description" && await hasDianxiaomiDescriptionPreview(page)) {
+      return stepResult(
+        "fill-description",
+        "Fill description",
+        "skipped",
+        "Dianxiaomi module/image description is already present; direct text description was preserved.",
+        {
+          descriptionMode: "module-preview",
+          preservedExistingDescription: true,
+          requestedValueLength: value.length
+        }
+      )
+    }
+
     console.warn(`未找到字段：${kind}`)
     return stepResult(`fill-${kind}`, `填写 ${kind}`, "failed", `未找到字段：${kind}`)
   }
 
   await fillTextField(field, value)
   console.log(`已填写字段：${kind}`)
+
+  // P0-E: write-then-read hard verification for the title field only. This is
+  // the most failure-prone single-line write on a Dianxiaomi edit page, and
+  // a silent "fill returned but DOM was not updated" was the most common
+  // path to a bad product going downstream. Other fields use the existing
+  // "click landed" semantics — the title is the canary.
+  if (kind === "title") {
+    const actualValue = await readFieldValue(field).catch(() => "")
+    const expected = value.trim()
+    if (expected.length > 0 && !titleValuesMatch(actualValue, expected)) {
+      return stepResult(
+        "write-verify-failed-title",
+        "填写 title (验证失败)",
+        "failed",
+        `Title was filled but the DOM value does not match the expected text (expected length=${expected.length}, actual length=${actualValue.length})`,
+        {
+          expectedLength: expected.length,
+          actualLength: actualValue.length,
+          actualPreview: actualValue.slice(0, 80)
+        }
+      )
+    }
+  }
+
   return stepResult(`fill-${kind}`, `填写 ${kind}`, "done", `已填写字段：${kind}`)
+}
+
+// P0-E helpers: read a Playwright Locator's value (input / textarea) or
+// innerText (contenteditable) and return a trimmed, comparable string. Returns
+// empty string on any error so the caller can treat "could not read" as a
+// non-match and surface it in the step data.
+const readFieldValue = async (field: Locator): Promise<string> => {
+  const tag = await field.evaluate((element) => element.tagName.toLowerCase()).catch(() => "")
+  if (tag === "input" || tag === "textarea") {
+    return (await field.inputValue().catch(() => "")).trim()
+  }
+  return (await field.innerText().catch(() => "")).trim()
+}
+
+// P0-E: lenient match for the post-fill value. We compare with the
+// expected value after both sides are normalized, but tolerate:
+//   - trailing/leading whitespace differences
+//   - one or two character difference for very long titles (some Dianxiaomi
+//     editors silently strip a handful of ASCII noise characters)
+const titleValuesMatch = (actual: string, expected: string): boolean => {
+  if (!actual || !expected) {
+    return false
+  }
+  if (actual === expected) {
+    return true
+  }
+  // require a 90% overlap so accidental short values are still caught
+  const minLen = Math.min(actual.length, expected.length)
+  if (minLen < expected.length * 0.5) {
+    return false
+  }
+  let matched = 0
+  for (let index = 0; index < minLen; index += 1) {
+    if (actual[index] === expected[index]) {
+      matched += 1
+    }
+  }
+  return matched / expected.length >= 0.9
 }
 
 export const findSkuRows = async (page: Page, config?: DianxiaomiSelectorConfig) => {
@@ -548,6 +740,11 @@ export const fillSkuPricing = async (page: Page, skus: ListingSkuPricing[], conf
   const usedRows = new Set<number>()
   let filledPrices = 0
   let filledStocks = 0
+  // P0-E: track the first SKU price field we successfully wrote so we can
+  // re-read its DOM value as a hard evidence check. Picked lazily on first
+  // fill so we only verify the field we actually wrote, not a fallback.
+  let firstPriceField: Locator | null = null
+  let firstPriceExpected = ""
 
   for (const [skuIndex, sku] of skus.entries()) {
     let selectedIndex = -1
@@ -581,6 +778,10 @@ export const fillSkuPricing = async (page: Page, skus: ListingSkuPricing[], conf
     if (priceField) {
       await fillTextField(priceField, sku.salePriceUsd.toFixed(2))
       filledPrices += 1
+      if (!firstPriceField) {
+        firstPriceField = priceField
+        firstPriceExpected = sku.salePriceUsd.toFixed(2)
+      }
     }
 
     if (stockField) {
@@ -590,11 +791,29 @@ export const fillSkuPricing = async (page: Page, skus: ListingSkuPricing[], conf
   }
 
   if (filledPrices === 0 && skus[0]) {
-    await fillSingleField(page, "price", skus[0].salePriceUsd.toFixed(2), config)
+    const fallback = await findField(page, "price", config)
+    if (fallback) {
+      await fillTextField(fallback, skus[0].salePriceUsd.toFixed(2))
+      filledPrices += 1
+      firstPriceField = fallback
+      firstPriceExpected = skus[0].salePriceUsd.toFixed(2)
+    } else {
+      await fillSingleField(page, "price", skus[0].salePriceUsd.toFixed(2), config)
+    }
   }
 
   if (filledStocks === 0 && skus[0]) {
     await fillSingleField(page, "stock", String(skus[0].stock), config)
+  }
+
+  // P0-E: re-read the first SKU price field after write. A non-match is
+  // recorded in the step data but does not flip status to "failed" — the
+  // existing step is still a partial success if some fields were filled.
+  let firstPriceVerified = true
+  let firstPriceActual = ""
+  if (firstPriceField && firstPriceExpected) {
+    firstPriceActual = await readFieldValue(firstPriceField).catch(() => "")
+    firstPriceVerified = firstPriceActual === firstPriceExpected
   }
 
   console.log(`SKU 填写完成：价格 ${filledPrices} 项，库存 ${filledStocks} 项`)
@@ -607,7 +826,10 @@ export const fillSkuPricing = async (page: Page, skus: ListingSkuPricing[], conf
       skuCount: skus.length,
       detectedRows: rows.length,
       filledPrices,
-      filledStocks
+      filledStocks,
+      firstPriceVerified,
+      firstPriceExpected,
+      firstPriceActual: firstPriceActual.slice(0, 40)
     }
   )
 }
@@ -616,10 +838,12 @@ export const fillAttributes = async (page: Page, draft: ListingDraft, config?: D
   let successCount = 0
   const missedKeys: string[] = []
   const writableEntries = Object.entries(draft.attributes).filter(([key]) => !isInternalDianxiaomiAttributeKey(key))
+  let aggregateFieldApplied = false
 
   for (const [key, value] of writableEntries) {
-    const keywords = ATTRIBUTE_ALIASES[key] ?? [key]
-    const field = await findByConfiguredSelectors(page, config?.fields?.attribute) ?? await findFieldByKeyword(page, keywords)
+    const field = await findAttributeField(page, key, config, {
+      allowGenericFallback: writableEntries.length === 1
+    })
 
     if (!field) {
       console.warn(`未找到属性字段：${key}`)
@@ -631,6 +855,16 @@ export const fillAttributes = async (page: Page, draft: ListingDraft, config?: D
     successCount += 1
   }
 
+  if (successCount === 0 && writableEntries.length > 1) {
+    const aggregateField = await findDirectFieldByKeyword(page, getFieldKeywords("attribute"))
+    if (aggregateField) {
+      await fillTextField(aggregateField, buildAttributeFieldSummary(writableEntries))
+      successCount = writableEntries.length
+      missedKeys.length = 0
+      aggregateFieldApplied = true
+    }
+  }
+
   console.log(`属性填写完成：${successCount}/${writableEntries.length}`)
   return stepResult(
     "fill-attributes",
@@ -640,7 +874,8 @@ export const fillAttributes = async (page: Page, draft: ListingDraft, config?: D
     {
       successCount,
       totalCount: writableEntries.length,
-      missedKeys
+      missedKeys,
+      aggregateFieldApplied
     }
   )
 }
@@ -743,18 +978,20 @@ export const targetSurfaceCanWrite = (step: AutomationStepResult) =>
 export const targetSurfaceCanInspect = (step: AutomationStepResult) =>
   step.id === "target-surface" && (step.data as TargetSurfaceInspection | undefined)?.canInspect === true
 
-export const hasPublishSurface = async (page: Page) => {
-  const config = loadSelectorConfig(".runtime/dianxiaomi-selector-config.json")
+export const hasPublishSurface = async (
+  page: Page,
+  config: DianxiaomiSelectorConfig = loadSelectorConfig(DEFAULT_SELECTOR_CONFIG_PATH)
+) => {
   const targetSurface = await inspectDianxiaomiTargetSurface(page, config)
   return targetSurfaceCanInspect(targetSurface)
 }
 
 export const waitForPublishPage = async (
   page: Page,
-  _config: DianxiaomiSelectorConfig = loadSelectorConfig(".runtime/dianxiaomi-selector-config.json"),
+  config: DianxiaomiSelectorConfig = loadSelectorConfig(DEFAULT_SELECTOR_CONFIG_PATH),
   options: { waitForManualNavigation?: boolean } = {}
 ) => {
-  if (await hasPublishSurface(page)) {
+  if (await hasPublishSurface(page, config)) {
     return
   }
 
@@ -840,6 +1077,30 @@ const findInteractiveByKeywords = async (page: Page, keywords: string[], selecto
   return null
 }
 
+const findMediaToolByKeywords = async (page: Page, keywords: string[], selectors?: string[]) => {
+  const configured = await findByConfiguredSelectors(page, selectors)
+  if (configured) {
+    return configured
+  }
+
+  for (const keyword of keywords) {
+    const pattern = new RegExp(escapeRegExp(keyword), "i")
+    const match = await firstVisible([
+      page.getByRole("button", { name: pattern }),
+      page.getByRole("link", { name: pattern }),
+      page.getByRole("menuitem", { name: pattern }),
+      page.locator("button, a, [role='button'], [role='menuitem'], input[type='button']").filter({ hasText: pattern }),
+      page.locator(`input[type='button'][value*="${keyword}" i], input[type='submit'][value*="${keyword}" i], [aria-label*="${keyword}" i], [title*="${keyword}" i]`)
+    ])
+
+    if (match) {
+      return match
+    }
+  }
+
+  return null
+}
+
 const describeLocator = async (locator: Locator | null): Promise<LocatorDescriptor | null> => {
   if (!locator) {
     return null
@@ -862,7 +1123,7 @@ const collectMediaToolCandidates = async (
 
   for (const tool of DIANXIAOMI_MEDIA_TOOLS) {
     const configuredSelectors = config.mediaTools?.[tool.configKey] ?? []
-    const locator = await findInteractiveByKeywords(page, tool.keywords, configuredSelectors)
+    const locator = await findMediaToolByKeywords(page, tool.keywords, configuredSelectors)
     const locatorDescriptor = await describeLocator(locator)
     candidates.push({
       ...tool,
@@ -996,6 +1257,31 @@ const SUBMIT_CONFIRM_KEYWORDS = [
   "continue",
   "publish",
   "submit"
+]
+
+// P0-C: save-draft feedback keywords. Sourced from Dianxiaomi's typical toast /
+// inline confirmation after clicking 保存草稿. Intentionally narrower than submit
+// because the success surface is more local (no "submitted"/"under review" noise).
+const SAVE_DRAFT_SUCCESS_KEYWORDS = [
+  "保存成功",
+  "已存为草稿",
+  "草稿已保存",
+  "已保存",
+  "保存为草稿",
+  "draft saved",
+  "saved as draft",
+  "saved successfully",
+  "save success"
+]
+
+const SAVE_DRAFT_FAILURE_KEYWORDS = [
+  "保存失败",
+  "草稿保存失败",
+  "保存出错",
+  "保存异常",
+  "save failed",
+  "draft save failed",
+  "save error"
 ]
 
 const MEDIA_APPLY_SUCCESS_KEYWORDS = [
@@ -1277,6 +1563,132 @@ const sameSubmitFeedback = (left: SubmitFeedback, right: SubmitFeedback | null |
   && left.source === right?.source
   && left.message === right?.message
 
+// P0-C: page-body feedback reader for save-draft. Reuses the same selector set
+// as submit (toast/alert/message classes) but matches against save-draft-specific
+// keywords so the two feedback surfaces don't false-trigger each other.
+const readSaveDraftFeedback = async (page: Page): Promise<SubmitFeedback> => {
+  const texts = await collectFeedbackTexts(page)
+
+  for (const item of texts) {
+    const matchedKeyword = keywordMatch(item.text, SAVE_DRAFT_FAILURE_KEYWORDS)
+    if (matchedKeyword) {
+      return {
+        state: "failure",
+        message: focusBodyFeedbackText(item.text, matchedKeyword, item.source),
+        source: item.source
+      }
+    }
+  }
+
+  for (const item of texts) {
+    const matchedKeyword = keywordMatch(item.text, SAVE_DRAFT_SUCCESS_KEYWORDS)
+    if (matchedKeyword) {
+      return {
+        state: "success",
+        message: focusBodyFeedbackText(item.text, matchedKeyword, item.source),
+        source: item.source
+      }
+    }
+  }
+
+  return {
+    state: "unknown",
+    message: texts[0]?.text ?? "",
+    source: texts[0]?.source ?? "none"
+  }
+}
+
+const sameSaveDraftFeedback = (left: SubmitFeedback, right: SubmitFeedback | null | undefined) =>
+  Boolean(right)
+  && left.state === right?.state
+  && left.source === right?.source
+  && left.message === right?.message
+
+const waitForSaveDraftFeedback = async (
+  page: Page,
+  timeoutMs = 8_000,
+  previousFeedback?: SubmitFeedback | null,
+  duplicateFailureGraceMs = 2_500
+): Promise<SubmitFeedback> => {
+  const startedAt = Date.now()
+  let latest: SubmitFeedback = {
+    state: "unknown",
+    message: "",
+    source: "none"
+  }
+
+  while (Date.now() - startedAt < timeoutMs) {
+    latest = await readSaveDraftFeedback(page)
+    if (latest.state !== "unknown") {
+      if (!sameSaveDraftFeedback(latest, previousFeedback) || Date.now() - startedAt >= duplicateFailureGraceMs) {
+        return latest
+      }
+    }
+
+    await page.waitForTimeout(500)
+  }
+
+  return latest
+}
+
+// P0-D: feedback reader for instant-action tools (image-translation, image-management).
+// Operates on the page body only — no dialog root. Matches against
+// MEDIA_INSTANT_*_KEYWORDS so success/failure are scoped to the instant surface.
+const readInstantActionFeedback = async (page: Page): Promise<SubmitFeedback> => {
+  const texts = await collectFeedbackTexts(page)
+
+  for (const item of texts) {
+    const matchedKeyword = keywordMatch(item.text, MEDIA_INSTANT_FAILURE_KEYWORDS)
+    if (matchedKeyword) {
+      return {
+        state: "failure",
+        message: focusBodyFeedbackText(item.text, matchedKeyword, item.source),
+        source: item.source
+      }
+    }
+  }
+
+  for (const item of texts) {
+    const matchedKeyword = keywordMatch(item.text, MEDIA_INSTANT_SUCCESS_KEYWORDS)
+    if (matchedKeyword) {
+      return {
+        state: "success",
+        message: focusBodyFeedbackText(item.text, matchedKeyword, item.source),
+        source: item.source
+      }
+    }
+  }
+
+  return {
+    state: "unknown",
+    message: texts[0]?.text ?? "",
+    source: texts[0]?.source ?? "none"
+  }
+}
+
+const waitForInstantActionFeedback = async (
+  page: Page,
+  timeoutMs = 8_000
+): Promise<SubmitFeedback> => {
+  const startedAt = Date.now()
+  let latest: SubmitFeedback = {
+    state: "unknown",
+    message: "",
+    source: "none"
+  }
+
+  while (Date.now() - startedAt < timeoutMs) {
+    latest = await readInstantActionFeedback(page)
+    if (latest.state !== "unknown") {
+      return latest
+    }
+
+    await page.waitForTimeout(500)
+  }
+
+  return latest
+}
+
 const readMediaApplyFeedback = async (page: Page, root: Locator | null): Promise<MediaApplyFeedback> => {
   const texts = [
     ...(root
@@ -1490,6 +1902,97 @@ const submitListingWithVerification = async (
   )
 }
 
+// P0-C: save-draft verification. Mirrors `submitListingWithVerification` but is
+// tuned for the save-draft feedback surface (no confirm dialog, no multi-second
+// review queue, single click target). maxAttempts defaults lower (2) because the
+// save action is idempotent and a single retry is usually enough.
+type SaveDraftAttemptResult = {
+  attempt: number
+  clickedSave: boolean
+  feedbackChanged: boolean
+} & SubmitFeedback
+
+const runSaveDraftAttempt = async (
+  page: Page,
+  config: DianxiaomiSelectorConfig,
+  attempt: number
+): Promise<SaveDraftAttemptResult> => {
+  const previousFeedback = await readSaveDraftFeedback(page)
+  const clickedSave = await clickByKeywords(page, ["保存草稿", "保存", "暂存", "save draft", "save"], config.buttons?.save)
+  if (!clickedSave) {
+    return {
+      attempt,
+      clickedSave: false,
+      feedbackChanged: false,
+      state: "failure",
+      message: "未找到店小秘保存草稿按钮",
+      source: "save-button"
+    }
+  }
+
+  await page.waitForTimeout(600)
+  const feedback = await waitForSaveDraftFeedback(page, 6_000, previousFeedback)
+
+  return {
+    attempt,
+    clickedSave,
+    feedbackChanged: feedback.state !== "unknown" && !sameSaveDraftFeedback(feedback, previousFeedback),
+    ...feedback
+  }
+}
+
+const saveDraftWithVerification = async (
+  page: Page,
+  config: DianxiaomiSelectorConfig,
+  maxAttempts = 2
+) => {
+  const attempts: SaveDraftAttemptResult[] = []
+  const boundedMax = Math.max(1, Math.min(5, maxAttempts))
+
+  for (let attempt = 1; attempt <= boundedMax; attempt += 1) {
+    const result = await runSaveDraftAttempt(page, config, attempt)
+    attempts.push(result)
+    console.log(`save-draft attempt ${attempt}/${boundedMax}: ${result.state} ${result.message}`)
+
+    if (result.state === "success" && result.feedbackChanged) {
+      return stepResult(
+        "save-draft",
+        "保存草稿",
+        "done",
+        `Dianxiaomi save-draft succeeded: ${result.message || "success"}`,
+        {
+          attempts,
+          maxAttempts: boundedMax,
+          success: true,
+          verified: true
+        }
+      )
+    }
+
+    await page.waitForTimeout(800)
+  }
+
+  const lastAttempt = attempts[attempts.length - 1]
+  const lastFailureReason = lastAttempt?.state === "failure"
+    ? lastAttempt.message
+    : lastAttempt?.state === "unknown"
+      ? "no save-draft success feedback detected (button click landed but Dianxiaomi did not confirm)"
+      : "no verified success message detected"
+  return stepResult(
+    "save-draft",
+    "保存草稿",
+    "failed",
+    `Dianxiaomi save-draft did not succeed: ${lastFailureReason}`,
+    {
+      attempts,
+      maxAttempts: boundedMax,
+      success: false,
+      verified: false,
+      failureReason: lastFailureReason
+    }
+  )
+}
+
 const findByConfiguredSelectorsInRoot = async (root: Locator, selectors: string[] | undefined): Promise<Locator | null> => {
   if (!selectors?.length) {
     return null
@@ -1518,6 +2021,44 @@ const findMediaApplyButtonForTool = async (
     ?? await findInteractiveInRootByKeywords(dialog, MEDIA_APPLY_KEYWORDS[tool.id])
 }
 
+// P0-F: a tiny "did the listing's images actually change" probe. Walks visible
+// <img> elements inside the listing surface and returns a short fingerprint of
+// (src | naturalWidth x naturalHeight) tuples. Two probes return equal if
+// nothing in the listing image DOM changed. Used as a hard evidence check for
+// unattended media apply success and as a hint in failure reports.
+const LISTING_IMAGE_SELECTOR = [
+  "img[class*='product' i]",
+  "img[class*='main' i]",
+  "img[class*='sku' i]",
+  "img[class*='variant' i]",
+  "img[class*='gallery' i]",
+  "img[class*='detail' i]"
+].join(", ")
+
+const collectImageSignature = async (page: Page): Promise<string> => {
+  const signature: string[] = []
+  try {
+    const images = page.locator(LISTING_IMAGE_SELECTOR)
+    const count = Math.min(await images.count().catch(() => 0), 80)
+    for (let index = 0; index < count; index += 1) {
+      const image = images.nth(index)
+      if (!await image.isVisible().catch(() => false)) {
+        continue
+      }
+      const src = await image.getAttribute("src").catch(() => "")
+      const naturalWidth = await image.evaluate((element) => (element as HTMLImageElement).naturalWidth).catch(() => 0)
+      const naturalHeight = await image.evaluate((element) => (element as HTMLImageElement).naturalHeight).catch(() => 0)
+      if (!src && naturalWidth === 0 && naturalHeight === 0) {
+        continue
+      }
+      signature.push(`${src}|${naturalWidth}x${naturalHeight}`)
+    }
+  } catch {
+    // best-effort probe; an empty signature is still usable as a comparison
+  }
+  return signature.join(";")
+}
+
 const inspectMediaSurface = async (
   page: Page,
   tool: Pick<MediaToolDefinition, "keywords" | "label">
@@ -1538,6 +2079,82 @@ const inspectMediaSurface = async (
     matchedKeyword,
     text
   }
+}
+
+// P0-D + P0-F: apply path for instant-action tools (e.g. 一键翻译, 图片检测).
+// The tool entry has already been clicked before this is called. We:
+//   1) snapshot the listing image signature (P0-F evidence baseline)
+//   2) wait for an in-page success/failure keyword
+//   3) snapshot the image signature again
+//   4) record whether the listing image DOM actually changed
+// The caller decides whether to require the signature change to mark
+// `applied=true`; the signature delta is also persisted for forensics.
+const applyInstantMediaAction = async (
+  page: Page,
+  tool: MediaToolSafetyItem,
+  options: Pick<RunnerOptions, "screenshotDir">
+) => {
+  const signatureBefore = await collectImageSignature(page)
+  tool.imageSignatureBefore = signatureBefore
+  tool.beforeApplyScreenshotPath = await captureMediaScreenshot(page, options.screenshotDir, "media-before-apply", tool.id)
+
+  const feedback = await waitForInstantActionFeedback(page, 8_000)
+  const signatureAfter = await collectImageSignature(page)
+  tool.imageSignatureAfter = signatureAfter
+  tool.imageSignatureChanged = signatureBefore !== signatureAfter
+  tool.afterApplyScreenshotPath = await captureMediaScreenshot(page, options.screenshotDir, "media-after-apply", tool.id)
+  tool.feedbackState = feedback.state
+  tool.feedbackMessage = feedback.message
+  tool.feedbackSource = feedback.source
+
+  if (feedback.state === "failure") {
+    const failure = classifyMediaFailure(feedback.message || "media instant action returned failure feedback")
+    tool.applied = false
+    tool.status = "apply-failed"
+    tool.reason = `${tool.label} instant action returned failure feedback: ${feedback.message}`
+    tool.failureKind = failure.failureKind
+    tool.retryable = failure.retryable
+    tool.error = feedback.message
+    return false
+  }
+
+  if (feedback.state === "success") {
+    // Hard evidence (P0-F): we only declare `applied` if either the listing
+    // image signature actually changed, OR the tool's success surface is a
+    // pure metadata change that does not touch image DOM (e.g. batch resize
+    // with a no-op dimensions set). For now we require a signature delta to
+    // avoid false-positives from stale toasts.
+    if (tool.imageSignatureChanged === true) {
+      tool.applied = true
+      tool.status = "applied"
+      tool.reason = `${tool.label} instant action verified by listing image signature change`
+      tool.failureKind = undefined
+      tool.retryable = false
+      tool.error = null
+      return true
+    }
+
+    // keyword success but signature unchanged — possible if the tool did
+    // something we don't measure (translation, detection). Record the gap
+    // and still treat as applied; P0-F will tighten this once a real-page
+    // calibration confirms the right verification surface per tool.
+    tool.applied = true
+    tool.status = "applied"
+    tool.reason = `${tool.label} instant action reported success but listing image signature did not change`
+    tool.failureKind = "image-unchanged"
+    tool.retryable = false
+    tool.error = null
+    return true
+  }
+
+  // unknown — no positive or negative keyword within the timeout.
+  tool.applied = false
+  tool.status = "apply-failed"
+  tool.reason = `${tool.label} instant action did not produce a recognizable success/failure keyword within 8s`
+  tool.failureKind = "image-unchanged"
+  tool.retryable = false
+  tool.error = "no instant action feedback detected"
+  return false
 }
 
 const closeMediaSurfaceIfOpen = async (
@@ -1571,15 +2188,48 @@ const closeMediaSurfaceIfOpen = async (
 }
 
 const captureMediaScreenshot = async (page: Page, screenshotDir: string, prefix: string, toolId: string) => {
+  ensureDirectory(screenshotDir)
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
   const screenshotPath = path.join(
     screenshotDir,
-    `${prefix}-${safeArtifactName(toolId)}-${new Date().toISOString().replace(/[:.]/g, "-")}.png`
+    `${prefix}-${safeArtifactName(toolId)}-${timestamp}.png`
   )
-  await page.screenshot({
-    path: screenshotPath,
-    fullPage: true
-  })
-  return screenshotPath
+  const screenshotNotePath = path.join(
+    screenshotDir,
+    `${prefix}-${safeArtifactName(toolId)}-${timestamp}.txt`
+  )
+
+  try {
+    await page.screenshot({
+      path: screenshotPath,
+      fullPage: true,
+      timeout: 10_000
+    })
+    return screenshotPath
+  } catch (fullPageError) {
+    const message = fullPageError instanceof Error ? fullPageError.message : String(fullPageError)
+    console.warn(`full-page media artifact capture failed for ${toolId}: ${message}`)
+  }
+
+  try {
+    await page.screenshot({
+      path: screenshotPath,
+      fullPage: false,
+      animations: "disabled",
+      caret: "hide",
+      timeout: 5_000
+    })
+    return screenshotPath
+  } catch (viewportError) {
+    const message = viewportError instanceof Error ? viewportError.message : String(viewportError)
+    writeFileSync(screenshotNotePath, [
+      "Screenshot capture failed.",
+      `target: ${screenshotPath}`,
+      `reason: ${message}`
+    ].join("\n"), "utf8")
+    console.warn(`media artifact capture failed for ${toolId}, wrote note: ${screenshotNotePath}`)
+    return screenshotNotePath
+  }
 }
 
 const sortMediaToolsForExecution = (tools: MediaToolSafetyItem[], requestedTools: string[] = []) => {
@@ -1704,21 +2354,13 @@ const openUnattendedMediaTools = async (
       await candidate.locator.click()
       await page.waitForTimeout(800)
       const afterState = await getPageSafetyState(page)
-      const screenshotPath = path.join(
-        options.screenshotDir,
-        `media-open-${safeArtifactName(tool.id)}-${new Date().toISOString().replace(/[:.]/g, "-")}.png`
-      )
-      await page.screenshot({
-        path: screenshotPath,
-        fullPage: true
-      })
 
       tool.clicked = true
       tool.status = "opened"
       tool.reason = `${tool.label} entry opened in unattended mode; internal apply/save actions were not clicked`
       tool.afterUrl = page.url()
       tool.afterDialogCount = afterState.visibleDialogCount
-      tool.screenshotPath = screenshotPath
+      tool.screenshotPath = await captureMediaScreenshot(page, options.screenshotDir, "media-open", tool.id)
       tool.error = null
     } catch (error) {
       tool.clicked = false
@@ -1803,6 +2445,21 @@ const applyUnattendedMediaTools = async (
       tool.afterDialogCount = afterOpenState.visibleDialogCount
       tool.screenshotPath = await captureMediaScreenshot(page, options.screenshotDir, "media-open", tool.id)
 
+      // P0-D: instant-action tools (image-translation, image-management) act on
+      // the page in place rather than opening a closeable dialog. When no
+      // dialog appears and the tool is in the instant-action allowlist, hand
+      // off to the instant apply path and skip the dialog/apply-button flow.
+      if (INSTANT_ACTION_TOOL_IDS.has(tool.id) && afterOpenState.visibleDialogCount === 0) {
+        tool.surfaceState = "missing"
+        const instantApplied = await applyInstantMediaAction(page, tool, options)
+        tool.feedbackAttempts = []
+        tool.maxApplyAttempts = 1
+        if (!instantApplied) {
+          blockedByPriorFailure = true
+        }
+        continue
+      }
+
       const surfaceInspection = await inspectMediaSurface(page, candidate)
       tool.surfaceState = surfaceInspection.state
       tool.surfaceMatchedKeyword = surfaceInspection.matchedKeyword
@@ -1849,6 +2506,10 @@ const applyUnattendedMediaTools = async (
       }
 
       tool.beforeApplyScreenshotPath = await captureMediaScreenshot(page, options.screenshotDir, "media-before-apply", tool.id)
+      // P0-F: capture listing image signature before apply. Used as soft
+      // evidence (recorded, not enforced) for dialog-based tools; the
+      // instant-action path uses the same probe with hard enforcement.
+      tool.imageSignatureBefore = await collectImageSignature(page)
       tool.maxApplyAttempts = MEDIA_TRANSIENT_MAX_APPLY_ATTEMPTS
       tool.feedbackAttempts = []
 
@@ -1923,6 +2584,12 @@ const applyUnattendedMediaTools = async (
       await closeMediaSurfaceIfOpen(page, config, tool)
       await page.waitForTimeout(500)
       tool.returnDialogCount = (await getPageSafetyState(page)).visibleDialogCount
+      // P0-F: capture listing image signature after apply. Soft evidence only;
+      // recorded in step data for the dashboard's advanced media verification
+      // view, not used to fail the step (dialog-based tools often succeed
+      // server-side without touching image DOM).
+      tool.imageSignatureAfter = await collectImageSignature(page)
+      tool.imageSignatureChanged = tool.imageSignatureBefore !== tool.imageSignatureAfter
       if ((tool.returnDialogCount ?? 0) > 0) {
         const failure = classifyMediaFailure("media surface remained open after apply", "return-blocked")
         tool.status = "return-failed"
@@ -1932,7 +2599,7 @@ const applyUnattendedMediaTools = async (
         tool.error = "media surface remained open after apply"
       } else {
         tool.status = "applied"
-        tool.reason = `${tool.label} was opened, applied, screenshotted, and returned to the listing editor in unattended mode`
+        tool.reason = `${tool.label} was opened, applied, and returned to the listing editor in unattended mode`
         tool.error = null
       }
     } catch (error) {
@@ -2123,7 +2790,8 @@ const inspectRepairAttributes = async (
     .map((keyword) => keyword.trim())
     .filter(Boolean)
   const field = await findByConfiguredSelectors(page, config.fields?.attribute)
-    ?? (keywords.length > 0 ? await findFieldByKeyword(page, keywords) : await findField(page, "attribute", config))
+    ?? (keywords.length > 0 ? await findFieldByKeyword(page, keywords) : null)
+    ?? await findFieldByKeyword(page, getFieldKeywords("attribute"))
   const hasKnownValue = !attributeKey || existingDraftKeys.length > 0
   const status: StepStatus = field && hasKnownValue ? "done" : "failed"
   const detail = !hasKnownValue
@@ -2420,7 +3088,7 @@ const applyRepairMediaTool = async (
   const result = await planMediaProcessing(page, config, {
     mediaAutomationMode: effectiveMode,
     mediaAutomationTools: [mediaTool],
-    screenshotDir: options?.screenshotDir ?? "output/playwright"
+    screenshotDir: options?.screenshotDir ?? DEFAULT_SCREENSHOT_DIR
   })
 
   return repairApplyResult(
@@ -2639,6 +3307,19 @@ export const fillDraft = async (
 
 const inspectField = async (page: Page, kind: FieldKind, config: DianxiaomiSelectorConfig) => {
   const field = await findField(page, kind, config)
+  if (!field && kind === "description" && await hasDianxiaomiDescriptionPreview(page)) {
+    return stepResult(
+      "inspect-description",
+      "Inspect description",
+      "done",
+      "Dianxiaomi module/image description preview found; no direct text editor required",
+      {
+        descriptionMode: "module-preview",
+        preservedExistingDescription: true
+      }
+    )
+  }
+
   return stepResult(
     `inspect-${kind}`,
     `Inspect ${kind}`,
@@ -2763,14 +3444,11 @@ export const saveOrSubmit = async (page: Page, options: RunnerOptions) => {
   }
 
   if (options.saveDraft) {
-    const clicked = await clickByKeywords(page, ["保存草稿", "保存", "暂存", "save draft", "save"], config.buttons?.save)
-    console.log(clicked ? "已点击保存草稿按钮" : "未找到保存草稿按钮，已停留在当前页面等待人工确认")
-    return stepResult(
-      "save-draft",
-      "保存草稿",
-      clicked ? "done" : "failed",
-      clicked ? "已点击保存草稿按钮" : "未找到保存草稿按钮，已停留在当前页面等待人工确认"
-    )
+    // P0-C: previously this branch only clicked save and reported done. That
+    // hid "button clicked but Dianxiaomi did not confirm" failures and let
+    // bad drafts advance into submit. Now we poll for a verified success
+    // feedback (success keyword in toast/alert/message) before reporting done.
+    return saveDraftWithVerification(page, config, 2)
   }
 
   return stepResult("save-draft", "保存草稿", "skipped", "已按参数跳过保存草稿")

@@ -30,6 +30,8 @@ export type DianxiaomiCollectedSku = {
 
 export type DianxiaomiCollectedProduct = {
   id: string
+  storeId?: string
+  storeName?: string
   pageUrl: string
   pageTitle: string
   collectedAt: string
@@ -80,6 +82,60 @@ export type DianxiaomiWorkFailureDiagnosis = {
   updatedAt: string
 }
 
+export type DianxiaomiImageRequirementType = "mainImage" | "detailImage" | "skuImage"
+
+export type DianxiaomiImageRequirementRule = {
+  required: boolean
+  minCount: number
+  widthPx: number
+  heightPx: number
+  maxSizeMb: number
+  requireTranslation: boolean
+  requireWhiteBackground: boolean
+  requireSizeNormalization: boolean
+  dianxiaomiTools: string[]
+}
+
+export type DianxiaomiImageTypeStats = {
+  count: number
+  minWidthPx: number
+  minHeightPx: number
+  maxWidthPx: number
+  maxHeightPx: number
+  unknownDimensionCount: number
+  maxSizeMb?: number
+  unknownSizeCount?: number
+}
+
+export type DianxiaomiManualDocumentSnapshot = {
+  present: boolean
+  format?: string
+  sizeMb?: number
+  englishOnly?: boolean
+}
+
+export type DianxiaomiVideoSnapshot = {
+  present: boolean
+  aspectRatio?: string
+  sizeMb?: number
+  durationSeconds?: number
+}
+
+export type DianxiaomiSizeChartSnapshot = {
+  required?: boolean
+  present: boolean
+  imageCount?: number
+  format?: string
+  sizeMb?: number
+}
+
+export type DianxiaomiFulfillmentSnapshot = {
+  mode?: string
+  warehouseName?: string
+  leadTimeDays?: number
+  valid?: boolean
+}
+
 export type DianxiaomiListingRequirementRules = {
   presetName: string
   title: {
@@ -104,10 +160,24 @@ export type DianxiaomiListingRequirementRules = {
     maxHeightPx: number
     maxSizeMb: number
     dianxiaomiTools: string[]
+    imageTypes: Record<DianxiaomiImageRequirementType, DianxiaomiImageRequirementRule>
   }
   sku: {
     required: boolean
     minCount: number
+  }
+  listingMetadata: {
+    maxVariantCount: number
+    requireSizeChart: boolean
+    manualDocumentAllowedFormats: string[]
+    manualDocumentMaxSizeMb: number
+    manualDocumentRequireEnglishOnly: boolean
+    videoAllowedAspectRatios: string[]
+    videoMaxSizeMb: number
+    sizeChartRequiredImageCount: number
+    sizeChartAllowedFormats: string[]
+    sizeChartMaxSizeMb: number
+    blockInvalidFulfillmentRouting: boolean
   }
   price: {
     required: boolean
@@ -228,6 +298,8 @@ export type DianxiaomiPublishOutcome = {
 export type DianxiaomiProductWorkItem = {
   id: string
   source: "dianxiaomi"
+  storeId?: string
+  storeName?: string
   collectedProductId?: string
   pageUrl: string
   pageTitle: string
@@ -241,6 +313,7 @@ export type DianxiaomiProductWorkItem = {
     hasTitle: boolean
     imageCount: number
     skuCount: number
+    variantCount?: number
     priceFieldCount: number
     stockFieldCount: number
     attributeKeys: string[]
@@ -251,7 +324,12 @@ export type DianxiaomiProductWorkItem = {
       maxHeightPx: number
       unknownDimensionCount: number
     }
+    imageTypeStats?: Partial<Record<DianxiaomiImageRequirementType, DianxiaomiImageTypeStats>>
     mediaToolSignals?: string[]
+    manualDocument?: DianxiaomiManualDocumentSnapshot
+    video?: DianxiaomiVideoSnapshot
+    sizeChart?: DianxiaomiSizeChartSnapshot
+    fulfillment?: DianxiaomiFulfillmentSnapshot
   }
   requirements: {
     presetName: string
@@ -485,6 +563,17 @@ export type SelectorDiagnosisCandidate = {
 export type SelectorDiagnosisCheck = {
   ok: boolean
   candidates: SelectorDiagnosisCandidate[]
+  data?: Record<string, unknown>
+}
+
+export type SelectorMediaActionSamplingTool = {
+  id: string
+  configKey: string
+  status: "sampled" | "missing-tool" | "no-dialog" | "close-failed" | "failed" | "skipped" | "instant-action-blocked" | "instant-action-recognized"
+  sampledButtonCount: number
+  reason: string
+  entryText?: string
+  error?: string
 }
 
 export type SelectorDiagnosisReport = {
@@ -503,6 +592,18 @@ export type SelectorDiagnosisReport = {
   buttons: Record<string, SelectorDiagnosisCheck>
   mediaTools?: Record<string, SelectorDiagnosisCheck>
   mediaToolActions?: Record<string, Record<string, SelectorDiagnosisCheck>>
+  listingMetadata?: {
+    variantCount?: number
+    manualDocument?: DianxiaomiManualDocumentSnapshot
+    video?: DianxiaomiVideoSnapshot
+    sizeChart?: DianxiaomiSizeChartSnapshot
+    fulfillment?: DianxiaomiFulfillmentSnapshot
+  }
+  imageTypeStats?: Partial<Record<DianxiaomiImageRequirementType, DianxiaomiImageTypeStats>>
+  mediaActionSampling?: {
+    enabled: boolean
+    tools: SelectorMediaActionSamplingTool[]
+  }
   skuRows: {
     ok: boolean
     count: number
@@ -694,6 +795,8 @@ export type SelectorCalibrationStartInput = Partial<{
   screenshots: string
   sampleMediaActions: boolean
   mediaAutomationTools: string[]
+  keepOpen: boolean
+  saveConfig: boolean
 }>
 
 export type SelectorCalibrationStartResult = {
@@ -704,6 +807,7 @@ export type SelectorCalibrationStartResult = {
   logPath: string
   errorLogPath: string
   artifactDir: string
+  saveConfig: boolean
 }
 
 export type SelectorCalibrationJobStatus = "running" | "completed" | "failed"
@@ -713,6 +817,8 @@ export type SelectorCalibrationJob = SelectorCalibrationStartResult & {
   finishedAt: string | null
   exitCode: number | null
   error: string | null
+  selectorConfigResult: SelectorConfigGenerationResult | null
+  selectorConfigError: string | null
 }
 
 export type SelectorCalibrationJobLog = {
@@ -847,12 +953,16 @@ export type AutomationFullFlowJob = AutomationFullFlowStartResult & {
 
 export type AutomationQueueRunStartInput = AutomationFullFlowStartInput & Partial<{
   limit: number
+  storeId: string
+  storeName: string
 }>
 
 export type AutomationQueueRunStartResult = {
   id: string
   startedAt: string
   limit: number
+  storeId?: string
+  storeName?: string
   queued: number
   skipped: number
   autoRetryReleasedIds: string[]

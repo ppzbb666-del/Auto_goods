@@ -1,4 +1,6 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
 import type { Locator, Page } from "playwright"
 import type { PublishTask } from "@temu-ai-ops/shared"
 
@@ -25,14 +27,29 @@ export type RunnerOptions = {
   mediaAutomationMode: MediaAutomationMode
   mediaAutomationTools: string[]
   sampleMediaActions: boolean
+  keepOpen: boolean
   submitMaxAttempts: number
 }
 
 export const DEFAULT_DIANXIAOMI_URL = "https://www.dianxiaomi.com/"
 export const DEFAULT_TEMU_URL = "https://seller.temu.com/"
 export const DEFAULT_TASK_API_URL = "http://localhost:8787/tasks/active?requireApproved=true"
-export const DEFAULT_SCREENSHOT_DIR = "output/playwright"
 export const EDITABLE_SELECTOR = "input:not([type='hidden']):not([disabled]), textarea:not([disabled]), [contenteditable='true']"
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..")
+
+export const getRepoRoot = () => REPO_ROOT
+export const DEFAULT_SCREENSHOT_DIR = path.join(REPO_ROOT, "output/playwright")
+export const DEFAULT_SELECTOR_CONFIG_PATH = path.join(REPO_ROOT, ".runtime/dianxiaomi-selector-config.json")
+export const getDefaultProfileDir = (platform: Platform) => path.join(REPO_ROOT, `.runtime/playwright/${platform}-profile`)
+
+export const resolveRepoPath = (value: string | undefined) => {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return undefined
+  }
+
+  return path.isAbsolute(trimmed) ? trimmed : path.join(REPO_ROOT, trimmed)
+}
 
 export const ensureDirectory = (directory: string) => {
   mkdirSync(directory, {
@@ -95,15 +112,15 @@ export const parsePlatform = (value: string | undefined): Platform => {
 export const getOptions = (): RunnerOptions => {
   const platform = parsePlatform(getArgValue("platform") ?? process.env.PLATFORM)
   const defaultUrl = platform === "dianxiaomi" ? DEFAULT_DIANXIAOMI_URL : DEFAULT_TEMU_URL
-  const defaultProfileDir = `.runtime/playwright/${platform}-profile`
+  const defaultProfileDir = getDefaultProfileDir(platform)
 
   return {
     platform,
     targetUrl: getArgValue("url") ?? process.env.TEMU_TARGET_URL ?? defaultUrl,
     taskApiUrl: getArgValue("task-api") ?? process.env.TEMU_TASK_API_URL ?? DEFAULT_TASK_API_URL,
-    taskFile: getArgValue("task-file") ?? process.env.TEMU_TASK_FILE,
-    repairPlanFile: getArgValue("repair-plan-file") ?? process.env.DIANXIAOMI_REPAIR_PLAN_FILE,
-    profileDir: getArgValue("profile") ?? process.env.TEMU_PROFILE_DIR ?? defaultProfileDir,
+    taskFile: resolveRepoPath(getArgValue("task-file") ?? process.env.TEMU_TASK_FILE),
+    repairPlanFile: resolveRepoPath(getArgValue("repair-plan-file") ?? process.env.DIANXIAOMI_REPAIR_PLAN_FILE),
+    profileDir: resolveRepoPath(getArgValue("profile") ?? process.env.TEMU_PROFILE_DIR ?? defaultProfileDir) ?? defaultProfileDir,
     headed: parseBoolean(getArgValue("headed") ?? process.env.HEADED, true),
     slowMo: Number(getArgValue("slow-mo") ?? process.env.SLOW_MO ?? 80),
     saveDraft: parseBoolean(getArgValue("save-draft") ?? process.env.SAVE_DRAFT, true),
@@ -111,11 +128,12 @@ export const getOptions = (): RunnerOptions => {
     review: parseBoolean(getArgValue("review") ?? process.env.REVIEW, false),
     dryRun: parseBoolean(getArgValue("dry-run") ?? process.env.DRY_RUN, false),
     repairMode: parseRepairMode(getArgValue("repair-mode") ?? process.env.DIANXIAOMI_REPAIR_MODE),
-    screenshotDir: getArgValue("screenshots") ?? process.env.SCREENSHOT_DIR ?? DEFAULT_SCREENSHOT_DIR,
-    selectorConfig: getArgValue("selector-config") ?? process.env.SELECTOR_CONFIG ?? ".runtime/dianxiaomi-selector-config.json",
+    screenshotDir: resolveRepoPath(getArgValue("screenshots") ?? process.env.SCREENSHOT_DIR ?? DEFAULT_SCREENSHOT_DIR) ?? DEFAULT_SCREENSHOT_DIR,
+    selectorConfig: resolveRepoPath(getArgValue("selector-config") ?? process.env.SELECTOR_CONFIG ?? DEFAULT_SELECTOR_CONFIG_PATH) ?? DEFAULT_SELECTOR_CONFIG_PATH,
     mediaAutomationMode: parseMediaAutomationMode(getArgValue("media-automation-mode") ?? process.env.MEDIA_AUTOMATION_MODE),
     mediaAutomationTools: parseStringList(getArgValue("media-automation-tools") ?? process.env.MEDIA_AUTOMATION_TOOLS),
     sampleMediaActions: parseBoolean(getArgValue("sample-media-actions") ?? process.env.SAMPLE_MEDIA_ACTIONS, false),
+    keepOpen: parseBoolean(getArgValue("keep-open") ?? process.env.KEEP_OPEN, true),
     submitMaxAttempts: parsePositiveInteger(getArgValue("submit-max-attempts") ?? process.env.SUBMIT_MAX_ATTEMPTS, 3)
   }
 }

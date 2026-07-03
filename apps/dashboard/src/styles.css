@@ -1272,6 +1272,12 @@ button {
   border-color: #e19a84;
 }
 
+.job-stack {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
 .automation-gate-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

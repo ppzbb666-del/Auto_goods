@@ -151,11 +151,24 @@ export const fetchDebugSnapshots = async (): Promise<PageDebugSnapshot[]> => {
   return response.json()
 }
 
-export const fetchDianxiaomiCollectedProducts = async (): Promise<DianxiaomiCollectedProduct[]> => {
-  const response = await fetch(`${API_BASE}/dianxiaomi/collected-products`)
+export const fetchDianxiaomiCollectedProducts = async (input: {
+  storeId?: string
+  storeName?: string
+} = {}): Promise<DianxiaomiCollectedProduct[]> => {
+  const query = new URLSearchParams()
+  if (input.storeId?.trim()) {
+    query.set("storeId", input.storeId.trim())
+  }
+  if (input.storeName?.trim()) {
+    query.set("storeName", input.storeName.trim())
+  }
+  const response = await fetch(`${API_BASE}/dianxiaomi/collected-products${query.size > 0 ? `?${query.toString()}` : ""}`)
   assertOk(response, "dianxiaomi collected products loading failed")
   return response.json()
 }
+
+export const fetchDianxiaomiCollectedProductsDefault = async (): Promise<DianxiaomiCollectedProduct[]> =>
+  fetchDianxiaomiCollectedProducts()
 
 export const createTaskFromDianxiaomiCollectedProduct = async (id: string): Promise<DianxiaomiCollectedProductImportResult> => {
   const response = await fetch(`${API_BASE}/dianxiaomi/collected-products/${encodeURIComponent(id)}/task`, {
@@ -165,11 +178,24 @@ export const createTaskFromDianxiaomiCollectedProduct = async (id: string): Prom
   return response.json()
 }
 
-export const fetchDianxiaomiProductWorkItems = async (): Promise<DianxiaomiProductWorkItem[]> => {
-  const response = await fetch(`${API_BASE}/dianxiaomi/product-work-items`)
+export const fetchDianxiaomiProductWorkItems = async (input: {
+  storeId?: string
+  storeName?: string
+} = {}): Promise<DianxiaomiProductWorkItem[]> => {
+  const query = new URLSearchParams()
+  if (input.storeId?.trim()) {
+    query.set("storeId", input.storeId.trim())
+  }
+  if (input.storeName?.trim()) {
+    query.set("storeName", input.storeName.trim())
+  }
+  const response = await fetch(`${API_BASE}/dianxiaomi/product-work-items${query.size > 0 ? `?${query.toString()}` : ""}`)
   assertOk(response, "dianxiaomi product work items loading failed")
   return response.json()
 }
+
+export const fetchDianxiaomiProductWorkItemsDefault = async (): Promise<DianxiaomiProductWorkItem[]> =>
+  fetchDianxiaomiProductWorkItems()
 
 export const createTaskFromDianxiaomiProductWorkItem = async (id: string): Promise<DianxiaomiProductWorkItemTaskResult> => {
   const response = await fetch(`${API_BASE}/dianxiaomi/product-work-items/${encodeURIComponent(id)}/task`, {

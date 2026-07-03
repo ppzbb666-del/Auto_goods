@@ -25,6 +25,8 @@ npm run selector-config:generate --workspace @temu-ai-ops/automation
 .runtime/dianxiaomi-selector-config.json
 ```
 
+This path is resolved from the repository root. Automation runner, real calibration, and dashboard all read and write this same production selector config.
+
 ## Use Config
 
 自动填表 runner 默认读取 `.runtime/dianxiaomi-selector-config.json`。

@@ -25,8 +25,10 @@ import {
   fetchAutomationTaskFileExportDiff,
   fetchAutomationTaskFileExports,
   fetchDianxiaomiCollectedProducts,
+  fetchDianxiaomiCollectedProductsDefault,
   fetchDianxiaomiRequirementRules,
   fetchDianxiaomiProductWorkItems,
+  fetchDianxiaomiProductWorkItemsDefault,
   fetchAutomationPreflight,
   fetchAutomationQueueDaemon,
   fetchAutomationQueueDaemonHealth,
@@ -137,6 +139,13 @@ import {
 } from "./lib/dashboard-helpers"
 import { useDailyDashboard } from "./lib/use-daily-dashboard"
 
+type StoreScopeOption = {
+  key: string
+  storeId?: string
+  storeName?: string
+  label: string
+}
+
 export function App() {
   const { tasks, setTasks, activeTaskId, setActiveTaskId } = useDashboardStore()
   const [csvText, setCsvText] = useState(csvExample)
@@ -180,6 +189,7 @@ export function App() {
   const [automationQueueDaemonMaxFailures, setAutomationQueueDaemonMaxFailures] = useState("3")
   const [showAdvancedConsole, setShowAdvancedConsole] = useState(false)
   const [showDailyDetails, setShowDailyDetails] = useState(false)
+  const [selectedStoreScopeKey, setSelectedStoreScopeKey] = useState("auto")
   const automationStartInput = createAutomationStartInput(automationLaunchDraft)
   const automationReadinessKey = [
     automationStartInput.url ?? "",
@@ -220,15 +230,15 @@ export function App() {
     .slice(0, 6)
   const blockedTaskFileExportCount = automationTaskFileExports.filter((item) => item.launchStatus.status === "blocked").length
 
-  const { data: dianxiaomiCollectedProducts = [], refetch: refetchDianxiaomiCollectedProducts } = useQuery({
+  const { data: allDianxiaomiCollectedProducts = [], refetch: refetchDianxiaomiCollectedProducts } = useQuery({
     queryKey: ["dianxiaomi-collected-products"],
-    queryFn: fetchDianxiaomiCollectedProducts,
+    queryFn: fetchDianxiaomiCollectedProductsDefault,
     refetchInterval: 10000
   })
 
-  const { data: dianxiaomiProductWorkItems = [], refetch: refetchDianxiaomiProductWorkItems, isError: dianxiaomiProductWorkItemsError, error: dianxiaomiProductWorkItemsQueryError } = useQuery({
+  const { data: allDianxiaomiProductWorkItems = [], refetch: refetchDianxiaomiProductWorkItems, isError: dianxiaomiProductWorkItemsError, error: dianxiaomiProductWorkItemsQueryError } = useQuery({
     queryKey: ["dianxiaomi-product-work-items"],
-    queryFn: fetchDianxiaomiProductWorkItems,
+    queryFn: fetchDianxiaomiProductWorkItemsDefault,
     refetchInterval: 10000
   })
 
@@ -1186,6 +1196,72 @@ export function App() {
   const selectedReviewableTaskIds = selectedTaskIds.filter((taskId) => tasks.some((task) => task.id === taskId && task.status !== "approved" && task.status !== "rejected"))
   const batchPublishableCount = batchPublishChecks.filter((check) => check.canPublish).length
   const batchBlockingCount = batchPublishChecks.length - batchPublishableCount
+  const storeScopeOptions = Array.from(new Map(
+    [...allDianxiaomiProductWorkItems, ...allDianxiaomiCollectedProducts]
+      .map((item) => {
+        const normalizedStoreId = item.storeId?.trim() || undefined
+        const normalizedStoreName = item.storeName?.trim() || undefined
+        if (!normalizedStoreId && !normalizedStoreName) {
+          return null
+        }
+        const key = normalizedStoreId ? `id:${normalizedStoreId}` : `name:${normalizedStoreName}`
+        return [key, {
+          key,
+          storeId: normalizedStoreId,
+          storeName: normalizedStoreName,
+          label: normalizedStoreName ?? normalizedStoreId ?? key
+        } satisfies StoreScopeOption] as const
+      })
+      .filter((entry): entry is readonly [string, StoreScopeOption] => Boolean(entry))
+  ).values()).sort((left, right) => left.label.localeCompare(right.label, "zh-CN"))
+  const defaultReadyStoreScope = allDianxiaomiProductWorkItems
+    .filter((item) => item.status === "ready-for-automation")
+    .map((item) => {
+      const normalizedStoreId = item.storeId?.trim() || undefined
+      const normalizedStoreName = item.storeName?.trim() || undefined
+      if (!normalizedStoreId && !normalizedStoreName) {
+        return null
+      }
+      const key = normalizedStoreId ? `id:${normalizedStoreId}` : `name:${normalizedStoreName}`
+      return storeScopeOptions.find((option) => option.key === key) ?? {
+        key,
+        storeId: normalizedStoreId,
+        storeName: normalizedStoreName,
+        label: normalizedStoreName ?? normalizedStoreId ?? key
+      }
+    })
+    .find((item): item is StoreScopeOption => Boolean(item))
+    ?? storeScopeOptions[0]
+    ?? null
+  const selectedStoreScope = selectedStoreScopeKey === "auto"
+    ? defaultReadyStoreScope
+    : storeScopeOptions.find((option) => option.key === selectedStoreScopeKey) ?? null
+  const filterByStoreScope = <T extends { storeId?: string; storeName?: string }>(items: T[]) => {
+    if (!selectedStoreScope) {
+      return items
+    }
+
+    if (selectedStoreScope.storeId) {
+      return items.filter((item) => item.storeId?.trim() === selectedStoreScope.storeId)
+    }
+
+    if (selectedStoreScope.storeName) {
+      return items.filter((item) => !item.storeId?.trim() && item.storeName?.trim() === selectedStoreScope.storeName)
+    }
+
+    return items
+  }
+  const dianxiaomiCollectedProducts = filterByStoreScope(allDianxiaomiCollectedProducts)
+  const dianxiaomiProductWorkItems = filterByStoreScope(allDianxiaomiProductWorkItems)
+  const selectedStoreScopeSummary = selectedStoreScope
+    ? `${selectedStoreScope.label}${selectedStoreScope.storeId ? ` (${selectedStoreScope.storeId})` : ""}`
+    : "all stores"
+  const selectedStoreQueueInput = selectedStoreScope
+    ? {
+        storeId: selectedStoreScope.storeId,
+        storeName: selectedStoreScope.storeName
+      }
+    : {}
   const latestQueueTick = automationQueueDaemon?.ticks[0] ?? null
   const latestFullFlowJob = automationFullFlowJobs[0] ?? null
   const readyWorkItems = dianxiaomiProductWorkItems.filter((item) => item.status === "ready-for-automation")
@@ -1258,6 +1334,7 @@ export function App() {
     : defaultDailyMediaAutomationTools
   const defaultQueueDaemonInput = {
     ...automationStartInput,
+    ...selectedStoreQueueInput,
     mediaAutomationMode: "unattended-apply" as const,
     mediaAutomationTools: dailyMediaAutomationTools,
     intervalSeconds: Number.parseInt(automationQueueDaemonInterval, 10) || 300,
@@ -1267,6 +1344,7 @@ export function App() {
   }
   const dailyTrialQueueRunInput = {
     ...automationStartInput,
+    ...selectedStoreQueueInput,
     mediaAutomationMode: "unattended-apply" as const,
     mediaAutomationTools: dailyMediaAutomationTools,
     limit: 3,
@@ -1274,15 +1352,21 @@ export function App() {
   }
   const defaultRecoveryRunInput = {
     ...automationStartInput,
+    ...selectedStoreQueueInput,
     mediaAutomationMode: "unattended-apply" as const,
     mediaAutomationTools: dailyMediaAutomationTools,
     submitAfterSave: true,
     limit: 5
   }
   const dailySelectorCalibrationInput = {
-    headed: true,
+    url: automationStartInput.url,
+    profile: automationStartInput.profile,
+    screenshots: automationStartInput.screenshots,
+    headed: false,
     sampleMediaActions: true,
-    mediaAutomationTools: dailyMediaAutomationTools
+    mediaAutomationTools: dailyMediaAutomationTools,
+    keepOpen: false,
+    saveConfig: true
   }
   const requestManualBudgetTrial = (proposal: AutomationManualStepBudgetTrialProposal) => {
     void manualBudgetTrialRunner.mutateAsync({

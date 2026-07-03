@@ -8,6 +8,7 @@
     "snapshot": "tsx src/snapshot.ts",
     "snapshot:diagnose": "tsx src/snapshot-diagnose.ts",
     "selector-config:generate": "tsx src/selector-config-generate.ts",
+    "real-calibration": "tsx src/real-calibration.ts",
     "report": "tsx src/report.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"

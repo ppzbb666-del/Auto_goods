@@ -165,6 +165,72 @@ const logisticsRateTierSchema = z.object({
   usdPerKg: z.number().nonnegative()
 })
 
+const dianxiaomiImageRequirementRuleSchema = z.object({
+  required: z.boolean(),
+  minCount: z.number().int().nonnegative(),
+  widthPx: z.number().int().positive(),
+  heightPx: z.number().int().positive(),
+  maxSizeMb: z.number().nonnegative(),
+  requireTranslation: z.boolean(),
+  requireWhiteBackground: z.boolean(),
+  requireSizeNormalization: z.boolean(),
+  dianxiaomiTools: z.array(z.string())
+})
+
+const dianxiaomiImageRequirementRuleInputSchema = dianxiaomiImageRequirementRuleSchema.partial()
+
+const dianxiaomiImageTypeRequirementRulesSchema = z.object({
+  mainImage: dianxiaomiImageRequirementRuleInputSchema.optional(),
+  detailImage: dianxiaomiImageRequirementRuleInputSchema.optional(),
+  skuImage: dianxiaomiImageRequirementRuleInputSchema.optional()
+}).optional()
+
+const dianxiaomiImageTypeStatsSchema = z.object({
+  count: z.number().int().nonnegative(),
+  minWidthPx: z.number().int().nonnegative(),
+  minHeightPx: z.number().int().nonnegative(),
+  maxWidthPx: z.number().int().nonnegative(),
+  maxHeightPx: z.number().int().nonnegative(),
+  unknownDimensionCount: z.number().int().nonnegative(),
+  maxSizeMb: z.number().nonnegative().optional(),
+  unknownSizeCount: z.number().int().nonnegative().optional()
+})
+
+const dianxiaomiImageTypeStatsMapSchema = z.object({
+  mainImage: dianxiaomiImageTypeStatsSchema.optional(),
+  detailImage: dianxiaomiImageTypeStatsSchema.optional(),
+  skuImage: dianxiaomiImageTypeStatsSchema.optional()
+}).optional()
+
+const dianxiaomiManualDocumentSnapshotSchema = z.object({
+  present: z.boolean(),
+  format: z.string().optional(),
+  sizeMb: z.number().nonnegative().optional(),
+  englishOnly: z.boolean().optional()
+}).optional()
+
+const dianxiaomiVideoSnapshotSchema = z.object({
+  present: z.boolean(),
+  aspectRatio: z.string().optional(),
+  sizeMb: z.number().nonnegative().optional(),
+  durationSeconds: z.number().nonnegative().optional()
+}).optional()
+
+const dianxiaomiSizeChartSnapshotSchema = z.object({
+  required: z.boolean().optional(),
+  present: z.boolean(),
+  imageCount: z.number().int().nonnegative().optional(),
+  format: z.string().optional(),
+  sizeMb: z.number().nonnegative().optional()
+}).optional()
+
+const dianxiaomiFulfillmentSnapshotSchema = z.object({
+  mode: z.string().optional(),
+  warehouseName: z.string().optional(),
+  leadTimeDays: z.number().int().nonnegative().optional(),
+  valid: z.boolean().optional()
+}).optional()
+
 const dianxiaomiRequirementRulesSchema = z.object({
   presetName: z.string().min(1),
   title: z.object({
@@ -188,11 +254,25 @@ const dianxiaomiRequirementRulesSchema = z.object({
     maxWidthPx: z.number().int().positive(),
     maxHeightPx: z.number().int().positive(),
     maxSizeMb: z.number().nonnegative(),
-    dianxiaomiTools: z.array(z.string())
+    dianxiaomiTools: z.array(z.string()),
+    imageTypes: dianxiaomiImageTypeRequirementRulesSchema
   }),
   sku: z.object({
     required: z.boolean(),
     minCount: z.number().int().nonnegative()
+  }),
+  listingMetadata: z.object({
+    maxVariantCount: z.number().int().positive(),
+    requireSizeChart: z.boolean(),
+    manualDocumentAllowedFormats: z.array(z.string()),
+    manualDocumentMaxSizeMb: z.number().nonnegative(),
+    manualDocumentRequireEnglishOnly: z.boolean(),
+    videoAllowedAspectRatios: z.array(z.string()),
+    videoMaxSizeMb: z.number().nonnegative(),
+    sizeChartRequiredImageCount: z.number().int().positive(),
+    sizeChartAllowedFormats: z.array(z.string()),
+    sizeChartMaxSizeMb: z.number().nonnegative(),
+    blockInvalidFulfillmentRouting: z.boolean()
   }),
   price: z.object({
     required: z.boolean(),
@@ -251,7 +331,9 @@ const automationDryRunSchema = z.object({
 })
 
 const automationQueueRunSchema = automationDryRunSchema.extend({
-  limit: z.number().int().positive().max(20).optional()
+  limit: z.number().int().positive().max(20).optional(),
+  storeId: z.string().optional(),
+  storeName: z.string().optional()
 })
 
 const automationRecoveryRunSchema = automationQueueRunSchema.extend({
@@ -342,6 +424,8 @@ const automationTaskFileExportSchema = z.object({
 
 const dianxiaomiCollectedProductSchema = z.object({
   id: z.string().optional(),
+  storeId: z.string().optional(),
+  storeName: z.string().optional(),
   pageUrl: z.string(),
   pageTitle: z.string(),
   collectedAt: z.string().optional(),
@@ -377,6 +461,8 @@ const dianxiaomiCollectedProductSchema = z.object({
 const dianxiaomiProductWorkItemSchema = z.object({
   id: z.string().optional(),
   source: z.literal("dianxiaomi").optional(),
+  storeId: z.string().optional(),
+  storeName: z.string().optional(),
   collectedProductId: z.string().optional(),
   pageUrl: z.string(),
   pageTitle: z.string(),
@@ -390,6 +476,7 @@ const dianxiaomiProductWorkItemSchema = z.object({
     hasTitle: z.boolean().default(false),
     imageCount: z.number().int().nonnegative().default(0),
     skuCount: z.number().int().nonnegative().default(0),
+    variantCount: z.number().int().nonnegative().optional(),
     priceFieldCount: z.number().int().nonnegative().default(0),
     stockFieldCount: z.number().int().nonnegative().default(0),
     attributeKeys: z.array(z.string()).default([]),
@@ -400,7 +487,12 @@ const dianxiaomiProductWorkItemSchema = z.object({
       maxHeightPx: z.number().int().nonnegative(),
       unknownDimensionCount: z.number().int().nonnegative()
     }).optional(),
-    mediaToolSignals: z.array(z.string()).default([])
+    imageTypeStats: dianxiaomiImageTypeStatsMapSchema,
+    mediaToolSignals: z.array(z.string()).default([]),
+    manualDocument: dianxiaomiManualDocumentSnapshotSchema,
+    video: dianxiaomiVideoSnapshotSchema,
+    sizeChart: dianxiaomiSizeChartSnapshotSchema,
+    fulfillment: dianxiaomiFulfillmentSnapshotSchema
   }),
   status: z.enum(["needs-revision", "ready-for-automation", "blocked", "edited"]).optional(),
   requirements: z.object({
@@ -510,7 +602,9 @@ const selectorCalibrationSchema = z.object({
   profile: z.string().optional(),
   screenshots: z.string().optional(),
   sampleMediaActions: z.boolean().optional(),
-  mediaAutomationTools: z.array(z.string()).optional()
+  mediaAutomationTools: z.array(z.string()).optional(),
+  keepOpen: z.boolean().optional(),
+  saveConfig: z.boolean().optional()
 })
 
 const selectorConfigSchema = z.object({
@@ -1341,18 +1435,28 @@ app.post("/debug-snapshots", async (request) => {
 
 app.get("/dianxiaomi/collected-products", async (request) => {
   const query = z.object({
-    limit: z.coerce.number().int().positive().max(100).default(20)
+    limit: z.coerce.number().int().positive().max(100).default(20),
+    storeId: z.string().optional(),
+    storeName: z.string().optional()
   }).parse(request.query)
 
-  return listDianxiaomiCollectedProducts(query.limit)
+  return listDianxiaomiCollectedProducts(query.limit, {
+    storeId: query.storeId,
+    storeName: query.storeName
+  })
 })
 
 app.get("/dianxiaomi/product-work-items", async (request) => {
   const query = z.object({
-    limit: z.coerce.number().int().positive().max(100).default(20)
+    limit: z.coerce.number().int().positive().max(100).default(20),
+    storeId: z.string().optional(),
+    storeName: z.string().optional()
   }).parse(request.query)
 
-  return listDianxiaomiProductWorkItems(query.limit)
+  return listDianxiaomiProductWorkItems(query.limit, {
+    storeId: query.storeId,
+    storeName: query.storeName
+  })
 })
 
 app.post("/dianxiaomi/product-work-items", async (request) => {

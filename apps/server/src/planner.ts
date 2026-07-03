@@ -15,8 +15,11 @@ import {
   type CsvImportResult,
   type DianxiaomiCollectedProduct,
   type DianxiaomiCollectedProductImportResult,
+  type DianxiaomiImageRequirementRule,
+  type DianxiaomiImageRequirementType,
   type DianxiaomiListingRequirementCheck,
   type DianxiaomiListingRequirementRules,
+  type DianxiaomiSizeChartSnapshot,
   type DianxiaomiPublishOutcome,
   type DianxiaomiProductSuggestedEdit,
   type DianxiaomiProductRepairAction,
@@ -84,14 +87,67 @@ type DianxiaomiCollectedProductInput =
   Omit<DianxiaomiCollectedProduct, "id" | "collectedAt" | "quality"> &
   Partial<Pick<DianxiaomiCollectedProduct, "id" | "collectedAt" | "quality">>
 
-type WorkItemQualityInput = Pick<DianxiaomiProductWorkItemInput, "title" | "snapshot" | "rawTextSample">
+type WorkItemQualityInput = Pick<
+  DianxiaomiProductWorkItemInput,
+  "title" | "snapshot" | "rawTextSample" | "pageProfile" | "pageTitle" | "pageUrl" | "notes" | "requirements"
+>
+
+const DIANXIAOMI_IMAGE_REQUIREMENT_TYPES: DianxiaomiImageRequirementType[] = ["mainImage", "detailImage", "skuImage"]
+const DEFAULT_TEMU_MAX_VARIANT_COUNT = 20
+const DEFAULT_TEMU_ALLOWED_VIDEO_ASPECT_RATIOS = ["1:1", "3:4", "16:9"]
+const DEFAULT_TEMU_ALLOWED_SIZE_CHART_FORMATS = ["jpg", "jpeg", "png"]
+
+const DIANXIAOMI_IMAGE_REQUIREMENT_LABELS: Record<DianxiaomiImageRequirementType, string> = {
+  mainImage: "main image",
+  detailImage: "detail image",
+  skuImage: "SKU image"
+}
+
+const defaultDianxiaomiImageTypeRules: Record<DianxiaomiImageRequirementType, DianxiaomiImageRequirementRule> = {
+  mainImage: {
+    required: false,
+    minCount: 1,
+    widthPx: 800,
+    heightPx: 800,
+    maxSizeMb: 2,
+    requireTranslation: true,
+    requireWhiteBackground: false,
+    requireSizeNormalization: true,
+    dianxiaomiTools: ["image translation", "batch resize", "Xiaomi image editor"]
+  },
+  detailImage: {
+    required: false,
+    minCount: 1,
+    widthPx: 800,
+    heightPx: 800,
+    maxSizeMb: 2,
+    requireTranslation: true,
+    requireWhiteBackground: false,
+    requireSizeNormalization: true,
+    dianxiaomiTools: ["image translation", "batch resize", "Xiaomi image editor"]
+  },
+  skuImage: {
+    required: false,
+    minCount: 0,
+    widthPx: 800,
+    heightPx: 800,
+    maxSizeMb: 2,
+    requireTranslation: true,
+    requireWhiteBackground: false,
+    requireSizeNormalization: true,
+    dianxiaomiTools: ["image translation", "batch resize", "image management"]
+  }
+}
+
+export const PUBLISH_CHECK_TITLE_MAX_LENGTH_FALLBACK = 250
+export const PUBLISH_CHECK_STOCK_MAX = 99999
 
 export const defaultDianxiaomiRequirementRules: DianxiaomiListingRequirementRules = {
-  presetName: "temu-basic-listing-readiness",
+  presetName: "temu-semi-managed-listing-readiness",
   title: {
     required: true,
     minLength: 20,
-    maxLength: 160
+    maxLength: 250
   },
   images: {
     required: true,
@@ -108,12 +164,26 @@ export const defaultDianxiaomiRequirementRules: DianxiaomiListingRequirementRule
     minHeightPx: 800,
     maxWidthPx: 3000,
     maxHeightPx: 3000,
-    maxSizeMb: 5,
-    dianxiaomiTools: ["image translation", "white background", "Xiaomi image editor", "batch resize"]
+    maxSizeMb: 2,
+    dianxiaomiTools: ["image translation", "white background", "Xiaomi image editor", "batch resize"],
+    imageTypes: defaultDianxiaomiImageTypeRules
   },
   sku: {
     required: true,
     minCount: 1
+  },
+  listingMetadata: {
+    maxVariantCount: DEFAULT_TEMU_MAX_VARIANT_COUNT,
+    requireSizeChart: false,
+    manualDocumentAllowedFormats: ["pdf"],
+    manualDocumentMaxSizeMb: 15,
+    manualDocumentRequireEnglishOnly: true,
+    videoAllowedAspectRatios: DEFAULT_TEMU_ALLOWED_VIDEO_ASPECT_RATIOS,
+    videoMaxSizeMb: 500,
+    sizeChartRequiredImageCount: 1,
+    sizeChartAllowedFormats: DEFAULT_TEMU_ALLOWED_SIZE_CHART_FORMATS,
+    sizeChartMaxSizeMb: 3,
+    blockInvalidFulfillmentRouting: true
   },
   price: {
     required: true,
@@ -130,7 +200,16 @@ export const defaultDianxiaomiRequirementRules: DianxiaomiListingRequirementRule
   },
   compliance: {
     required: true,
-    blockedTerms: ["brand", "logo", "patent", "copyright", "trademark"]
+    blockedTerms: ["brand", "logo", "patent", "copyright", "trademark", "relateproductdetail"]
+  }
+}
+
+export const temuLocalDianxiaomiRequirementRules: DianxiaomiListingRequirementRules = {
+  ...defaultDianxiaomiRequirementRules,
+  presetName: "temu-local-listing-readiness",
+  title: {
+    ...defaultDianxiaomiRequirementRules.title,
+    maxLength: 500
   }
 }
 
@@ -138,8 +217,11 @@ type DianxiaomiRequirementRulesInput = Partial<{
   presetName: string
   title: Partial<DianxiaomiListingRequirementRules["title"]>
   images: Partial<DianxiaomiListingRequirementRules["images"]>
-  media: Partial<DianxiaomiListingRequirementRules["media"]>
+  media: Partial<Omit<DianxiaomiListingRequirementRules["media"], "imageTypes">> & {
+    imageTypes?: Partial<Record<DianxiaomiImageRequirementType, Partial<DianxiaomiImageRequirementRule>>>
+  }
   sku: Partial<DianxiaomiListingRequirementRules["sku"]>
+  listingMetadata: Partial<DianxiaomiListingRequirementRules["listingMetadata"]>
   price: Partial<DianxiaomiListingRequirementRules["price"]>
   stock: Partial<DianxiaomiListingRequirementRules["stock"]>
   attributes: Partial<DianxiaomiListingRequirementRules["attributes"]>
@@ -158,6 +240,43 @@ const normalizeStringList = (value: unknown, fallback: string[] = []) =>
   Array.from(new Set((Array.isArray(value) ? value : fallback)
     .map((item) => String(item).trim())
     .filter(Boolean)))
+
+const normalizeRequiredStringList = (
+  value: unknown,
+  fallback: string[],
+  options?: {
+    lowerCase?: boolean
+  }
+) => {
+  const normalized = normalizeStringList(value, fallback)
+    .map((item) => options?.lowerCase ? item.toLowerCase() : item)
+  return normalized.length > 0 ? normalized : fallback
+}
+
+const normalizeDianxiaomiImageTypeRule = (
+  input: Partial<DianxiaomiImageRequirementRule> | undefined,
+  fallback: DianxiaomiImageRequirementRule
+): DianxiaomiImageRequirementRule => ({
+  required: normalizeBoolean(input?.required, fallback.required),
+  minCount: normalizeInteger(input?.minCount, fallback.minCount),
+  widthPx: normalizeInteger(input?.widthPx, fallback.widthPx, 1),
+  heightPx: normalizeInteger(input?.heightPx, fallback.heightPx, 1),
+  maxSizeMb: Math.max(0, Number(input?.maxSizeMb ?? fallback.maxSizeMb)),
+  requireTranslation: normalizeBoolean(input?.requireTranslation, fallback.requireTranslation),
+  requireWhiteBackground: normalizeBoolean(input?.requireWhiteBackground, fallback.requireWhiteBackground),
+  requireSizeNormalization: normalizeBoolean(input?.requireSizeNormalization, fallback.requireSizeNormalization),
+  dianxiaomiTools: normalizeStringList(input?.dianxiaomiTools, fallback.dianxiaomiTools)
+})
+
+const normalizeDianxiaomiImageTypeRules = (
+  input: Partial<Record<DianxiaomiImageRequirementType, Partial<DianxiaomiImageRequirementRule>>> | undefined
+): Record<DianxiaomiImageRequirementType, DianxiaomiImageRequirementRule> =>
+  Object.fromEntries(
+    DIANXIAOMI_IMAGE_REQUIREMENT_TYPES.map((imageType) => [
+      imageType,
+      normalizeDianxiaomiImageTypeRule(input?.[imageType], defaultDianxiaomiImageTypeRules[imageType])
+    ])
+  ) as Record<DianxiaomiImageRequirementType, DianxiaomiImageRequirementRule>
 
 const normalizeDianxiaomiRequirementRules = (
   inputRules: DianxiaomiRequirementRulesInput | undefined
@@ -192,11 +311,46 @@ const normalizeDianxiaomiRequirementRules = (
       maxWidthPx: normalizeInteger(input.media?.maxWidthPx, defaultDianxiaomiRequirementRules.media.maxWidthPx, 1),
       maxHeightPx: normalizeInteger(input.media?.maxHeightPx, defaultDianxiaomiRequirementRules.media.maxHeightPx, 1),
       maxSizeMb: Math.max(0, Number(input.media?.maxSizeMb ?? defaultDianxiaomiRequirementRules.media.maxSizeMb)),
-      dianxiaomiTools: normalizeStringList(input.media?.dianxiaomiTools, defaultDianxiaomiRequirementRules.media.dianxiaomiTools)
+      dianxiaomiTools: normalizeStringList(input.media?.dianxiaomiTools, defaultDianxiaomiRequirementRules.media.dianxiaomiTools),
+      imageTypes: normalizeDianxiaomiImageTypeRules(input.media?.imageTypes)
     },
     sku: {
       required: normalizeBoolean(input.sku?.required, defaultDianxiaomiRequirementRules.sku.required),
       minCount: normalizeInteger(input.sku?.minCount, defaultDianxiaomiRequirementRules.sku.minCount)
+    },
+    listingMetadata: {
+      maxVariantCount: normalizeInteger(input.listingMetadata?.maxVariantCount, defaultDianxiaomiRequirementRules.listingMetadata.maxVariantCount, 1),
+      requireSizeChart: normalizeBoolean(input.listingMetadata?.requireSizeChart, defaultDianxiaomiRequirementRules.listingMetadata.requireSizeChart),
+      manualDocumentAllowedFormats: normalizeRequiredStringList(
+        input.listingMetadata?.manualDocumentAllowedFormats,
+        defaultDianxiaomiRequirementRules.listingMetadata.manualDocumentAllowedFormats,
+        { lowerCase: true }
+      ),
+      manualDocumentMaxSizeMb: Math.max(0, Number(input.listingMetadata?.manualDocumentMaxSizeMb ?? defaultDianxiaomiRequirementRules.listingMetadata.manualDocumentMaxSizeMb)),
+      manualDocumentRequireEnglishOnly: normalizeBoolean(
+        input.listingMetadata?.manualDocumentRequireEnglishOnly,
+        defaultDianxiaomiRequirementRules.listingMetadata.manualDocumentRequireEnglishOnly
+      ),
+      videoAllowedAspectRatios: normalizeRequiredStringList(
+        input.listingMetadata?.videoAllowedAspectRatios,
+        defaultDianxiaomiRequirementRules.listingMetadata.videoAllowedAspectRatios
+      ),
+      videoMaxSizeMb: Math.max(0, Number(input.listingMetadata?.videoMaxSizeMb ?? defaultDianxiaomiRequirementRules.listingMetadata.videoMaxSizeMb)),
+      sizeChartRequiredImageCount: normalizeInteger(
+        input.listingMetadata?.sizeChartRequiredImageCount,
+        defaultDianxiaomiRequirementRules.listingMetadata.sizeChartRequiredImageCount,
+        1
+      ),
+      sizeChartAllowedFormats: normalizeRequiredStringList(
+        input.listingMetadata?.sizeChartAllowedFormats,
+        defaultDianxiaomiRequirementRules.listingMetadata.sizeChartAllowedFormats,
+        { lowerCase: true }
+      ),
+      sizeChartMaxSizeMb: Math.max(0, Number(input.listingMetadata?.sizeChartMaxSizeMb ?? defaultDianxiaomiRequirementRules.listingMetadata.sizeChartMaxSizeMb)),
+      blockInvalidFulfillmentRouting: normalizeBoolean(
+        input.listingMetadata?.blockInvalidFulfillmentRouting,
+        defaultDianxiaomiRequirementRules.listingMetadata.blockInvalidFulfillmentRouting
+      )
     },
     price: {
       required: normalizeBoolean(input.price?.required, defaultDianxiaomiRequirementRules.price.required),
@@ -222,6 +376,96 @@ const persistedState = loadPlannerState()
 let pricingRules: PricingRules = persistedState?.pricingRules ?? defaultPricingRules
 let dianxiaomiRequirementRules: DianxiaomiListingRequirementRules =
   normalizeDianxiaomiRequirementRules(persistedState?.dianxiaomiRequirementRules)
+
+const deriveTemuLocalRequirementRules = (baseRules: DianxiaomiListingRequirementRules): DianxiaomiListingRequirementRules => ({
+  ...baseRules,
+  presetName: temuLocalDianxiaomiRequirementRules.presetName,
+  title: {
+    ...baseRules.title,
+    maxLength: Math.max(baseRules.title.minLength, temuLocalDianxiaomiRequirementRules.title.maxLength)
+  }
+})
+
+const deriveTemuSizeChartRequirementRules = (
+  baseRules: DianxiaomiListingRequirementRules,
+  presetName = "temu-size-chart-category-readiness"
+): DianxiaomiListingRequirementRules => ({
+  ...baseRules,
+  presetName,
+  listingMetadata: {
+    ...baseRules.listingMetadata,
+    requireSizeChart: true
+  }
+})
+
+const inferDianxiaomiRequirementRules = (
+  input: Pick<DianxiaomiProductWorkItemInput, "pageProfile" | "pageTitle" | "pageUrl" | "rawTextSample" | "notes" | "requirements">,
+  baseRules: DianxiaomiListingRequirementRules = dianxiaomiRequirementRules
+) => {
+  const hints = [
+    input.requirements?.presetName ?? "",
+    input.pageProfile ?? "",
+    input.pageTitle ?? "",
+    input.pageUrl ?? "",
+    input.rawTextSample ?? "",
+    ...(input.notes ?? [])
+  ].join("\n").toLowerCase()
+
+  const includesAnyHint = (patterns: string[]) =>
+    patterns.some((pattern) => hints.includes(pattern))
+
+  const isTemuLocal = [
+    "temu local",
+    "本土",
+    "local listing",
+    "local store",
+    "contribution sku",
+    "尺码表"
+  ].some((pattern) => hints.includes(pattern))
+
+  const isTemuLocalStoreMode = includesAnyHint([
+    "temu local",
+    "local listing",
+    "local store",
+    "contribution sku",
+    "\u672c\u571f",
+    "\u672c\u5730"
+  ])
+  const requiresSizeChart = includesAnyHint([
+    "size chart",
+    "size-chart",
+    "apparel",
+    "clothing",
+    "clothes",
+    "fashion",
+    "shoes",
+    "shoe",
+    "footwear",
+    "dress",
+    "skirt",
+    "pants",
+    "bra",
+    "underwear",
+    "\u5c3a\u7801\u8868",
+    "\u670d\u88c5",
+    "\u5973\u88c5",
+    "\u7537\u88c5",
+    "\u978b",
+    "\u978b\u7c7b",
+    "\u7ae5\u88c5"
+  ])
+  const useTemuLocalPreset = isTemuLocal && isTemuLocalStoreMode
+
+  if (useTemuLocalPreset && requiresSizeChart) {
+    return deriveTemuSizeChartRequirementRules(deriveTemuLocalRequirementRules(baseRules), "temu-local-size-chart-readiness")
+  }
+
+  if (useTemuLocalPreset) {
+    return deriveTemuLocalRequirementRules(baseRules)
+  }
+
+  return requiresSizeChart ? deriveTemuSizeChartRequirementRules(baseRules) : baseRules
+}
 
 const slugify = (value: string) =>
   value
@@ -319,12 +563,18 @@ const requiredLevel = (required: boolean): DianxiaomiListingRequirementCheck["le
 
 const buildDianxiaomiRequirementChecks = (
   input: WorkItemQualityInput,
-  rules: DianxiaomiListingRequirementRules = dianxiaomiRequirementRules
+  rulesInput?: DianxiaomiListingRequirementRules
 ): DianxiaomiListingRequirementCheck[] => {
+  const rules = rulesInput ?? inferDianxiaomiRequirementRules(input)
   const title = input.title?.trim() ?? ""
   const snapshot = input.snapshot
   const text = `${title}\n${input.rawTextSample ?? ""}`
   const lowerText = text.toLowerCase()
+  const variantCount = snapshot.variantCount
+  const manualDocument = snapshot.manualDocument
+  const video = snapshot.video
+  const sizeChart = snapshot.sizeChart
+  const fulfillment = snapshot.fulfillment
   const mediaToolSignals = (snapshot.mediaToolSignals ?? [])
     .map((signal) => signal.trim().toLowerCase())
     .filter(Boolean)
@@ -336,10 +586,211 @@ const buildDianxiaomiRequirementChecks = (
     && ((imageStats?.minWidthPx ?? 0) < rules.media.minWidthPx || (imageStats?.minHeightPx ?? 0) < rules.media.minHeightPx)
   const imageSizeTooLarge = Boolean(imageStats)
     && ((imageStats?.maxWidthPx ?? 0) > rules.media.maxWidthPx || (imageStats?.maxHeightPx ?? 0) > rules.media.maxHeightPx)
+  const imageTypeRequirementChecks = DIANXIAOMI_IMAGE_REQUIREMENT_TYPES.flatMap((imageType): DianxiaomiListingRequirementCheck[] => {
+    const rule = rules.media.imageTypes?.[imageType] ?? defaultDianxiaomiImageTypeRules[imageType]
+    const stats = snapshot.imageTypeStats?.[imageType]
+    const label = DIANXIAOMI_IMAGE_REQUIREMENT_LABELS[imageType]
+    const level = requiredLevel(rule.required)
+    const nativeToolPatterns = normalizeStringList([
+      ...rule.dianxiaomiTools,
+      ...(rule.requireTranslation ? ["image translation", "translation", "translate"] : []),
+      ...(rule.requireWhiteBackground ? ["white background"] : []),
+      ...(rule.requireSizeNormalization ? ["batch resize", "resize", "image editor"] : [])
+    ]).map((pattern) => pattern.toLowerCase())
+    const requiresNativeTool = rule.requireTranslation || rule.requireWhiteBackground || rule.requireSizeNormalization || rule.dianxiaomiTools.length > 0
+
+    if (!stats) {
+      if (!rule.required) {
+        return []
+      }
+
+      return [{
+        id: `image-type-${imageType}-stats`,
+        level,
+        ok: false,
+        message: `${label} stats are not available`,
+        recommendation: `Use Dianxiaomi native image tools for ${label}, then rescan this product before unattended publish.`
+      }]
+    }
+
+    const dimensionsOk = stats.unknownDimensionCount === 0
+      && stats.minWidthPx === rule.widthPx
+      && stats.maxWidthPx === rule.widthPx
+      && stats.minHeightPx === rule.heightPx
+      && stats.maxHeightPx === rule.heightPx
+    const fileSizeKnown = typeof stats.maxSizeMb === "number" && (stats.unknownSizeCount ?? 0) === 0
+    const checks: DianxiaomiListingRequirementCheck[] = [{
+      id: `image-type-${imageType}-count`,
+      level,
+      ok: stats.count >= rule.minCount,
+      message: `${stats.count} ${label} images detected`,
+      recommendation: `Keep at least ${rule.minCount} ${label} images in Dianxiaomi before unattended publish.`
+    }]
+
+    if (rule.requireSizeNormalization) {
+      checks.push({
+        id: `image-type-${imageType}-dimensions`,
+        level,
+        ok: dimensionsOk,
+        message: dimensionsOk
+          ? `${label} dimensions match ${rule.widthPx}x${rule.heightPx}`
+          : `${label} dimensions ${stats.minWidthPx}x${stats.minHeightPx} to ${stats.maxWidthPx}x${stats.maxHeightPx}, unknown ${stats.unknownDimensionCount}`,
+        recommendation: `Use Dianxiaomi batch resize or image editor to normalize ${label} images to ${rule.widthPx}x${rule.heightPx}.`
+      })
+    }
+
+    if (rule.maxSizeMb > 0 && (rule.required || fileSizeKnown || (stats.unknownSizeCount ?? 0) > 0)) {
+      checks.push({
+        id: `image-type-${imageType}-file-size`,
+        level,
+        ok: fileSizeKnown && (stats.maxSizeMb ?? 0) <= rule.maxSizeMb,
+        message: fileSizeKnown
+          ? `${label} max file size is ${stats.maxSizeMb}MB`
+          : `${label} file size stats are not available`,
+        recommendation: `Use Dianxiaomi image compression or batch resize to keep ${label} images at or below ${rule.maxSizeMb}MB.`
+      })
+    }
+
+    if (requiresNativeTool) {
+      checks.push({
+        id: `image-type-${imageType}-native-tools`,
+        level,
+        ok: hasMediaSignal(nativeToolPatterns),
+        message: hasMediaSignal(nativeToolPatterns)
+          ? `Dianxiaomi native media tool signal detected for ${label}`
+          : `Dianxiaomi native media tool action not confirmed for ${label}`,
+        recommendation: `Use Dianxiaomi native tools for ${label}: ${rule.dianxiaomiTools.join(", ") || rules.media.dianxiaomiTools.join(", ")}.`
+      })
+    }
+
+    return checks
+  })
   const blockedTerms = rules.compliance.blockedTerms
     .map((term) => term.trim().toLowerCase())
     .filter(Boolean)
   const matchedBlockedTerms = blockedTerms.filter((term) => lowerText.includes(term))
+  const manualDocumentAllowedFormats = new Set(rules.listingMetadata.manualDocumentAllowedFormats.map((format) => format.trim().toLowerCase()).filter(Boolean))
+  const videoAllowedAspectRatios = new Set(rules.listingMetadata.videoAllowedAspectRatios.map((ratio) => ratio.trim()).filter(Boolean))
+  const sizeChartAllowedFormats = new Set(rules.listingMetadata.sizeChartAllowedFormats.map((format) => format.trim().toLowerCase()).filter(Boolean))
+  const manualDocumentFormat = manualDocument?.format?.trim().toLowerCase()
+  const videoAspectRatio = video?.aspectRatio?.trim()
+  const effectiveSizeChart: DianxiaomiSizeChartSnapshot | undefined = sizeChart
+    ? {
+        ...sizeChart,
+        required: Boolean(sizeChart.required || rules.listingMetadata.requireSizeChart)
+      }
+    : rules.listingMetadata.requireSizeChart
+      ? {
+          required: true,
+          present: false
+        }
+      : undefined
+  const sizeChartFormat = effectiveSizeChart?.format?.trim().toLowerCase()
+  const variantRequirementChecks: DianxiaomiListingRequirementCheck[] = typeof variantCount === "number"
+    ? [{
+        id: "variant-count-limit",
+        level: "required",
+        ok: variantCount <= rules.listingMetadata.maxVariantCount,
+        message: `variant count is ${variantCount}`,
+        recommendation: `Keep Temu variants at or below ${rules.listingMetadata.maxVariantCount} before unattended publish.`
+      }]
+    : []
+  const manualDocumentChecks: DianxiaomiListingRequirementCheck[] = manualDocument?.present
+    ? [
+        {
+          id: "manual-document-format",
+          level: "required",
+          ok: !manualDocumentFormat || manualDocumentAllowedFormats.has(manualDocumentFormat),
+          message: manualDocumentFormat ? `manual document format is ${manualDocumentFormat}` : "manual document format not captured",
+          recommendation: `Attach the manual document as ${rules.listingMetadata.manualDocumentAllowedFormats.join(", ").toUpperCase()} before unattended publish.`
+        },
+        {
+          id: "manual-document-size",
+          level: "required",
+          ok: typeof manualDocument.sizeMb !== "number" || manualDocument.sizeMb <= rules.listingMetadata.manualDocumentMaxSizeMb,
+          message: typeof manualDocument.sizeMb === "number" ? `manual document size is ${manualDocument.sizeMb}MB` : "manual document size not captured",
+          recommendation: `Keep the manual document at or below ${rules.listingMetadata.manualDocumentMaxSizeMb}MB before unattended publish.`
+        },
+        {
+          id: "manual-document-language",
+          level: "required",
+          ok: !rules.listingMetadata.manualDocumentRequireEnglishOnly || manualDocument.englishOnly !== false,
+          message: !rules.listingMetadata.manualDocumentRequireEnglishOnly
+            ? "manual document English-only check is disabled"
+            : manualDocument.englishOnly === false
+              ? "manual document is not confirmed as English-only"
+              : "manual document language check passed",
+          recommendation: "Ensure the manual document content is English-only before unattended publish."
+        }
+      ]
+    : []
+  const videoChecks: DianxiaomiListingRequirementCheck[] = video?.present
+    ? [
+        {
+          id: "video-aspect-ratio",
+          level: "required",
+          ok: !videoAspectRatio || videoAllowedAspectRatios.has(videoAspectRatio),
+          message: videoAspectRatio ? `video aspect ratio is ${videoAspectRatio}` : "video aspect ratio not captured",
+          recommendation: `Keep Temu videos at ${rules.listingMetadata.videoAllowedAspectRatios.join(", ")}.`
+        },
+        {
+          id: "video-file-size",
+          level: "required",
+          ok: typeof video.sizeMb !== "number" || video.sizeMb <= rules.listingMetadata.videoMaxSizeMb,
+          message: typeof video.sizeMb === "number" ? `video file size is ${video.sizeMb}MB` : "video file size not captured",
+          recommendation: `Keep the video at or below ${rules.listingMetadata.videoMaxSizeMb}MB before unattended publish.`
+        }
+      ]
+    : []
+  const sizeChartChecks: DianxiaomiListingRequirementCheck[] = effectiveSizeChart
+    ? [
+        {
+          id: "size-chart-present",
+          level: requiredLevel(Boolean(effectiveSizeChart.required)),
+          ok: !effectiveSizeChart.required || effectiveSizeChart.present,
+          message: effectiveSizeChart.present ? "size chart asset detected" : "size chart asset missing",
+          recommendation: "Provide the required size chart asset in Dianxiaomi before unattended publish."
+        },
+        ...(effectiveSizeChart.present
+          ? [
+              {
+                id: "size-chart-image-count",
+                level: "required" as const,
+                ok: typeof effectiveSizeChart.imageCount !== "number" || effectiveSizeChart.imageCount === rules.listingMetadata.sizeChartRequiredImageCount,
+                message: typeof effectiveSizeChart.imageCount === "number" ? `size chart image count is ${effectiveSizeChart.imageCount}` : "size chart image count not captured",
+                recommendation: `Keep exactly ${rules.listingMetadata.sizeChartRequiredImageCount} size chart image for Temu local listing.`
+              },
+              {
+                id: "size-chart-format",
+                level: "required" as const,
+                ok: !sizeChartFormat || sizeChartAllowedFormats.has(sizeChartFormat),
+                message: sizeChartFormat ? `size chart format is ${sizeChartFormat}` : "size chart format not captured",
+                recommendation: `Use ${rules.listingMetadata.sizeChartAllowedFormats.join(", ")} for the size chart image.`
+              },
+              {
+                id: "size-chart-file-size",
+                level: "required" as const,
+                ok: typeof effectiveSizeChart.sizeMb !== "number" || effectiveSizeChart.sizeMb <= rules.listingMetadata.sizeChartMaxSizeMb,
+                message: typeof effectiveSizeChart.sizeMb === "number" ? `size chart file size is ${effectiveSizeChart.sizeMb}MB` : "size chart file size not captured",
+                recommendation: `Keep the size chart image at or below ${rules.listingMetadata.sizeChartMaxSizeMb}MB before unattended publish.`
+              }
+            ]
+          : [])
+      ]
+    : []
+  const fulfillmentChecks: DianxiaomiListingRequirementCheck[] = fulfillment
+    ? [{
+        id: "fulfillment-routing",
+        level: "required",
+        ok: !rules.listingMetadata.blockInvalidFulfillmentRouting || fulfillment.valid !== false,
+        message: !rules.listingMetadata.blockInvalidFulfillmentRouting
+          ? `fulfillment route check is disabled for ${fulfillment.mode ?? "listing"}`
+          : fulfillment.valid === false
+            ? `fulfillment route mismatch for ${fulfillment.mode ?? "listing"}`
+            : `fulfillment route captured for ${fulfillment.mode ?? "listing"}`,
+        recommendation: "Align warehouse, fulfillment mode, and lead time in Dianxiaomi before unattended publish."
+      }]
+    : []
 
   return [
     {
@@ -363,6 +814,7 @@ const buildDianxiaomiRequirementChecks = (
       message: snapshot.imageCount > 0 ? `${snapshot.imageCount} images detected` : "no visible product images detected",
       recommendation: `Keep or upload at least ${rules.images.minCount} product images in Dianxiaomi before attempting Temu listing.`
     },
+    ...imageTypeRequirementChecks,
     {
       id: "media-image-translation",
       level: requiredLevel(rules.media.required && rules.media.requireImageTranslation),
@@ -423,6 +875,11 @@ const buildDianxiaomiRequirementChecks = (
       message: snapshot.attributeKeys.length > 0 ? `attributes detected: ${snapshot.attributeKeys.join(", ")}` : "no structured attributes detected",
       recommendation: `Complete at least ${rules.attributes.minCount} product attributes, preferably ${rules.attributes.recommendedKeys.join(", ") || "category-specific keys"}.`
     },
+    ...variantRequirementChecks,
+    ...manualDocumentChecks,
+    ...videoChecks,
+    ...sizeChartChecks,
+    ...fulfillmentChecks,
     {
       id: "compliance-risk-terms",
       level: requiredLevel(rules.compliance.required),
@@ -454,10 +911,14 @@ const buildDianxiaomiSuggestedEdits = (checks: DianxiaomiListingRequirementCheck
         check.id.includes("title") ? "title"
           : check.id.includes("image") ? "image"
             : check.id.includes("media") ? "image"
+              : check.id.includes("video") ? "image"
+                : check.id.includes("size-chart") ? "image"
+                  : check.id.includes("variant") ? "sku"
             : check.id.includes("sku") ? "sku"
               : check.id.includes("price") ? "price"
                 : check.id.includes("stock") ? "stock"
-                  : check.id.includes("attribute") ? "attribute"
+                  : check.id.includes("fulfillment") ? "stock"
+                    : check.id.includes("attribute") ? "attribute"
                     : "compliance"
 
       return {
@@ -471,8 +932,9 @@ const buildDianxiaomiSuggestedEdits = (checks: DianxiaomiListingRequirementCheck
 
 const buildDianxiaomiWorkRequirements = (
   input: WorkItemQualityInput,
-  rules: DianxiaomiListingRequirementRules = dianxiaomiRequirementRules
+  rulesInput?: DianxiaomiListingRequirementRules
 ) => {
+  const rules = inferDianxiaomiRequirementRules(input, rulesInput ?? dianxiaomiRequirementRules)
   const checks = buildDianxiaomiRequirementChecks(input, rules)
 
   return {
@@ -524,10 +986,107 @@ const inferPublishValidationTargets = (message: string): Array<{
   }
 
   addIfIncludes("title", ["title", "标题", "商品名", "商品名称"], "商品标题")
+  addIfIncludes("description", ["description", "详情描述", "商品描述", "描述"], "商品描述")
   addIfIncludes("image", ["image", "picture", "photo", "main image", "图片", "主图", "白底图"], "商品图片")
+  addIfIncludes("image", ["size chart", "size table", "尺码表", "尺寸表"], "尺码表")
   addIfIncludes("sku", ["sku", "variation", "规格", "变体"], "SKU/规格")
-  addIfIncludes("price", ["price", "价格", "售价", "供货价"], "价格")
+  addIfIncludes("price", ["price", "价格", "售价", "供货价", "申报价", "sale price", "declared price"], "价格")
   addIfIncludes("stock", ["stock", "inventory", "库存"], "库存")
+  addIfIncludes("compliance", ["manual document", "instruction manual", "说明文档", "说明书", "使用说明"], "说明文档")
+  addIfIncludes("compliance", ["video", "视频"], "视频素材")
+  addIfIncludes("compliance", ["fulfillment", "warehouse", "lead time", "发货", "仓库", "履约"], "发货设置")
+
+  const targetedFieldPatterns: Array<{
+    field: DianxiaomiProductSuggestedEdit["field"]
+    label: string
+    patterns: RegExp[]
+  }> = [
+    {
+      field: "title",
+      label: "商品标题",
+      patterns: [
+        /(?:missing|required|invalid|empty)[^;,\n]{0,24}(?:title|标题|商品名|商品名称)/i,
+        /(?:title|标题|商品名|商品名称)\s*(?:is\s*)?(?:required|missing|empty|invalid|不能为空|必填)/i
+      ]
+    },
+    {
+      field: "description",
+      label: "商品描述",
+      patterns: [
+        /(?:missing|required|invalid|empty)[^;,\n]{0,24}(?:description|描述|详情描述|商品描述)/i,
+        /(?:description|描述|详情描述|商品描述)\s*(?:is\s*)?(?:required|missing|empty|invalid|不能为空|必填)/i
+      ]
+    },
+    {
+      field: "image",
+      label: "商品图片",
+      patterns: [
+        /(?:missing|required|invalid|empty)[^;,\n]{0,24}(?:image|picture|photo|图片|主图|白底图)/i,
+        /(?:image|picture|photo|图片|主图|白底图)\s*(?:is\s*)?(?:required|missing|empty|invalid|不能为空|必填)/i
+      ]
+    },
+    {
+      field: "image",
+      label: "尺码表",
+      patterns: [
+        /(?:missing|required|invalid|empty)[^;,\n]{0,24}(?:size\s*chart|size\s*table|尺码表|尺寸表)/i,
+        /(?:size\s*chart|size\s*table|尺码表|尺寸表)\s*(?:is\s*)?(?:required|missing|empty|invalid|不能为空|必填)/i
+      ]
+    },
+    {
+      field: "sku",
+      label: "SKU/规格",
+      patterns: [
+        /(?:missing|required|invalid|empty)[^;,\n]{0,24}(?:sku|variation|规格|变体)/i,
+        /(?:sku|variation|规格|变体)\s*(?:is\s*)?(?:required|missing|empty|invalid|不能为空|必填)/i
+      ]
+    },
+    {
+      field: "price",
+      label: "价格",
+      patterns: [
+        /(?:missing|required|invalid|empty)[^;,\n]{0,24}(?:price|sale\s*price|declared\s*price|价格|售价|供货价|申报价)/i,
+        /(?:price|sale\s*price|declared\s*price|价格|售价|供货价|申报价)\s*(?:is\s*)?(?:required|missing|empty|invalid|不能为空|必填)/i
+      ]
+    },
+    {
+      field: "stock",
+      label: "库存",
+      patterns: [
+        /(?:missing|required|invalid|empty)[^;,\n]{0,24}(?:stock|inventory|库存)/i,
+        /(?:stock|inventory|库存)\s*(?:is\s*)?(?:required|missing|empty|invalid|不能为空|必填)/i
+      ]
+    },
+    {
+      field: "compliance",
+      label: "说明文档",
+      patterns: [
+        /(?:missing|required|invalid|empty)[^;,\n]{0,24}(?:manual\s*document|instruction\s*manual|说明文档|说明书|使用说明)/i,
+        /(?:manual\s*document|instruction\s*manual|说明文档|说明书|使用说明)\s*(?:is\s*)?(?:required|missing|empty|invalid|不能为空|必填)/i
+      ]
+    },
+    {
+      field: "compliance",
+      label: "视频素材",
+      patterns: [
+        /(?:missing|required|invalid|empty)[^;,\n]{0,24}(?:video|视频)/i,
+        /(?:video|视频)\s*(?:is\s*)?(?:required|missing|empty|invalid|不能为空|必填)/i
+      ]
+    },
+    {
+      field: "compliance",
+      label: "发货设置",
+      patterns: [
+        /(?:missing|required|invalid|empty)[^;,\n]{0,24}(?:fulfillment|warehouse|lead\s*time|发货|仓库|履约)/i,
+        /(?:fulfillment|warehouse|lead\s*time|发货|仓库|履约)\s*(?:is\s*)?(?:required|missing|empty|invalid|不能为空|必填)/i
+      ]
+    }
+  ]
+  targetedFieldPatterns.forEach(({ field, label, patterns }) => {
+    if (patterns.some((pattern) => pattern.test(message))) {
+      addTarget(field, label)
+    }
+  })
 
   const attributePatterns = [
     /(?:attribute|property|variation attribute)\s*[:：=]\s*([^;,\n]+)/gi,
@@ -558,6 +1117,16 @@ const repairPayloadForField = (
       selectorKey: "title",
       fieldKind: "title",
       reasonCode: "publish-title"
+    }
+  }
+
+  if (field === "description") {
+    return {
+      writer: "fill-single-field",
+      selectorGroup: "fields",
+      selectorKey: "description",
+      fieldKind: "description",
+      reasonCode: "publish-description"
     }
   }
 
@@ -844,7 +1413,8 @@ const buildDianxiaomiRepairPlan = (
     detail: edit.suggestedValue || edit.reason,
     automation: edit.field === "image" ? "auto" : "assisted",
     required: true,
-    field: edit.field
+    field: edit.field,
+    payload: edit.field === "image" ? repairPayloadForField("image") : undefined
   }))
   actions.push(...requirementActions)
 
@@ -1036,6 +1606,30 @@ const normalizeDianxiaomiPageUrl = (pageUrl: string) => {
   }
 }
 
+const normalizeOptionalStoreValue = (value: string | undefined) => {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed.slice(0, 120) : undefined
+}
+
+const normalizeStoreIdentity = <T extends {
+  storeId?: string
+  storeName?: string
+}>(input: T) => ({
+  storeId: normalizeOptionalStoreValue(input.storeId),
+  storeName: normalizeOptionalStoreValue(input.storeName)
+})
+
+const getDianxiaomiWorkItemPageKey = (input: {
+  pageUrl: string
+  storeId?: string
+  storeName?: string
+}) => {
+  const normalizedUrl = normalizeDianxiaomiPageUrl(input.pageUrl)
+  const storeId = normalizeOptionalStoreValue(input.storeId)
+  const storeName = normalizeOptionalStoreValue(input.storeName)
+  return `${storeId || storeName || "global"}::${normalizedUrl}`
+}
+
 const allowDianxiaomiSmokeUrls = () => process.env.ALLOW_DIANXIAOMI_SMOKE_URLS === "true"
 
 const dianxiaomiUrlBlockReason = (pageUrl: string) => {
@@ -1187,7 +1781,7 @@ const dianxiaomiProductWorkItems = new Map<string, DianxiaomiProductWorkItem>(
   })
 )
 const dianxiaomiProductWorkItemIdByPageUrl = new Map<string, string>(
-  Array.from(dianxiaomiProductWorkItems.values()).map((item) => [normalizeDianxiaomiPageUrl(item.pageUrl), item.id])
+  Array.from(dianxiaomiProductWorkItems.values()).map((item) => [getDianxiaomiWorkItemPageKey(item), item.id])
 )
 let lastSyncedReportId: string | null = null
 
@@ -1288,6 +1882,10 @@ const publishValidationAutomationForTarget = (
     return "assisted"
   }
 
+  if (field === "compliance") {
+    return "manual"
+  }
+
   return hasKnownCollectedRepairValue(item, field, target) ? "auto" : "assisted"
 }
 
@@ -1315,6 +1913,10 @@ const hasKnownCollectedRepairValue = (
   field: DianxiaomiProductSuggestedEdit["field"],
   target?: string
 ) => {
+  if (field === "title") {
+    return Boolean(item.title.trim())
+  }
+
   const collected = getDianxiaomiCollectedProduct(item.collectedProductId)
   if (!collected) {
     return false
@@ -1324,8 +1926,8 @@ const hasKnownCollectedRepairValue = (
     return Boolean(getKnownCollectedAttributeValue(item, target))
   }
 
-  if (field === "title") {
-    return Boolean((collected.title || item.title).trim())
+  if (field === "description") {
+    return Boolean(collected.rawTextSample.trim() || collected.title.trim())
   }
 
   if (field === "price") {
@@ -1996,9 +2598,11 @@ export const saveDianxiaomiCollectedProduct = (input: DianxiaomiCollectedProduct
   const existingIndex = normalizedId
     ? dianxiaomiCollectedProducts.findIndex((item) => item.id === normalizedId)
     : -1
+  const normalizedStore = normalizeStoreIdentity(input)
   const collectedProduct: DianxiaomiCollectedProduct = {
     ...input,
     id: normalizedId || `dxm-collected-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    ...normalizedStore,
     collectedAt: input.collectedAt || new Date().toISOString(),
     quality: input.quality ?? buildCollectedProductQuality(input),
     title: input.title?.trim() || input.pageTitle || "Dianxiaomi collected product",
@@ -2025,20 +2629,47 @@ export const saveDianxiaomiCollectedProduct = (input: DianxiaomiCollectedProduct
   return collectedProduct
 }
 
-export const listDianxiaomiCollectedProducts = (limit = 20) =>
+export const listDianxiaomiCollectedProducts = (
+  limit = 20,
+  filter?: {
+    storeId?: string
+    storeName?: string
+  }
+) =>
   dianxiaomiCollectedProducts
+    .filter((item) => {
+      const storeId = normalizeOptionalStoreValue(filter?.storeId)
+      const storeName = normalizeOptionalStoreValue(filter?.storeName)
+      if (storeId) {
+        return item.storeId === storeId
+      }
+      if (storeName) {
+        return item.storeName === storeName
+      }
+      return true
+    })
     .sort((left, right) => right.collectedAt.localeCompare(left.collectedAt))
     .slice(0, limit)
 
 export const saveDianxiaomiProductWorkItem = (input: DianxiaomiProductWorkItemInput): DianxiaomiProductWorkItem => {
   const now = new Date().toISOString()
-  const normalizedPageUrl = normalizeDianxiaomiPageUrl(input.pageUrl)
-  const existingIdByPageUrl = dianxiaomiProductWorkItemIdByPageUrl.get(normalizedPageUrl)
+  const existing = input.id?.trim() ? dianxiaomiProductWorkItems.get(input.id.trim()) : undefined
+  const linkedCollected = getDianxiaomiCollectedProduct(input.collectedProductId?.trim() || existing?.collectedProductId)
+  const normalizedStore = normalizeStoreIdentity({
+    storeId: input.storeId ?? existing?.storeId ?? linkedCollected?.storeId,
+    storeName: input.storeName ?? existing?.storeName ?? linkedCollected?.storeName
+  })
+  const pageKey = getDianxiaomiWorkItemPageKey({
+    pageUrl: input.pageUrl,
+    ...normalizedStore
+  })
+  const existingIdByPageUrl = dianxiaomiProductWorkItemIdByPageUrl.get(pageKey)
   const id = existingIdByPageUrl || input.id?.trim() || `dxm-work-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const existing = dianxiaomiProductWorkItems.get(id)
+  const resolvedExisting = dianxiaomiProductWorkItems.get(id)
   const normalizedInput = {
     ...input,
-    collectedProductId: input.collectedProductId?.trim() || existing?.collectedProductId,
+    ...normalizedStore,
+    collectedProductId: input.collectedProductId?.trim() || resolvedExisting?.collectedProductId,
     title: input.title?.trim() || input.pageTitle || "Dianxiaomi product",
     notes: input.notes ?? [],
     rawTextSample: input.rawTextSample ?? "",
@@ -2046,11 +2677,17 @@ export const saveDianxiaomiProductWorkItem = (input: DianxiaomiProductWorkItemIn
       hasTitle: input.snapshot?.hasTitle ?? Boolean(input.title?.trim()),
       imageCount: input.snapshot?.imageCount ?? 0,
       skuCount: input.snapshot?.skuCount ?? 0,
+      variantCount: input.snapshot?.variantCount ?? resolvedExisting?.snapshot.variantCount,
       priceFieldCount: input.snapshot?.priceFieldCount ?? 0,
       stockFieldCount: input.snapshot?.stockFieldCount ?? 0,
       attributeKeys: input.snapshot?.attributeKeys ?? [],
       imageStats: input.snapshot?.imageStats,
-      mediaToolSignals: input.snapshot?.mediaToolSignals ?? []
+      imageTypeStats: input.snapshot?.imageTypeStats,
+      mediaToolSignals: input.snapshot?.mediaToolSignals ?? [],
+      manualDocument: input.snapshot?.manualDocument ?? resolvedExisting?.snapshot.manualDocument,
+      video: input.snapshot?.video ?? resolvedExisting?.snapshot.video,
+      sizeChart: input.snapshot?.sizeChart ?? resolvedExisting?.snapshot.sizeChart,
+      fulfillment: input.snapshot?.fulfillment ?? resolvedExisting?.snapshot.fulfillment
     }
   }
   const requirements = buildDianxiaomiWorkRequirements(normalizedInput)
@@ -2066,9 +2703,9 @@ export const saveDianxiaomiProductWorkItem = (input: DianxiaomiProductWorkItemIn
     ...normalizedInput,
     id,
     source: "dianxiaomi",
-    queuedAt: input.queuedAt ?? existing?.queuedAt ?? now,
+    queuedAt: input.queuedAt ?? resolvedExisting?.queuedAt ?? now,
     updatedAt: now,
-    pageProfile: input.pageProfile ?? existing?.pageProfile,
+    pageProfile: input.pageProfile ?? resolvedExisting?.pageProfile,
     requirements,
     suggestedEdits: urlBlockReason
       ? [
@@ -2084,10 +2721,10 @@ export const saveDianxiaomiProductWorkItem = (input: DianxiaomiProductWorkItemIn
       : suggestedEdits,
     status,
     failureDiagnosis: status === "blocked"
-      ? input.failureDiagnosis ?? existing?.failureDiagnosis ?? null
+      ? input.failureDiagnosis ?? resolvedExisting?.failureDiagnosis ?? null
       : null,
-    publishOutcome: input.publishOutcome ?? existing?.publishOutcome ?? null,
-    manualBudgetReleases: input.manualBudgetReleases ?? existing?.manualBudgetReleases ?? []
+    publishOutcome: input.publishOutcome ?? resolvedExisting?.publishOutcome ?? null,
+    manualBudgetReleases: input.manualBudgetReleases ?? resolvedExisting?.manualBudgetReleases ?? []
   }
   const repairPlan = buildDianxiaomiRepairPlan(workItemBase)
   const workItem: DianxiaomiProductWorkItem = withDianxiaomiRepairActionGate({
@@ -2096,7 +2733,7 @@ export const saveDianxiaomiProductWorkItem = (input: DianxiaomiProductWorkItemIn
   })
 
   dianxiaomiProductWorkItems.set(workItem.id, workItem)
-  dianxiaomiProductWorkItemIdByPageUrl.set(normalizedPageUrl, workItem.id)
+  dianxiaomiProductWorkItemIdByPageUrl.set(pageKey, workItem.id)
   persistPlannerState()
   return workItem
 }
@@ -2112,6 +2749,10 @@ const createProductFromDianxiaomiCollectedProduct = (
   const fallbackStock = collected.skus.reduce((total, sku) => total + Math.max(0, Math.floor(sku.stock ?? 0)), 0)
   const productId = `dxm-${slugify(collected.title)}-${Date.now()}`
   const baseAttributes = withoutDianxiaomiTaskMetaAttributes(collected.attributes)
+  const storeTaskAttributes = {
+    ...(collected.storeId ? { dianxiaomiStoreId: collected.storeId } : {}),
+    ...(collected.storeName ? { dianxiaomiStoreName: collected.storeName } : {})
+  }
   const productSkus = createProductSkus(productId, {
     supplierPriceCny: fallbackPrice,
     stock: fallbackStock,
@@ -2141,13 +2782,30 @@ const createProductFromDianxiaomiCollectedProduct = (
     estimatedDomesticShippingCny: 0,
     estimatedWeightKg: 0.2,
     images: collected.images,
-    attributes: mergeAttributes(baseAttributes, ...productSkus.map((sku) => sku.attributes), overrides?.taskAttributes),
+    attributes: mergeAttributes(baseAttributes, ...productSkus.map((sku) => sku.attributes), storeTaskAttributes, overrides?.taskAttributes),
     skus: productSkus
   }
 }
 
-export const listDianxiaomiProductWorkItems = (limit = 20) =>
+export const listDianxiaomiProductWorkItems = (
+  limit = 20,
+  filter?: {
+    storeId?: string
+    storeName?: string
+  }
+) =>
   Array.from(dianxiaomiProductWorkItems.values())
+    .filter((item) => {
+      const storeId = normalizeOptionalStoreValue(filter?.storeId)
+      const storeName = normalizeOptionalStoreValue(filter?.storeName)
+      if (storeId) {
+        return item.storeId === storeId
+      }
+      if (storeName) {
+        return item.storeName === storeName
+      }
+      return true
+    })
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, limit)
 
@@ -2300,6 +2958,8 @@ const createPlaceholderProductFromWorkItem = (workItem: DianxiaomiProductWorkIte
       dianxiaomiWorkItemId: workItem.id,
       dianxiaomiPageUrl: workItem.pageUrl,
       dianxiaomiRequirementPreset: workItem.requirements.presetName,
+      ...(workItem.storeId ? { dianxiaomiStoreId: workItem.storeId } : {}),
+      ...(workItem.storeName ? { dianxiaomiStoreName: workItem.storeName } : {}),
       ...(workItem.collectedProductId ? { dianxiaomiCollectedProductId: workItem.collectedProductId } : {})
     },
     skus: Array.from({ length: Math.max(1, workItem.snapshot.skuCount) }, (_item, index) => ({
@@ -2317,6 +2977,8 @@ const createProductFromWorkItem = (workItem: DianxiaomiProductWorkItem): Product
     dianxiaomiWorkItemId: workItem.id,
     dianxiaomiPageUrl: workItem.pageUrl,
     dianxiaomiRequirementPreset: workItem.requirements.presetName,
+    ...(workItem.storeId ? { dianxiaomiStoreId: workItem.storeId } : {}),
+    ...(workItem.storeName ? { dianxiaomiStoreName: workItem.storeName } : {}),
     ...(workItem.collectedProductId ? { dianxiaomiCollectedProductId: workItem.collectedProductId } : {})
   }
   const collected = getDianxiaomiCollectedProduct(workItem.collectedProductId)
@@ -2722,6 +3384,35 @@ export const getPublishCheck = (taskId: string): PublishCheckResult | null => {
           level: "high" as const,
           message: "存在无效 SKU 售价"
         }
+      : null,
+    // P0-A: catch over-long titles for non-Dianxiaomi sources.
+    // Dianxiaomi sources already get `title-length` from dianxiaomiRequirementIssues below.
+    task.product.source !== "dianxiaomi"
+      && task.draft.listingTitle.trim().length > PUBLISH_CHECK_TITLE_MAX_LENGTH_FALLBACK
+      ? {
+          id: "title-too-long",
+          level: "high" as const,
+          message: `草稿标题 ${task.draft.listingTitle.trim().length} 字符，超过非店小秘来源上限 ${PUBLISH_CHECK_TITLE_MAX_LENGTH_FALLBACK}`
+        }
+      : null,
+    // P0-A: SKU stock sanity (negative or absurdly large).
+    task.draft.skuPricing.some((sku) => sku.stock < 0 || sku.stock > PUBLISH_CHECK_STOCK_MAX)
+      ? {
+          id: "stock-out-of-range",
+          level: "high" as const,
+          message: `SKU 库存超出允许范围 [0, ${PUBLISH_CHECK_STOCK_MAX}]`
+        }
+      : null,
+    // P0-A: price floor guard for non-Dianxiaomi sources.
+    // Dianxiaomi sources rely on the listing requirement rules + product.pricing.suggestedPriceUsd
+    // path that already raises a similar warning during draft rebuild.
+    task.product.source !== "dianxiaomi"
+      && task.draft.skuPricing.some((sku) => sku.salePriceUsd < defaultPricingRules.minimumSuggestedPriceUsd)
+      ? {
+          id: "price-below-minimum",
+          level: "high" as const,
+          message: `SKU 售价低于最低售价 $${defaultPricingRules.minimumSuggestedPriceUsd.toFixed(2)}`
+        }
       : null
   ].filter((issue): issue is NonNullable<typeof issue> => Boolean(issue))
   const dianxiaomiRequirementIssues = dianxiaomiWorkItem?.requirements.checks
@@ -2750,7 +3441,7 @@ export const getPricingRules = () => pricingRules
 
 export const getDianxiaomiRequirementRules = () => dianxiaomiRequirementRules
 
-export const updateDianxiaomiRequirementRules = (rules: DianxiaomiListingRequirementRules) => {
+export const updateDianxiaomiRequirementRules = (rules: DianxiaomiRequirementRulesInput) => {
   dianxiaomiRequirementRules = normalizeDianxiaomiRequirementRules(rules)
 
   Array.from(dianxiaomiProductWorkItems.values()).forEach((item) => {
@@ -2850,14 +3541,29 @@ const listFilesRecursive = (
   return results
 }
 
-const listSelectorDiagnosisEntries = (limit = 10): Array<{ filePath: string; report: SelectorDiagnosisReport }> => {
+const resolveSelectorDiagnosisDirs = (directories?: string[]) => {
   const currentFile = fileURLToPath(import.meta.url)
   const repoRoot = path.resolve(path.dirname(currentFile), "../../..")
-  const configuredReportDirs = (process.env.SELECTOR_DIAGNOSIS_DIRS ?? "")
+  const explicitReportDirs = (directories ?? [])
+    .map((directory) => directory.trim())
+    .filter(Boolean)
+    .map((directory) => path.isAbsolute(directory) ? directory : path.join(repoRoot, directory))
+  const configuredReportDirs = explicitReportDirs.length > 0
+    ? explicitReportDirs
+    : (process.env.SELECTOR_DIAGNOSIS_DIRS ?? "")
     .split(path.delimiter)
     .map((directory) => directory.trim())
     .filter(Boolean)
     .map((directory) => path.isAbsolute(directory) ? directory : path.join(repoRoot, directory))
+
+  return {
+    repoRoot,
+    configuredReportDirs
+  }
+}
+
+const listSelectorDiagnosisEntries = (limit = 10, directories?: string[]): Array<{ filePath: string; report: SelectorDiagnosisReport }> => {
+  const { repoRoot, configuredReportDirs } = resolveSelectorDiagnosisDirs(directories)
   const reportDirs = configuredReportDirs.length > 0
     ? configuredReportDirs
     : [
@@ -2888,6 +3594,9 @@ export const listSelectorDiagnosisReports = (limit = 10): SelectorDiagnosisRepor
 const latestSelectorDiagnosisEntry = () =>
   listSelectorDiagnosisEntries(1)[0]
 
+const latestSelectorDiagnosisEntryFromDirs = (directories: string[]) =>
+  listSelectorDiagnosisEntries(1, directories)[0]
+
 const firstSelector = (report: SelectorDiagnosisReport, group: "fields" | "buttons", key: string) =>
   report[group][key]?.candidates[0]?.selectorHint
 
@@ -2895,7 +3604,7 @@ const SELECTOR_FIELD_KEYS = ["title", "description", "price", "stock", "attribut
 const SELECTOR_BUTTON_KEYS = ["save", "submit"]
 const SELECTOR_MEDIA_TOOL_KEYS = ["imageTranslation", "whiteBackground", "imageEditor", "batchResize", "imageManagement"]
 const SELECTOR_MEDIA_TOOL_ACTION_KEYS = ["apply", "close"]
-const REQUIRED_SELECTOR_FIELDS = ["title", "description", "price", "stock"]
+const REQUIRED_SELECTOR_FIELDS = ["title", "price", "stock"]
 const REQUIRED_SELECTOR_BUTTONS = ["save"]
 
 const getSelectorConfigPath = () => {
@@ -3304,6 +4013,50 @@ const buildSelectorWorkbenchItem = (
   }
 }
 
+const SELECTOR_CONFIG_MEDIA_TOOL_KEYS = ["imageTranslation", "whiteBackground", "imageEditor", "batchResize", "imageManagement"] as const
+type SelectorConfigMediaToolKey = typeof SELECTOR_CONFIG_MEDIA_TOOL_KEYS[number]
+
+const diagnosisSurfaceStatus = (diagnosis: SelectorDiagnosisReport) =>
+  String(diagnosis.targetSurface?.data?.surfaceStatus ?? "unknown")
+
+const isUsableRealDianxiaomiSelectorDiagnosis = (diagnosis: SelectorDiagnosisReport) => {
+  const data = diagnosis.targetSurface?.data ?? {}
+  return diagnosisSurfaceStatus(diagnosis) === "real-dianxiaomi"
+    && data.isDianxiaomiHost === true
+    && data.isDataFixture !== true
+    && diagnosis.targetSurface?.status !== "failed"
+    && data.canInspect !== false
+}
+
+const selectorMediaToolWasSampled = (diagnosis: SelectorDiagnosisReport, key: SelectorConfigMediaToolKey) =>
+  diagnosis.mediaActionSampling?.tools.some((tool) => tool.configKey === key && tool.status === "sampled") ?? false
+
+const mediaToolSelectorFromDiagnosis = (diagnosis: SelectorDiagnosisReport, key: SelectorConfigMediaToolKey) => {
+  const selector = diagnosis.mediaTools?.[key]?.candidates[0]?.selectorHint
+  if (!selector) {
+    return []
+  }
+
+  return !isUsableRealDianxiaomiSelectorDiagnosis(diagnosis) || selectorMediaToolWasSampled(diagnosis, key)
+    ? [selector]
+    : []
+}
+
+const mediaToolActionSelectorFromDiagnosis = (
+  diagnosis: SelectorDiagnosisReport,
+  action: "apply" | "close",
+  key: SelectorConfigMediaToolKey
+) => {
+  const selector = diagnosis.mediaToolActions?.[action]?.[key]?.candidates[0]?.selectorHint
+  if (!selector) {
+    return []
+  }
+
+  return !isUsableRealDianxiaomiSelectorDiagnosis(diagnosis) || selectorMediaToolWasSampled(diagnosis, key)
+    ? [selector]
+    : []
+}
+
 const selectorConfigFromDiagnosis = (diagnosis: SelectorDiagnosisReport): DianxiaomiSelectorConfig => ({
   fields: {
     title: [firstSelector(diagnosis, "fields", "title")].filter(Boolean) as string[],
@@ -3317,26 +4070,26 @@ const selectorConfigFromDiagnosis = (diagnosis: SelectorDiagnosisReport): Dianxi
     submit: [firstSelector(diagnosis, "buttons", "submit")].filter(Boolean) as string[]
   },
   mediaTools: {
-    imageTranslation: [diagnosis.mediaTools?.imageTranslation?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-    whiteBackground: [diagnosis.mediaTools?.whiteBackground?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-    imageEditor: [diagnosis.mediaTools?.imageEditor?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-    batchResize: [diagnosis.mediaTools?.batchResize?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-    imageManagement: [diagnosis.mediaTools?.imageManagement?.candidates[0]?.selectorHint].filter(Boolean) as string[]
+    imageTranslation: mediaToolSelectorFromDiagnosis(diagnosis, "imageTranslation"),
+    whiteBackground: mediaToolSelectorFromDiagnosis(diagnosis, "whiteBackground"),
+    imageEditor: mediaToolSelectorFromDiagnosis(diagnosis, "imageEditor"),
+    batchResize: mediaToolSelectorFromDiagnosis(diagnosis, "batchResize"),
+    imageManagement: mediaToolSelectorFromDiagnosis(diagnosis, "imageManagement")
   },
   mediaToolActions: {
     apply: {
-      imageTranslation: [diagnosis.mediaToolActions?.apply?.imageTranslation?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-      whiteBackground: [diagnosis.mediaToolActions?.apply?.whiteBackground?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-      imageEditor: [diagnosis.mediaToolActions?.apply?.imageEditor?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-      batchResize: [diagnosis.mediaToolActions?.apply?.batchResize?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-      imageManagement: [diagnosis.mediaToolActions?.apply?.imageManagement?.candidates[0]?.selectorHint].filter(Boolean) as string[]
+      imageTranslation: mediaToolActionSelectorFromDiagnosis(diagnosis, "apply", "imageTranslation"),
+      whiteBackground: mediaToolActionSelectorFromDiagnosis(diagnosis, "apply", "whiteBackground"),
+      imageEditor: mediaToolActionSelectorFromDiagnosis(diagnosis, "apply", "imageEditor"),
+      batchResize: mediaToolActionSelectorFromDiagnosis(diagnosis, "apply", "batchResize"),
+      imageManagement: mediaToolActionSelectorFromDiagnosis(diagnosis, "apply", "imageManagement")
     },
     close: {
-      imageTranslation: [diagnosis.mediaToolActions?.close?.imageTranslation?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-      whiteBackground: [diagnosis.mediaToolActions?.close?.whiteBackground?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-      imageEditor: [diagnosis.mediaToolActions?.close?.imageEditor?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-      batchResize: [diagnosis.mediaToolActions?.close?.batchResize?.candidates[0]?.selectorHint].filter(Boolean) as string[],
-      imageManagement: [diagnosis.mediaToolActions?.close?.imageManagement?.candidates[0]?.selectorHint].filter(Boolean) as string[]
+      imageTranslation: mediaToolActionSelectorFromDiagnosis(diagnosis, "close", "imageTranslation"),
+      whiteBackground: mediaToolActionSelectorFromDiagnosis(diagnosis, "close", "whiteBackground"),
+      imageEditor: mediaToolActionSelectorFromDiagnosis(diagnosis, "close", "imageEditor"),
+      batchResize: mediaToolActionSelectorFromDiagnosis(diagnosis, "close", "batchResize"),
+      imageManagement: mediaToolActionSelectorFromDiagnosis(diagnosis, "close", "imageManagement")
     }
   },
   skuRows: diagnosis.skuRows.ok ? ["tr, [role='row'], [class*='sku' i], [class*='table-row' i], [class*='row' i]"] : []
@@ -3568,13 +4321,22 @@ export const getSelectorWorkbench = (): SelectorWorkbench => {
   }
 }
 
-export const generateSelectorConfigFromLatestDiagnosis = (): SelectorConfigGenerationResult | null => {
-  const diagnosis = latestSelectorDiagnosisEntry()?.report
+export const generateSelectorConfigFromLatestDiagnosis = (options: {
+  diagnosisDirs?: string[]
+  requireRealDianxiaomi?: boolean
+} = {}): SelectorConfigGenerationResult | null => {
+  const diagnosisEntry = options.diagnosisDirs?.length
+    ? latestSelectorDiagnosisEntryFromDirs(options.diagnosisDirs)
+    : latestSelectorDiagnosisEntry()
+  const diagnosis = diagnosisEntry?.report
   if (!diagnosis) {
     return null
   }
   if (diagnosis.targetSurface?.status === "failed" || diagnosis.targetSurface?.data?.canInspect === false) {
     throw new Error(`latest selector diagnosis is not a recognized Dianxiaomi listing edit surface: ${String(diagnosis.targetSurface?.data?.surfaceStatus ?? "unknown")}`)
+  }
+  if (options.requireRealDianxiaomi && !isUsableRealDianxiaomiSelectorDiagnosis(diagnosis)) {
+    throw new Error(`latest selector diagnosis is not a usable real Dianxiaomi listing edit page: ${diagnosisSurfaceStatus(diagnosis)}`)
   }
 
   const config = selectorConfigFromDiagnosis(diagnosis)

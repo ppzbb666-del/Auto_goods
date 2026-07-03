@@ -1,6 +1,7 @@
 import type {
   AutomationDryRunStartInput,
   AutomationMode,
+  AutomationModeReadiness,
   AutomationPreflightCheck,
   AutomationPreflightReport
 } from "@temu-ai-ops/shared"
@@ -65,12 +66,14 @@ const recommendedMode = (readyModes: AutomationMode[]): AutomationMode | null =>
 }
 
 export const getAutomationPreflight = (input: AutomationPreflightInput = {}): AutomationPreflightReport => {
-  const dryRun = getAutomationModeReadiness("dry-run", input)
-  const repairPreview = getAutomationModeReadiness("repair-preview", input)
-  const repairApply = getAutomationModeReadiness("repair-apply", input)
-  const fillDraft = getAutomationModeReadiness("fill-draft", input)
-  const saveDraft = getAutomationModeReadiness("save-draft", input)
-  const submitListing = getAutomationModeReadiness("submit-listing", input)
+  const modeReadiness = (mode: AutomationMode): AutomationModeReadiness =>
+    getAutomationModeReadiness(mode, input) as AutomationModeReadiness
+  const dryRun = modeReadiness("dry-run")
+  const repairPreview = modeReadiness("repair-preview")
+  const repairApply = modeReadiness("repair-apply")
+  const fillDraft = modeReadiness("fill-draft")
+  const saveDraft = modeReadiness("save-draft")
+  const submitListing = modeReadiness("submit-listing")
   const selectorValidation = validateSelectorConfig(input.selectorConfig)
   const taskFileSnapshot = getTaskFileExportSnapshotStatus(input.taskFile)
   const activeTask = input.taskFile ? null : getActiveTask()

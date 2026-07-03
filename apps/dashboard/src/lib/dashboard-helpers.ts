@@ -62,13 +62,16 @@ export const defaultManualProduct: ManualProductInput = {
 }
 
 export const defaultDailyMediaAutomationTools = ["image-translation", "batch-resize", "white-background", "image-editor"]
+export const defaultAutomationSelectorConfigPath = ".runtime/dianxiaomi-selector-config.json"
+export const defaultAutomationProfilePath = ".runtime/playwright/dianxiaomi-profile"
+export const defaultAutomationScreenshotDir = "output/playwright"
 
 export const defaultAutomationLaunchDraft = {
   url: "",
   taskFile: "",
-  selectorConfig: "",
-  profile: "",
-  screenshots: "",
+  selectorConfig: defaultAutomationSelectorConfigPath,
+  profile: defaultAutomationProfilePath,
+  screenshots: defaultAutomationScreenshotDir,
   mediaAutomationMode: "unattended-apply",
   mediaAutomationTools: defaultDailyMediaAutomationTools.join("\n"),
   submitAfterSave: true,
@@ -170,6 +173,12 @@ export const createDianxiaomiRequirementRulesDraft = (rules: DianxiaomiListingRe
     dianxiaomiTools: [...rules.media.dianxiaomiTools]
   },
   sku: { ...rules.sku },
+  listingMetadata: {
+    ...rules.listingMetadata,
+    manualDocumentAllowedFormats: [...rules.listingMetadata.manualDocumentAllowedFormats],
+    videoAllowedAspectRatios: [...rules.listingMetadata.videoAllowedAspectRatios],
+    sizeChartAllowedFormats: [...rules.listingMetadata.sizeChartAllowedFormats]
+  },
   price: { ...rules.price },
   stock: { ...rules.stock },
   attributes: {
@@ -226,9 +235,9 @@ export const createAutomationStartInput = (draft: AutomationLaunchDraft): Automa
 export const automationDraftFromInput = (input: AutomationDryRunStartInput = {}): AutomationLaunchDraft => ({
   url: input.url ?? "",
   taskFile: input.taskFile ?? "",
-  selectorConfig: input.selectorConfig ?? "",
-  profile: input.profile ?? "",
-  screenshots: input.screenshots ?? "",
+  selectorConfig: input.selectorConfig ?? defaultAutomationLaunchDraft.selectorConfig,
+  profile: input.profile ?? defaultAutomationLaunchDraft.profile,
+  screenshots: input.screenshots ?? defaultAutomationLaunchDraft.screenshots,
   mediaAutomationMode: input.mediaAutomationMode ?? "unattended-apply",
   mediaAutomationTools: (input.mediaAutomationTools ?? []).join("\n"),
   submitAfterSave: input.submitAfterSave ?? defaultAutomationLaunchDraft.submitAfterSave,

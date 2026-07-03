@@ -12,6 +12,14 @@
 npm run dev:server
 ```
 
+Canonical default paths:
+
+- Profile: `.runtime/playwright/dianxiaomi-profile`
+- Selector config: `.runtime/dianxiaomi-selector-config.json`
+- Reports/screenshots: `output/playwright/`
+
+These paths are resolved from the repository root. Do not use `apps/automation/.runtime/...` as the production runtime path.
+
 第一次运行会打开真实浏览器。你需要在浏览器里手动登录店小秘，并进入对应商品的产品编辑或刊登页；脚本检测到表单后会自动继续。登录态会保存在 `.runtime/playwright/dianxiaomi-profile`，后续运行会复用。
 
 ## 常用命令

@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import { DEFAULT_SCREENSHOT_DIR, ensureDirectory, getArgValue, normalizeText } from "./common"
+import { DEFAULT_SCREENSHOT_DIR, ensureDirectory, getArgValue, normalizeText, resolveRepoPath } from "./common"
 
 type SnapshotField = {
   tagName: string
@@ -9,6 +9,7 @@ type SnapshotField = {
   placeholder: string
   ariaLabel: string
   valuePreview: string
+  labelText?: string
   selectorHint: string
   nearbyText: string
 }
@@ -30,6 +31,46 @@ type SnapshotSkuRow = {
   inputCount: number
 }
 
+type ImageTypeStatsSnapshot = {
+  count: number
+  minWidthPx: number
+  minHeightPx: number
+  maxWidthPx: number
+  maxHeightPx: number
+  unknownDimensionCount: number
+  maxSizeMb?: number
+  unknownSizeCount?: number
+}
+
+type ManualDocumentSnapshot = {
+  present: boolean
+  format?: string
+  sizeMb?: number
+  englishOnly?: boolean
+}
+
+type VideoSnapshot = {
+  present: boolean
+  aspectRatio?: string
+  sizeMb?: number
+  durationSeconds?: number
+}
+
+type SizeChartSnapshot = {
+  required?: boolean
+  present: boolean
+  imageCount?: number
+  format?: string
+  sizeMb?: number
+}
+
+type FulfillmentSnapshot = {
+  mode?: string
+  warehouseName?: string
+  leadTimeDays?: number
+  valid?: boolean
+}
+
 type DianxiaomiSnapshot = {
   pageUrl: string
   pageTitle: string
@@ -40,9 +81,33 @@ type DianxiaomiSnapshot = {
     detail: string
     data?: Record<string, unknown>
   }
+  descriptionPreview?: {
+    ok: boolean
+    mode: "module-preview"
+    selectorHint?: string
+    textPreview?: string
+  }
   fields: SnapshotField[]
   buttons: SnapshotButton[]
   skuRows: SnapshotSkuRow[]
+  variantCount?: number
+  imageTypeStats?: Partial<Record<"mainImage" | "detailImage" | "skuImage", ImageTypeStatsSnapshot>>
+  manualDocument?: ManualDocumentSnapshot
+  video?: VideoSnapshot
+  sizeChart?: SizeChartSnapshot
+  fulfillment?: FulfillmentSnapshot
+  mediaActionSampling?: {
+    enabled: boolean
+    tools: Array<{
+      id: string
+      configKey: string
+      status: "sampled" | "missing-tool" | "no-dialog" | "close-failed" | "failed" | "skipped" | "instant-action-blocked"
+      sampledButtonCount: number
+      reason: string
+      entryText?: string
+      error?: string
+    }>
+  }
 }
 
 type Candidate = {
@@ -51,17 +116,41 @@ type Candidate = {
   text: string
 }
 
+type DiagnosisCheck = {
+  ok: boolean
+  candidates: Candidate[]
+  data?: Record<string, unknown>
+}
+
 const FIELD_KEYWORDS = {
-  title: ["商品标题", "产品标题", "刊登标题", "平台标题", "标题", "title", "name"],
-  description: ["商品描述", "产品描述", "详情描述", "刊登描述", "描述", "description", "details"],
-  price: ["申报价", "建议售价", "刊登价", "销售价", "售价", "价格", "price", "sale price"],
-  stock: ["库存", "刊登库存", "可售库存", "数量", "stock", "quantity", "available"],
-  attribute: ["产品属性", "商品属性", "平台属性", "规格", "变体", "属性", "attribute", "variation", "specification"]
+  title: ["\u5546\u54c1\u6807\u9898", "\u4ea7\u54c1\u6807\u9898", "\u520a\u767b\u6807\u9898", "\u5e73\u53f0\u6807\u9898", "\u6807\u9898", "title", "name"],
+  description: ["\u5546\u54c1\u63cf\u8ff0", "\u4ea7\u54c1\u63cf\u8ff0", "\u8be6\u60c5\u63cf\u8ff0", "\u520a\u767b\u63cf\u8ff0", "\u63cf\u8ff0", "description", "details"],
+  price: ["\u7533\u62a5\u4ef7", "\u5efa\u8bae\u552e\u4ef7", "\u520a\u767b\u4ef7", "\u9500\u552e\u4ef7", "\u552e\u4ef7", "\u4ef7\u683c", "price", "sale price"],
+  stock: ["\u5e93\u5b58", "\u520a\u767b\u5e93\u5b58", "\u53ef\u552e\u5e93\u5b58", "\u6570\u91cf", "stock", "quantity", "available"],
+  attribute: ["\u4ea7\u54c1\u5c5e\u6027", "\u5546\u54c1\u5c5e\u6027", "\u5e73\u53f0\u5c5e\u6027", "\u89c4\u683c", "\u53d8\u79cd", "\u53d8\u4f53", "\u5c5e\u6027", "attribute", "variation", "specification"]
 } as const
 
 const BUTTON_KEYWORDS = {
-  save: ["保存草稿", "保存", "暂存", "save draft", "save"],
-  submit: ["发布", "提交", "立即刊登", "submit", "publish"]
+  save: ["\u4fdd\u5b58\u8349\u7a3f", "\u4fdd\u5b58", "\u6682\u5b58", "save draft", "save"],
+  submit: ["\u4fdd\u5b58\u5e76\u53d1\u5e03", "\u53d1\u5e03", "\u63d0\u4ea4", "\u7acb\u5373\u520a\u767b", "submit", "publish"]
+} as const
+
+const BUTTON_NEGATIVE_KEYWORDS = {
+  save: ["\u5e38\u7528\u6a21\u677f", "\u6a21\u677f\u7ba1\u7406"],
+  submit: ["\u5f85\u53d1\u5e03", "\u53d1\u5e03\u4e2d", "\u53d1\u5e03\u5931\u8d25", "\u53d1\u5e03\u8bb0\u5f55", "\u520a\u767b\u62a5\u8868", "listing"]
+} as const
+
+const MEDIA_TOOL_KEYWORDS = {
+  imageTranslation: ["\u56fe\u7247\u7ffb\u8bd1", "\u7ffb\u8bd1\u56fe\u7247", "\u4e00\u952e\u7ffb\u8bd1", "image translation", "translate image", "translate"],
+  whiteBackground: ["\u56fe\u7247\u767d\u5e95", "\u767d\u5e95\u56fe", "\u767d\u5e95", "white background", "remove background"],
+  imageEditor: ["\u5c0f\u79d8\u7f8e\u56fe", "\u7f8e\u56fe", "\u56fe\u7247\u7f16\u8f91", "image editor", "edit image"],
+  batchResize: ["\u6279\u91cf\u6539\u5927\u5c0f", "\u6539\u5927\u5c0f", "\u56fe\u7247\u5927\u5c0f", "resize", "batch resize"],
+  imageManagement: ["\u56fe\u7247\u7ba1\u7406", "\u56fe\u7247\u7a7a\u95f4", "\u56fe\u7247\u68c0\u6d4b", "\u68c0\u6d4b\u56fe\u7247", "image management", "image space"]
+} as const
+
+const MEDIA_TOOL_ACTION_KEYWORDS = {
+  apply: ["\u786e\u5b9a", "\u5e94\u7528", "\u4fdd\u5b58", "\u5f00\u59cb", "\u5b8c\u6210", "confirm", "apply", "save", "start", "use selected", "translate", "resize"],
+  close: ["\u5173\u95ed", "\u8fd4\u56de", "\u53d6\u6d88", "\u5b8c\u6210", "close", "back", "return", "cancel", "done", "finish"]
 } as const
 
 const scoreText = (text: string, keywords: readonly string[]) => {
@@ -72,20 +161,10 @@ const scoreText = (text: string, keywords: readonly string[]) => {
   }, 0)
 }
 
-const MEDIA_TOOL_KEYWORDS = {
-  imageTranslation: ["图片翻译", "翻译图片", "image translation", "translate image", "translate"],
-  whiteBackground: ["图片白底", "白底图", "白底", "white background", "remove background"],
-  imageEditor: ["小秘美图", "美图", "图片编辑", "image editor", "edit image"],
-  batchResize: ["批量改大小", "改大小", "图片大小", "resize", "batch resize"],
-  imageManagement: ["图片管理", "图片空间", "image management", "image space"]
-} as const
-
-const MEDIA_TOOL_ACTION_KEYWORDS = {
-  apply: ["\u786e\u5b9a", "\u5e94\u7528", "\u4fdd\u5b58", "\u5f00\u59cb", "\u5b8c\u6210", "confirm", "apply", "save", "start", "use selected", "translate", "resize"],
-  close: ["\u5173\u95ed", "\u8fd4\u56de", "\u53d6\u6d88", "\u5b8c\u6210", "close", "back", "return", "cancel", "done", "finish"]
-} as const
+const compactPreview = (value: string) => value.replace(/\s+/g, " ").trim().slice(0, 180)
 
 const fieldSearchText = (field: SnapshotField) => [
+  field.labelText ?? "",
   field.name,
   field.placeholder,
   field.ariaLabel,
@@ -116,36 +195,56 @@ const buttonDialogSearchText = (button: SnapshotButton) => [
   button.dialogText ?? ""
 ].join(" ")
 
-const topCandidates = <T extends { selectorHint: string }>(
-  items: T[],
+const topFieldCandidates = (
+  fields: SnapshotField[],
   keywords: readonly string[],
-  getText: (item: T) => string
+  kind: keyof typeof FIELD_KEYWORDS
 ): Candidate[] =>
-  items
-    .map((item) => ({
-      selectorHint: item.selectorHint,
-      score: scoreText(getText(item), keywords),
-      text: getText(item).replace(/\s+/g, " ").trim().slice(0, 180)
-    }))
-    .filter((item) => item.score > 0)
+  fields
+    .map((field) => {
+      const labelScore = scoreText(field.labelText ?? "", keywords)
+      const directScore = scoreText([
+        field.name,
+        field.placeholder,
+        field.ariaLabel,
+        field.selectorHint
+      ].join(" "), keywords)
+      const nearbyScore = scoreText(field.nearbyText, keywords)
+      const allowNearbyOnly = kind === "attribute"
+      const score = labelScore === 0 && directScore === 0 && !allowNearbyOnly
+        ? 0
+        : labelScore * 6 + directScore * 3 + Math.min(nearbyScore, 10)
+      return {
+        selectorHint: field.selectorHint,
+        score,
+        text: compactPreview(fieldSearchText(field))
+      }
+    })
+    .filter((item) => item.selectorHint && item.score > 0)
     .sort((left, right) => right.score - left.score)
     .slice(0, 5)
 
 const topButtonCandidates = (
   buttons: SnapshotButton[],
-  keywords: readonly string[]
+  keywords: readonly string[],
+  negativeKeywords: readonly string[] = [],
+  requireDirectMatch = false
 ): Candidate[] =>
   buttons
     .map((button) => {
       const directText = buttonDirectSearchText(button)
-      const nearbyText = button.nearbyText ?? ""
+      const directScore = scoreText(directText, keywords)
+      const negativeScore = scoreText(directText, negativeKeywords)
+      const nearbyScore = scoreText(button.nearbyText ?? "", keywords)
       return {
         selectorHint: button.selectorHint,
-        score: scoreText(directText, keywords) * 3 + scoreText(nearbyText, keywords),
-        text: buttonSearchText(button).replace(/\s+/g, " ").trim().slice(0, 180)
+        score: negativeScore > 0 || (requireDirectMatch && directScore === 0)
+          ? 0
+          : directScore * 4 + Math.min(nearbyScore, 4),
+        text: compactPreview(buttonSearchText(button))
       }
     })
-    .filter((item) => item.score > 0)
+    .filter((item) => item.selectorHint && item.score > 0)
     .sort((left, right) => right.score - left.score)
     .slice(0, 5)
 
@@ -162,10 +261,10 @@ const topMediaActionCandidates = (
       return {
         selectorHint: button.selectorHint,
         score: scoreText(dialogText, toolKeywords) * 4 + scoreText(directText, actionKeywords) * 3,
-        text: buttonSearchText(button).replace(/\s+/g, " ").trim().slice(0, 180)
+        text: compactPreview(buttonSearchText(button))
       }
     })
-    .filter((item) => item.score > 0)
+    .filter((item) => item.selectorHint && item.score > 0)
     .sort((left, right) => right.score - left.score)
     .slice(0, 5)
 
@@ -186,34 +285,56 @@ const loadSnapshot = (snapshotPath: string): DianxiaomiSnapshot =>
   JSON.parse(readFileSync(snapshotPath, "utf8")) as DianxiaomiSnapshot
 
 const diagnoseSnapshot = (snapshot: DianxiaomiSnapshot) => {
-  const fields = Object.fromEntries(
-    Object.entries(FIELD_KEYWORDS).map(([kind, keywords]) => [
-      kind,
-      {
-        ok: topCandidates(snapshot.fields, keywords, fieldSearchText).length > 0,
-        candidates: topCandidates(snapshot.fields, keywords, fieldSearchText)
-      }
-    ])
+  const fields: Record<string, DiagnosisCheck> = Object.fromEntries(
+    Object.entries(FIELD_KEYWORDS).map(([kind, keywords]) => {
+      const candidates = topFieldCandidates(snapshot.fields, keywords, kind as keyof typeof FIELD_KEYWORDS)
+      return [
+        kind,
+        {
+          ok: candidates.length > 0,
+          candidates
+        }
+      ]
+    })
   )
+  if (!fields.description?.ok && snapshot.descriptionPreview?.ok) {
+    fields.description = {
+      ok: true,
+      candidates: [],
+      data: {
+        descriptionMode: snapshot.descriptionPreview.mode,
+        preservedExistingDescription: true,
+        selectorHint: snapshot.descriptionPreview.selectorHint ?? "",
+        textPreview: snapshot.descriptionPreview.textPreview ?? ""
+      }
+    }
+  }
 
   const buttons = Object.fromEntries(
-    Object.entries(BUTTON_KEYWORDS).map(([kind, keywords]) => [
-      kind,
-      {
-        ok: topButtonCandidates(snapshot.buttons, keywords).length > 0,
-        candidates: topButtonCandidates(snapshot.buttons, keywords)
-      }
-    ])
+    Object.entries(BUTTON_KEYWORDS).map(([kind, keywords]) => {
+      const negativeKeywords = BUTTON_NEGATIVE_KEYWORDS[kind as keyof typeof BUTTON_NEGATIVE_KEYWORDS] ?? []
+      const candidates = topButtonCandidates(snapshot.buttons, keywords, negativeKeywords)
+      return [
+        kind,
+        {
+          ok: candidates.length > 0,
+          candidates
+        }
+      ]
+    })
   )
 
   const mediaTools = Object.fromEntries(
-    Object.entries(MEDIA_TOOL_KEYWORDS).map(([kind, keywords]) => [
-      kind,
-      {
-        ok: topButtonCandidates(snapshot.buttons, keywords).length > 0,
-        candidates: topButtonCandidates(snapshot.buttons, keywords)
-      }
-    ])
+    Object.entries(MEDIA_TOOL_KEYWORDS).map(([kind, keywords]) => {
+      const candidates = topButtonCandidates(snapshot.buttons, keywords, [], true)
+      return [
+        kind,
+        {
+          ok: candidates.length > 0,
+          candidates
+        }
+      ]
+    })
   )
 
   const mediaToolActions = Object.fromEntries(
@@ -265,13 +386,23 @@ const diagnoseSnapshot = (snapshot: DianxiaomiSnapshot) => {
     buttons,
     mediaTools,
     mediaToolActions,
+    listingMetadata: {
+      variantCount: snapshot.variantCount,
+      manualDocument: snapshot.manualDocument,
+      video: snapshot.video,
+      sizeChart: snapshot.sizeChart,
+      fulfillment: snapshot.fulfillment
+    },
+    imageTypeStats: snapshot.imageTypeStats,
+    mediaActionSampling: snapshot.mediaActionSampling,
     skuRows
   }
 }
 
 const main = () => {
-  const screenshotDir = getArgValue("screenshots") ?? process.env.SCREENSHOT_DIR ?? DEFAULT_SCREENSHOT_DIR
-  const snapshotPath = getArgValue("snapshot") ?? findLatestSnapshotPath(screenshotDir)
+  const screenshotDir = resolveRepoPath(getArgValue("screenshots") ?? process.env.SCREENSHOT_DIR ?? DEFAULT_SCREENSHOT_DIR)
+    ?? DEFAULT_SCREENSHOT_DIR
+  const snapshotPath = resolveRepoPath(getArgValue("snapshot")) ?? findLatestSnapshotPath(screenshotDir)
 
   if (!snapshotPath) {
     throw new Error(`No dianxiaomi snapshot found in ${screenshotDir}. Run npm run snapshot --workspace @temu-ai-ops/automation first.`)
@@ -293,6 +424,8 @@ const main = () => {
   console.log(`Media tools: ${Object.entries(diagnosis.mediaTools).map(([kind, result]) => `${kind}=${result.ok ? "ok" : "missing"}`).join(", ")}`)
   console.log(`Media apply actions: ${Object.entries(diagnosis.mediaToolActions.apply).map(([kind, result]) => `${kind}=${result.ok ? "ok" : "missing"}`).join(", ")}`)
   console.log(`Media close actions: ${Object.entries(diagnosis.mediaToolActions.close).map(([kind, result]) => `${kind}=${result.ok ? "ok" : "missing"}`).join(", ")}`)
+  console.log(`Image type stats: ${Object.entries(diagnosis.imageTypeStats ?? {}).map(([kind, stats]) => `${kind}=${stats.count}`).join(", ") || "missing"}`)
+  console.log(`Listing metadata: variantCount=${diagnosis.listingMetadata.variantCount ?? "missing"}, manualDocument=${diagnosis.listingMetadata.manualDocument?.present === true ? "present" : diagnosis.listingMetadata.manualDocument ? "missing" : "n/a"}, video=${diagnosis.listingMetadata.video?.present === true ? "present" : diagnosis.listingMetadata.video ? "missing" : "n/a"}, sizeChart=${diagnosis.listingMetadata.sizeChart?.present === true ? "present" : diagnosis.listingMetadata.sizeChart ? "missing" : "n/a"}, fulfillment=${diagnosis.listingMetadata.fulfillment?.mode ?? "n/a"}`)
   console.log(`SKU rows: ${diagnosis.skuRows.count}`)
 }
 

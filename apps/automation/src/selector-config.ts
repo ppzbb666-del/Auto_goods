@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs"
 import type { Locator, Page } from "playwright"
-import { firstVisible } from "./common"
+import { firstVisible, resolveRepoPath } from "./common"
 import type { FieldKind } from "./adapters/dianxiaomi-adapter"
 
 export type DianxiaomiSelectorConfig = {
@@ -17,11 +17,12 @@ const normalizeSelectorList = (value: unknown) =>
     : []
 
 export const loadSelectorConfig = (configPath: string | undefined): DianxiaomiSelectorConfig => {
-  if (!configPath || !existsSync(configPath)) {
+  const resolvedConfigPath = resolveRepoPath(configPath)
+  if (!resolvedConfigPath || !existsSync(resolvedConfigPath)) {
     return {}
   }
 
-  const raw = JSON.parse(readFileSync(configPath, "utf8")) as DianxiaomiSelectorConfig
+  const raw = JSON.parse(readFileSync(resolvedConfigPath, "utf8")) as DianxiaomiSelectorConfig
   return {
     fields: {
       title: normalizeSelectorList(raw.fields?.title),

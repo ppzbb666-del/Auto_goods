@@ -2,13 +2,15 @@ import type {
   SelectorCalibrationJob,
   SelectorCalibrationJobLog,
   SelectorCalibrationStartInput,
-  SelectorCalibrationStartResult
+  SelectorCalibrationStartResult,
+  SelectorConfigGenerationResult
 } from "@temu-ai-ops/shared"
 import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from "node:fs"
 import { spawn, type ChildProcessByStdio } from "node:child_process"
 import type { Readable } from "node:stream"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { generateSelectorConfigFromLatestDiagnosis } from "./planner"
 
 const calibrationJobs = new Map<string, SelectorCalibrationJob>()
 const timestampId = () => new Date().toISOString().replace(/[:.]/g, "-")
@@ -88,6 +90,7 @@ export const startSelectorCalibration = (input: SelectorCalibrationStartInput = 
 
   const logPath = path.join(logDir, `${id}.log`)
   const errorLogPath = path.join(logDir, `${id}.err.log`)
+  const saveConfig = input.saveConfig === true
   const snapshotScript = path.join(repoRoot, "apps/automation/src/snapshot.ts")
   const diagnosisScript = path.join(repoRoot, "apps/automation/src/snapshot-diagnose.ts")
   const snapshotArgs: string[] = []
@@ -97,6 +100,7 @@ export const startSelectorCalibration = (input: SelectorCalibrationStartInput = 
   pushArg(snapshotArgs, "screenshots", artifactDir)
   pushArg(snapshotArgs, "sample-media-actions", input.sampleMediaActions)
   pushArg(snapshotArgs, "media-automation-tools", input.mediaAutomationTools?.join(","))
+  pushArg(snapshotArgs, "keep-open", input.keepOpen ?? false)
   const diagnosisArgs = [`--screenshots=${artifactDir}`]
 
   const result = {
@@ -106,7 +110,8 @@ export const startSelectorCalibration = (input: SelectorCalibrationStartInput = 
     cwd: repoRoot,
     logPath,
     errorLogPath,
-    artifactDir
+    artifactDir,
+    saveConfig
   }
 
   calibrationJobs.set(id, {
@@ -114,7 +119,9 @@ export const startSelectorCalibration = (input: SelectorCalibrationStartInput = 
     status: "running",
     finishedAt: null,
     exitCode: null,
-    error: null
+    error: null,
+    selectorConfigResult: null,
+    selectorConfigError: null
   })
 
   void (async () => {
@@ -134,12 +141,33 @@ export const startSelectorCalibration = (input: SelectorCalibrationStartInput = 
 
       const diagnosis = runNodeScript(repoRoot, diagnosisScript, diagnosisArgs, logPath, errorLogPath)
       const diagnosisCode = await waitForExit(diagnosis)
+      let selectorConfigResult: SelectorConfigGenerationResult | null = null
+      let selectorConfigError: string | null = null
+
+      if (diagnosisCode === 0 && saveConfig) {
+        try {
+          selectorConfigResult = generateSelectorConfigFromLatestDiagnosis({
+            diagnosisDirs: [artifactDir],
+            requireRealDianxiaomi: true
+          })
+          if (!selectorConfigResult) {
+            selectorConfigError = `no selector diagnosis found in ${artifactDir}`
+          }
+        } catch (error) {
+          selectorConfigError = error instanceof Error ? error.message : String(error)
+        }
+      }
+
       calibrationJobs.set(id, {
         ...calibrationJobs.get(id)!,
-        status: diagnosisCode === 0 ? "completed" : "failed",
+        status: diagnosisCode === 0 && !selectorConfigError ? "completed" : "failed",
         finishedAt: new Date().toISOString(),
         exitCode: diagnosisCode,
-        error: diagnosisCode === 0 ? null : `diagnosis exited with code ${diagnosisCode}`
+        error: diagnosisCode !== 0
+          ? `diagnosis exited with code ${diagnosisCode}`
+          : selectorConfigError,
+        selectorConfigResult,
+        selectorConfigError
       })
     } catch (error) {
       calibrationJobs.set(id, {
@@ -147,7 +175,9 @@ export const startSelectorCalibration = (input: SelectorCalibrationStartInput = 
         status: "failed",
         finishedAt: new Date().toISOString(),
         exitCode: null,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
+        selectorConfigResult: null,
+        selectorConfigError: null
       })
     }
   })()

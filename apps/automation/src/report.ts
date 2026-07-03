@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
-import { DEFAULT_SCREENSHOT_DIR, getArgValue } from "./common"
+import { DEFAULT_SCREENSHOT_DIR, getArgValue, resolveRepoPath } from "./common"
 
 type ReportStep = {
   id: string
@@ -21,7 +21,7 @@ type ExecutionReport = {
   steps: ReportStep[]
 }
 
-const reportDir = getArgValue("dir") ?? process.env.REPORT_DIR ?? DEFAULT_SCREENSHOT_DIR
+const reportDir = resolveRepoPath(getArgValue("dir") ?? process.env.REPORT_DIR ?? DEFAULT_SCREENSHOT_DIR) ?? DEFAULT_SCREENSHOT_DIR
 const limit = Number(getArgValue("limit") ?? process.env.LIMIT ?? 10)
 
 const loadReports = () => {

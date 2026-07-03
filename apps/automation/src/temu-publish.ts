@@ -24,12 +24,41 @@ const captureArtifacts = async (page: Page, screenshotDir: string, name: string)
   ensureDirectory(screenshotDir)
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
   const screenshotPath = path.join(screenshotDir, `${name}-${timestamp}.png`)
-  await page.screenshot({
-    path: screenshotPath,
-    fullPage: true
-  })
-  console.log(`已保存截图：${screenshotPath}`)
-  return screenshotPath
+  const screenshotNotePath = path.join(screenshotDir, `${name}-${timestamp}.txt`)
+
+  try {
+    await page.screenshot({
+      path: screenshotPath,
+      fullPage: true,
+      timeout: 10_000
+    })
+    console.log(`Saved screenshot: ${screenshotPath}`)
+    return screenshotPath
+  } catch (fullPageError) {
+    const message = fullPageError instanceof Error ? fullPageError.message : String(fullPageError)
+    console.warn(`full-page screenshot failed: ${message}`)
+  }
+
+  try {
+    await page.screenshot({
+      path: screenshotPath,
+      fullPage: false,
+      animations: "disabled",
+      caret: "hide",
+      timeout: 5_000
+    })
+    console.log(`Saved screenshot: ${screenshotPath}`)
+    return screenshotPath
+  } catch (viewportError) {
+    const message = viewportError instanceof Error ? viewportError.message : String(viewportError)
+    writeFileSync(screenshotNotePath, [
+      "Screenshot capture failed.",
+      `target: ${screenshotPath}`,
+      `reason: ${message}`
+    ].join("\n"), "utf8")
+    console.warn(`screenshot capture failed, wrote note: ${screenshotNotePath}`)
+    return screenshotNotePath
+  }
 }
 
 type ExecutionReport = {
@@ -64,7 +93,7 @@ const saveExecutionReport = (options: RunnerOptions, report: ExecutionReport) =>
   ensureDirectory(options.screenshotDir)
   const reportPath = path.join(options.screenshotDir, `${report.id}.json`)
   writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8")
-  console.log(`已保存执行报告：${reportPath}`)
+  console.log(`Saved execution report: ${reportPath}`)
   return reportPath
 }
 
@@ -82,16 +111,27 @@ const loadRepairPreviewFile = (repairPlanFile: string): DianxiaomiRepairPreviewF
   return parsed
 }
 
+const shouldUseRepairPlanExecution = (options: RunnerOptions) =>
+  Boolean(
+    options.repairPlanFile
+    && (
+      options.repairMode === "apply"
+      || (options.dryRun && !options.review && !options.saveDraft && !options.submit)
+    )
+  )
+
 const runDianxiaomiFlow = async (context: BrowserContext, options: RunnerOptions) => {
   const task = await loadTask(options)
-  const repairPreview = options.repairPlanFile ? loadRepairPreviewFile(options.repairPlanFile) : null
+  const repairPreview = shouldUseRepairPlanExecution(options) && options.repairPlanFile
+    ? loadRepairPreviewFile(options.repairPlanFile)
+    : null
   const selectorConfig = loadSelectorConfig(options.selectorConfig)
-  console.log(`加载任务：${task.id} - ${task.product.title}`)
+  console.log(`Loaded task: ${task.id} - ${task.product.title}`)
 
   const page = await context.newPage()
   page.setDefaultTimeout(15_000)
 
-  console.log(`打开页面：${options.targetUrl}`)
+  console.log(`Opening page: ${options.targetUrl}`)
   await page.goto(options.targetUrl, {
     waitUntil: "domcontentloaded"
   })
@@ -119,11 +159,19 @@ const runDianxiaomiFlow = async (context: BrowserContext, options: RunnerOptions
       }
     }
 
-    const runKind = repairPreview ? options.repairMode === "apply" ? "repair-apply" : "repair-preview" : options.dryRun ? "dry-run" : "run"
+    const runKind = repairPreview
+      ? options.repairMode === "apply" ? "repair-apply" : "repair-preview"
+      : options.dryRun ? "dry-run" : "run"
     const screenshotPath = await captureArtifacts(
       page,
       options.screenshotDir,
-      runKind === "repair-apply" ? "dianxiaomi-repair-apply" : runKind === "repair-preview" ? "dianxiaomi-repair-preview" : runKind === "dry-run" ? "dianxiaomi-dry-run" : "dianxiaomi-filled"
+      runKind === "repair-apply"
+        ? "dianxiaomi-repair-apply"
+        : runKind === "repair-preview"
+          ? "dianxiaomi-repair-preview"
+          : runKind === "dry-run"
+            ? "dianxiaomi-dry-run"
+            : "dianxiaomi-filled"
     )
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
 
@@ -146,7 +194,7 @@ const runDianxiaomiFlow = async (context: BrowserContext, options: RunnerOptions
 
     steps.push({
       id: "runtime-error",
-      label: "运行异常",
+      label: "Runtime error",
       status: "failed",
       detail: message
     })
@@ -174,7 +222,7 @@ const main = async () => {
   ensureDirectory(options.screenshotDir)
 
   if (options.platform !== "dianxiaomi") {
-    throw new Error("当前 runner 仅适配店小秘。请使用默认 platform=dianxiaomi，Temu 适配后续单独补齐。")
+    throw new Error("This runner currently supports Dianxiaomi only. Use platform=dianxiaomi.")
   }
 
   const context = await chromium.launchPersistentContext(options.profileDir, {
@@ -192,7 +240,7 @@ const main = async () => {
     if (!options.headed) {
       await context.close()
     } else {
-      console.log("headed 模式下浏览器保持打开，确认完成后可手动关闭。")
+      console.log("Headed mode keeps the browser open. Close it manually after verification.")
     }
   }
 }

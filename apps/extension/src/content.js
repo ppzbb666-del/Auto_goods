@@ -214,6 +214,35 @@ const ensureRoot = () => {
 
 const normalizeText = (value) => (value ?? "").replace(/\s+/g, " ").trim().toLowerCase()
 
+const normalizeStoreValue = (value) => {
+  const trimmed = (value ?? "").replace(/\s+/g, " ").trim()
+  return trimmed ? trimmed.slice(0, 120) : ""
+}
+
+const getCurrentStoreContext = () => {
+  const storeId = normalizeStoreValue(
+    document.querySelector("[data-store-id]")?.getAttribute("data-store-id")
+    || document.querySelector("[data-shop-id]")?.getAttribute("data-shop-id")
+    || ""
+  )
+
+  const storeName = [
+    document.querySelector("[data-store-name]")?.getAttribute("data-store-name"),
+    document.querySelector("[data-shop-name]")?.getAttribute("data-shop-name"),
+    ...Array.from(document.querySelectorAll("[class*='store' i], [class*='shop' i], [class*='seller' i], [data-testid*='store' i], [data-testid*='shop' i]"))
+      .slice(0, 40)
+      .map((node) => node.textContent),
+    document.title
+  ]
+    .map((value) => normalizeStoreValue(value))
+    .find((value) => value.length >= 2 && /店|store|shop|seller/i.test(value)) || ""
+
+  return {
+    storeId: storeId || undefined,
+    storeName: storeName || undefined
+  }
+}
+
 const isVisible = (element) => {
   if (!(element instanceof HTMLElement)) {
     return false
@@ -438,6 +467,10 @@ const scanPage = () => {
   }, {})
 
   const skuRows = collectSkuRows()
+  const manualDocument = collectManualDocumentMetadata()
+  const video = collectVideoMetadata()
+  const sizeChart = collectSizeChartMetadata()
+  const fulfillment = collectFulfillmentMetadata()
 
   const result = {
     titleFieldCount: titleFields.length,
@@ -1583,26 +1616,164 @@ const getFieldValue = (element) => {
   return ""
 }
 
-const collectImages = () => Array.from(document.querySelectorAll("img"))
-  .filter(isVisible)
+const compactRawText = (value) => String(value ?? "").replace(/\s+/g, " ").trim()
+
+const includesAny = (value, keywords) => keywords.some((keyword) => value.includes(keyword))
+
+const elementContextText = (element) => {
+  const chunks = []
+  let current = element
+
+  for (let depth = 0; current instanceof HTMLElement && depth < 8; depth += 1) {
+    const className = typeof current.className === "string" ? current.className : ""
+    chunks.push(current.id, className, current.getAttribute("aria-label"), current.getAttribute("title"))
+
+    const text = compactRawText(current.textContent)
+    const imageCount = current.querySelectorAll?.("img").length ?? 0
+    const broadPageContainer = ["main", "body", "html"].includes(current.tagName.toLowerCase())
+    if (text && text.length <= 900 && !broadPageContainer && !(depth > 1 && imageCount > 1)) {
+      chunks.push(text)
+    }
+
+    let sibling = current.previousElementSibling
+    for (let index = 0; sibling instanceof HTMLElement && index < 3; index += 1) {
+      const siblingText = compactRawText(sibling.textContent)
+      const siblingHasComplexContent = Boolean(sibling.querySelector?.("img, input, textarea, select, table"))
+      if (siblingText && siblingText.length <= 180 && !siblingHasComplexContent) {
+        chunks.push(siblingText)
+      }
+      sibling = sibling.previousElementSibling
+    }
+
+    current = current.parentElement
+  }
+
+  return compactRawText(chunks.filter(Boolean).join(" ")).slice(0, 3000)
+}
+
+const getImageDimensions = (image) => {
+  const rect = image.getBoundingClientRect()
+  const width = image.naturalWidth || Number(image.getAttribute("width")) || Math.round(rect.width)
+  const height = image.naturalHeight || Number(image.getAttribute("height")) || Math.round(rect.height)
+
+  return {
+    width: Number.isFinite(width) ? Math.max(0, Math.round(width)) : 0,
+    height: Number.isFinite(height) ? Math.max(0, Math.round(height)) : 0
+  }
+}
+
+const isProductImageElement = (image) => {
+  if (!(image instanceof HTMLImageElement) || !isVisible(image)) {
+    return false
+  }
+
+  const src = image.currentSrc || image.src
+  if (!src || image.closest(`#${ROOT_ID}`)) {
+    return false
+  }
+
+  const { width, height } = getImageDimensions(image)
+  const rect = image.getBoundingClientRect()
+  const largestKnownSide = Math.max(width, height, rect.width, rect.height)
+  const smallestKnownSide = Math.min(width || rect.width, height || rect.height)
+  const context = elementContextText(image).toLowerCase()
+
+  if (largestKnownSide < 80 || smallestKnownSide < 24) {
+    return false
+  }
+
+  if (includesAny(context, ["logo", "头像", "客服", "反馈", "导航", "菜单", "\u89c6\u9891", "video", "\u5c3a\u7801\u8868", "size chart", "\u8bf4\u660e\u4e66", "manual"])) {
+    return false
+  }
+
+  return true
+}
+
+const collectProductImageElements = () => Array.from(document.querySelectorAll("img"))
+  .filter(isProductImageElement)
+  .slice(0, 120)
+
+const classifyImageType = (image) => {
+  const context = elementContextText(image).toLowerCase()
+  const row = image.closest("tr, [role='row']")
+  const table = image.closest("table, [class*='table' i]")
+
+  if (
+    includesAny(context, ["sku图片", "sku image", "sku图", "变体图片", "变种图片", "规格图片"])
+    || ((row || table) && includesAny(context, ["sku", "变种", "变体", "规格", "颜色", "尺码"]))
+  ) {
+    return "skuImage"
+  }
+
+  if (includesAny(context, ["产品描述", "商品描述", "详情描述", "图文详情", "产品详情", "详情图", "描述图片", "description", "details"])) {
+    return "detailImage"
+  }
+
+  return "mainImage"
+}
+
+const extractMaxSizeMb = (text) => {
+  const matches = Array.from(text.matchAll(/(\d+(?:\.\d+)?)\s*(mb|m|kb|k)\b/gi))
+  const values = matches
+    .map((match) => {
+      const value = Number(match[1])
+      if (!Number.isFinite(value)) {
+        return undefined
+      }
+
+      return match[2].toLowerCase().startsWith("k") ? value / 1024 : value
+    })
+    .filter((value) => typeof value === "number")
+
+  return values.length > 0 ? Number(Math.max(...values).toFixed(3)) : undefined
+}
+
+const aggregateImageStats = (images) => {
+  const knownDimensions = images
+    .map(getImageDimensions)
+    .filter((size) => size.width > 0 && size.height > 0)
+  const knownSizeMb = images
+    .map((image) => extractMaxSizeMb(elementContextText(image)))
+    .filter((value) => typeof value === "number")
+  const base = knownDimensions.length > 0
+    ? {
+        minWidthPx: Math.min(...knownDimensions.map((size) => size.width)),
+        minHeightPx: Math.min(...knownDimensions.map((size) => size.height)),
+        maxWidthPx: Math.max(...knownDimensions.map((size) => size.width)),
+        maxHeightPx: Math.max(...knownDimensions.map((size) => size.height)),
+        unknownDimensionCount: Math.max(0, images.length - knownDimensions.length)
+      }
+    : {
+        minWidthPx: 0,
+        minHeightPx: 0,
+        maxWidthPx: 0,
+        maxHeightPx: 0,
+        unknownDimensionCount: images.length
+      }
+
+  return {
+    count: images.length,
+    ...base,
+    ...(knownSizeMb.length > 0
+      ? {
+          maxSizeMb: Number(Math.max(...knownSizeMb).toFixed(3)),
+          unknownSizeCount: Math.max(0, images.length - knownSizeMb.length)
+        }
+      : {})
+  }
+}
+
+const collectImages = () => collectProductImageElements()
   .map((image) => image.currentSrc || image.src)
   .filter((src) => src && !src.startsWith("data:"))
   .slice(0, 20)
 
 const collectImageStats = () => {
-  const visibleImages = Array.from(document.querySelectorAll("img"))
-    .filter(isVisible)
-    .filter((image) => {
-      const src = image.currentSrc || image.src
-      return src && !src.startsWith("data:")
-    })
+  const visibleImages = collectProductImageElements()
     .slice(0, 50)
 
   const knownSizes = visibleImages
-    .map((image) => ({
-      width: image.naturalWidth || Math.round(image.getBoundingClientRect().width),
-      height: image.naturalHeight || Math.round(image.getBoundingClientRect().height)
-    }))
+    .map(getImageDimensions)
     .filter((size) => size.width > 0 && size.height > 0)
 
   if (knownSizes.length === 0) {
@@ -1624,6 +1795,24 @@ const collectImageStats = () => {
   }
 }
 
+const collectImageTypeStats = () => {
+  const grouped = {
+    mainImage: [],
+    detailImage: [],
+    skuImage: []
+  }
+
+  collectProductImageElements().forEach((image) => {
+    grouped[classifyImageType(image)].push(image)
+  })
+
+  return Object.fromEntries(
+    Object.entries(grouped)
+      .filter(([, images]) => images.length > 0)
+      .map(([imageType, images]) => [imageType, aggregateImageStats(images)])
+  )
+}
+
 const collectMediaToolSignals = () => {
   const text = document.body?.innerText ?? ""
   const signals = [
@@ -1643,6 +1832,286 @@ const collectMediaToolSignals = () => {
   return Array.from(new Set(signals
     .filter(([keyword]) => text.includes(keyword))
     .map(([, signal]) => signal)))
+}
+
+const firstVisibleElement = (elements) => elements.find((element) => element instanceof HTMLElement && isVisible(element)) || null
+
+const metadataContainerText = (element) => compactRawText([
+  element?.textContent || "",
+  element?.getAttribute?.("aria-label") || "",
+  element?.getAttribute?.("title") || ""
+].join(" "))
+
+const METADATA_CONTAINER_SELECTOR = [
+  "section",
+  "article",
+  "fieldset",
+  "li",
+  "td",
+  "tr",
+  "[role='group']",
+  "[role='region']",
+  "[class*='form-item' i]",
+  "[class*='upload' i]",
+  "[class*='video' i]",
+  "[class*='file' i]",
+  "[class*='item' i]",
+  "[class*='panel' i]"
+].join(", ")
+
+const keywordContainerCandidates = (keywords) => {
+  const lowerKeywords = keywords.map((keyword) => keyword.toLowerCase())
+  return uniqueElements(
+    Array.from(document.querySelectorAll(METADATA_CONTAINER_SELECTOR + ", div"))
+      .filter(isVisible)
+      .filter((element) => {
+        const text = metadataContainerText(element).toLowerCase()
+        return text.length > 0 && text.length <= 2000 && lowerKeywords.some((keyword) => text.includes(keyword))
+      })
+  )
+    .map((element) => {
+      const text = metadataContainerText(element)
+      const lowerText = text.toLowerCase()
+      const keywordCount = lowerKeywords.filter((keyword) => lowerText.includes(keyword)).length
+      const buttonCount = element?.querySelectorAll?.("button, a, [role='button'], [role='menuitem'], input[type='button'], input[type='submit']").length ?? 0
+      const mediaCount = element?.querySelectorAll?.("img, video, canvas").length ?? 0
+      const nestedContainerCount = element?.querySelectorAll?.(METADATA_CONTAINER_SELECTOR).length ?? 0
+      const fileSignalCount = Array.from(lowerText.matchAll(/\b[\w-]+\.(?:pdf|docx?|mp4|mov|avi|mkv|webm|jpg|jpeg|png)\b/g)).length
+      const semanticBonus = element?.matches?.("section, article, fieldset")
+        ? 12
+        : element?.matches?.("[role='group'], [role='region'], [class*='form-item' i], [class*='upload' i], [class*='video' i], [class*='file' i], [class*='item' i], [class*='panel' i]")
+          ? 8
+          : element?.tagName?.toLowerCase?.() === "div"
+            ? 0
+            : 4
+      return {
+        element,
+        text,
+        score: keywordCount * 14
+          + semanticBonus
+          + Math.min(buttonCount, 4)
+          + Math.min(mediaCount, 3)
+          + Math.min(fileSignalCount * 6, 12)
+          - Math.floor(text.length / 80)
+          - Math.min(nestedContainerCount, 10) * 4
+      }
+    })
+    .filter((candidate) => candidate.element)
+    .sort((left, right) => right.score - left.score || left.text.length - right.text.length)
+}
+
+const bestKeywordContainer = (keywords) => {
+  const candidate = keywordContainerCandidates(keywords)[0]
+  return candidate?.element || null
+}
+
+const extractFileName = (text, extensions) => {
+  const match = compactRawText(text).match(new RegExp("\\S+\\.(" + extensions.join("|") + ")", "i"))
+  return match?.[0] || ""
+}
+
+const extractFileExtension = (fileName) => {
+  const match = String(fileName ?? "").match(/\.([a-z0-9]+)$/i)
+  return match?.[1]?.toLowerCase()
+}
+
+const extractFileSizeForName = (text, fileName) => {
+  if (!fileName) {
+    return undefined
+  }
+
+  const start = String(text).toLowerCase().indexOf(String(fileName).toLowerCase())
+  const snippet = start >= 0 ? text.slice(start, start + 160) : text
+  return extractMaxSizeMb(snippet)
+}
+
+const hasActionKeyword = (text, keywords) => includesAny(String(text).toLowerCase(), keywords.map((keyword) => keyword.toLowerCase()))
+
+const aspectRatioFromDimensions = (width, height) => {
+  const safeWidth = Math.round(width)
+  const safeHeight = Math.round(height)
+  if (!(safeWidth > 0 && safeHeight > 0)) {
+    return undefined
+  }
+
+  const gcd = (left, right) => {
+    let a = Math.abs(left)
+    let b = Math.abs(right)
+    while (b !== 0) {
+      const next = a % b
+      a = b
+      b = next
+    }
+    return a || 1
+  }
+
+  const divisor = gcd(safeWidth, safeHeight)
+  return `${safeWidth / divisor}:${safeHeight / divisor}`
+}
+
+const aspectRatioFromElement = (element) => {
+  if (!(element instanceof HTMLElement)) {
+    return undefined
+  }
+
+  if (element instanceof HTMLImageElement) {
+    const size = getImageDimensions(element)
+    return aspectRatioFromDimensions(size.width, size.height)
+  }
+
+  if (element instanceof HTMLVideoElement) {
+    return aspectRatioFromDimensions(element.videoWidth || element.clientWidth, element.videoHeight || element.clientHeight)
+  }
+
+  if (element instanceof HTMLCanvasElement) {
+    return aspectRatioFromDimensions(element.width || element.clientWidth, element.height || element.clientHeight)
+  }
+
+  const rect = element.getBoundingClientRect()
+  return aspectRatioFromDimensions(rect.width, rect.height)
+}
+
+const inferFulfillmentMode = () => {
+  const text = compactRawText([document.title, window.location.href, document.body?.innerText ?? ""].join(" ")).toLowerCase()
+  if (includesAny(text, ["temu local", "本土"])) {
+    return "local"
+  }
+  if (includesAny(text, ["半托管", "semi-managed"])) {
+    return "semi-managed"
+  }
+  if (includesAny(text, ["全托管", "full managed", "full-managed"])) {
+    return "full-managed"
+  }
+  return undefined
+}
+
+const collectManualDocumentMetadata = () => {
+  const candidates = keywordContainerCandidates(["manual", "pdf", "upload file", "\u8bf4\u660e\u4e66"])
+  if (candidates.length === 0) {
+    return undefined
+  }
+
+  const matchedCandidate = candidates.find(({ text }) => extractFileName(text, ["pdf", "doc", "docx"]))
+    || candidates[0]
+  const text = matchedCandidate.text
+  const fileName = extractFileName(text, ["pdf", "doc", "docx"])
+  const format = extractFileExtension(fileName)
+  const sizeMb = extractFileSizeForName(text, fileName)
+
+  return {
+    present: Boolean(fileName),
+    ...(format ? { format } : {}),
+    ...(typeof sizeMb === "number" ? { sizeMb } : {})
+  }
+}
+
+const collectVideoMetadata = () => {
+  const candidates = keywordContainerCandidates(["video", "play", "listing video", "\u89c6\u9891"])
+  if (candidates.length === 0) {
+    return undefined
+  }
+
+  const isVideoPreviewElement = (candidateElement) => {
+    if (candidateElement instanceof HTMLImageElement) {
+      const size = getImageDimensions(candidateElement)
+      return size.width >= 40 && size.height >= 40
+    }
+
+    if (candidateElement instanceof HTMLVideoElement) {
+      return (candidateElement.videoWidth || candidateElement.clientWidth) >= 40
+        && (candidateElement.videoHeight || candidateElement.clientHeight) >= 40
+    }
+
+    if (candidateElement instanceof HTMLCanvasElement) {
+      return (candidateElement.width || candidateElement.clientWidth) >= 40
+        && (candidateElement.height || candidateElement.clientHeight) >= 40
+    }
+
+    const rect = candidateElement.getBoundingClientRect()
+    return rect.width >= 40 && rect.height >= 40
+  }
+
+  const previewMediaFor = (element) => {
+    let current = element
+    for (let depth = 0; current instanceof HTMLElement && depth < 4; depth += 1) {
+      const previewMedia = firstVisibleElement(
+        Array.from(current.querySelectorAll("video, img, canvas")).filter(isVideoPreviewElement)
+      )
+      if (previewMedia) {
+        return previewMedia
+      }
+      current = current.parentElement
+    }
+    return null
+  }
+  const matchedCandidate = candidates.find(({ element }) => Boolean(previewMediaFor(element)))
+    || candidates.find(({ element, text }) => Boolean(extractFileName(text, ["mp4", "mov", "avi", "mkv", "webm"])) && Boolean(previewMediaFor(element)))
+    || candidates.find(({ text }) => Boolean(extractFileName(text, ["mp4", "mov", "avi", "mkv", "webm"])))
+    || candidates.find(({ text }) => hasActionKeyword(text, ["play", "delete", "reupload", "\u64ad\u653e", "\u5220\u9664", "\u91cd\u65b0\u4e0a\u4f20"]))
+    || candidates[0]
+  const text = matchedCandidate.text
+  const previewMedia = previewMediaFor(matchedCandidate.element)
+  const fileName = extractFileName(text, ["mp4", "mov", "avi", "mkv", "webm"])
+  const sizeMb = extractFileSizeForName(text, fileName)
+  const present = Boolean(previewMedia)
+    || Boolean(fileName)
+    || hasActionKeyword(text, ["play", "delete", "reupload", "\u64ad\u653e", "\u5220\u9664", "\u91cd\u65b0\u4e0a\u4f20"])
+
+  return {
+    present,
+    ...(previewMedia ? { aspectRatio: aspectRatioFromElement(previewMedia) } : {}),
+    ...(typeof sizeMb === "number" ? { sizeMb } : {})
+  }
+}
+
+const collectSizeChartMetadata = () => {
+  const candidates = keywordContainerCandidates(["size chart", "chart", "\u5c3a\u7801\u8868"])
+  if (candidates.length === 0) {
+    return undefined
+  }
+
+  const matchedCandidate = candidates.find(({ element, text }) => {
+    const fileName = extractFileName(text, ["jpg", "jpeg", "png"])
+    const images = Array.from(element.querySelectorAll("img")).filter(isVisible)
+    return Boolean(fileName) || images.length > 0
+  }) || candidates[0]
+  const text = matchedCandidate.text
+  const images = Array.from(matchedCandidate.element.querySelectorAll("img")).filter(isVisible)
+  const fileName = extractFileName(text, ["jpg", "jpeg", "png"])
+  const format = extractFileExtension(fileName)
+    || extractFileExtension(images[0]?.getAttribute?.("src") || images[0]?.currentSrc || "")
+  const sizeMb = extractFileSizeForName(text, fileName)
+  const present = images.length > 0 || Boolean(fileName) || hasActionKeyword(text, ["delete", "reupload", "\u5220\u9664", "\u91cd\u65b0\u4e0a\u4f20"])
+
+  return {
+    required: true,
+    present,
+    ...(present ? { imageCount: Math.max(images.length, fileName ? 1 : 0) } : {}),
+    ...(format ? { format } : {}),
+    ...(typeof sizeMb === "number" ? { sizeMb } : {})
+  }
+}
+
+const collectFulfillmentMetadata = () => {
+  const mode = inferFulfillmentMode()
+  const candidates = keywordContainerCandidates(["warehouse", "lead time", "\u4ed3\u5e93", "\u53d1\u8d27\u4ed3", "\u5907\u8d27", "\u4ea4\u671f"])
+  const matchedCandidate = candidates.find(({ text }) =>
+    /(?:warehouse|\u4ed3\u5e93|\u53d1\u8d27\u4ed3)/i.test(text)
+    || /(?:lead time|\u5907\u8d27(?:\u65f6\u95f4|\u5929\u6570|\u5468\u671f)?|\u4ea4\u671f)/i.test(text)
+  ) || candidates[0]
+  const text = matchedCandidate?.text || ""
+  const warehouseMatch = text.match(/(?:warehouse|\u4ed3\u5e93|\u53d1\u8d27\u4ed3)[:?]?\s*([^\n,;]{1,80})/i)
+  const leadTimeMatch = text.match(/(?:lead time|\u5907\u8d27(?:\u65f6\u95f4|\u5929\u6570|\u5468\u671f)?|\u4ea4\u671f)[^\d]{0,8}(\d{1,3})/i)
+
+  if (!mode && !warehouseMatch?.[1] && !leadTimeMatch?.[1]) {
+    return undefined
+  }
+
+  return {
+    ...(mode ? { mode } : {}),
+    ...(warehouseMatch?.[1] ? { warehouseName: compactRawText(warehouseMatch[1]).slice(0, 80) } : {}),
+    ...(leadTimeMatch?.[1] ? { leadTimeDays: Number(leadTimeMatch[1]) } : {})
+  }
 }
 
 const collectAttributeText = () => {
@@ -1704,6 +2173,7 @@ const buildCollectionQuality = ({ title, images, skus }) => {
 
 const buildCollectedProduct = () => {
   const scan = scanPage()
+  const storeContext = getCurrentStoreContext()
   const titleField = findEditableFields("title", ["标题", "商品标题", "title"])[0]
   const title = getFieldValue(titleField) || document.querySelector("h1")?.textContent?.trim() || document.title || "Dianxiaomi collected product"
   const skuRows = collectSkuRows()
@@ -1742,6 +2212,8 @@ const buildCollectedProduct = () => {
 
   return {
     id: `dxm-collected-${Date.now()}`,
+    storeId: storeContext.storeId,
+    storeName: storeContext.storeName,
     pageUrl: window.location.href,
     pageTitle: document.title,
     collectedAt: new Date().toISOString(),
@@ -1754,6 +2226,7 @@ const buildCollectedProduct = () => {
     skus,
     rawTextSample: (document.body?.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 2000),
     notes: [
+      `store: ${storeContext.storeName ?? storeContext.storeId ?? "unknown"}`,
       `page profile: ${panelState.pageProfile?.label ?? "unknown"}`,
       `fields title ${scan.titleFieldCount}, price ${scan.priceFieldCount}, stock ${scan.stockFieldCount}, sku rows ${scan.skuRowCount}`
     ]
@@ -1762,15 +2235,22 @@ const buildCollectedProduct = () => {
 
 const buildProductWorkItem = () => {
   const scan = scanPage()
+  const storeContext = getCurrentStoreContext()
   const titleField = findEditableFields("title", ["鏍囬", "鍟嗗搧鏍囬", "title"])[0]
   const title = getFieldValue(titleField) || document.querySelector("h1")?.textContent?.trim() || document.title || "Dianxiaomi product"
   const attributes = collectAttributeText()
   const images = collectImages()
   const skuRows = collectSkuRows()
+  const manualDocument = collectManualDocumentMetadata()
+  const video = collectVideoMetadata()
+  const sizeChart = collectSizeChartMetadata()
+  const fulfillment = collectFulfillmentMetadata()
 
   return {
     id: `dxm-work-${Date.now()}`,
     source: "dianxiaomi",
+    storeId: storeContext.storeId,
+    storeName: storeContext.storeName,
     pageUrl: window.location.href,
     pageTitle: document.title,
     pageProfile: panelState.pageProfile?.label || "Dianxiaomi product",
@@ -1778,6 +2258,7 @@ const buildProductWorkItem = () => {
     rawTextSample: (document.body?.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 2000),
     notes: [
       "Source product remains in Dianxiaomi; this item tracks required edits before Temu listing.",
+      `store: ${storeContext.storeName ?? storeContext.storeId ?? "unknown"}`,
       `page profile: ${panelState.pageProfile?.label ?? "unknown"}`,
       `fields title ${scan.titleFieldCount}, price ${scan.priceFieldCount}, stock ${scan.stockFieldCount}, sku rows ${scan.skuRowCount}`
     ],
@@ -1785,11 +2266,17 @@ const buildProductWorkItem = () => {
       hasTitle: Boolean(title.trim()),
       imageCount: images.length,
       skuCount: skuRows.length,
+      variantCount: skuRows.length > 0 ? skuRows.length : undefined,
       priceFieldCount: scan.priceFieldCount,
       stockFieldCount: scan.stockFieldCount,
       attributeKeys: Object.keys(attributes),
       imageStats: collectImageStats(),
-      mediaToolSignals: collectMediaToolSignals()
+      imageTypeStats: collectImageTypeStats(),
+      mediaToolSignals: collectMediaToolSignals(),
+      manualDocument,
+      video,
+      sizeChart,
+      fulfillment
     }
   }
 }

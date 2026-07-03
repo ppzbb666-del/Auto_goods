@@ -343,10 +343,47 @@ type DianxiaomiProductWorkItem = {
   snapshot: {
     imageCount: number
     skuCount: number
+    variantCount?: number
     priceFieldCount: number
     stockFieldCount: number
+    manualDocument?: {
+      present: boolean
+      format?: string
+      sizeMb?: number
+      englishOnly?: boolean
+    }
+    video?: {
+      present: boolean
+      aspectRatio?: string
+      sizeMb?: number
+      durationSeconds?: number
+    }
+    sizeChart?: {
+      required?: boolean
+      present: boolean
+      imageCount?: number
+      format?: string
+      sizeMb?: number
+    }
+    fulfillment?: {
+      mode?: string
+      warehouseName?: string
+      leadTimeDays?: number
+      valid?: boolean
+    }
+    imageTypeStats?: Partial<Record<"mainImage" | "detailImage" | "skuImage", {
+      count: number
+      minWidthPx: number
+      minHeightPx: number
+      maxWidthPx: number
+      maxHeightPx: number
+      unknownDimensionCount: number
+      maxSizeMb?: number
+      unknownSizeCount?: number
+    }>>
   }
   requirements: {
+    presetName: string
     summary: {
       requiredTotal: number
       requiredPassed: number
@@ -424,10 +461,34 @@ type DianxiaomiListingRequirementRules = {
     maxHeightPx: number
     maxSizeMb: number
     dianxiaomiTools: string[]
+    imageTypes: Record<"mainImage" | "detailImage" | "skuImage", {
+      required: boolean
+      minCount: number
+      widthPx: number
+      heightPx: number
+      maxSizeMb: number
+      requireTranslation: boolean
+      requireWhiteBackground: boolean
+      requireSizeNormalization: boolean
+      dianxiaomiTools: string[]
+    }>
   }
   sku: {
     required: boolean
     minCount: number
+  }
+  listingMetadata: {
+    maxVariantCount: number
+    requireSizeChart: boolean
+    manualDocumentAllowedFormats: string[]
+    manualDocumentMaxSizeMb: number
+    manualDocumentRequireEnglishOnly: boolean
+    videoAllowedAspectRatios: string[]
+    videoMaxSizeMb: number
+    sizeChartRequiredImageCount: number
+    sizeChartAllowedFormats: string[]
+    sizeChartMaxSizeMb: number
+    blockInvalidFulfillmentRouting: boolean
   }
   price: {
     required: boolean
@@ -464,6 +525,9 @@ type SelectorCalibrationJob = {
   exitCode: number | null
   error: string | null
   artifactDir: string
+  saveConfig: boolean
+  selectorConfigResult: SelectorConfigGenerationResult | null
+  selectorConfigError: string | null
 }
 
 type SelectorWorkbench = {
@@ -657,6 +721,26 @@ const defaultSkuRowSelector = "tr, [role='row'], [class*='sku' i], [class*='tabl
 const wrongSurfaceUrl = `data:text/html;charset=utf-8,${encodeURIComponent("<!doctype html><html><head><title>Dianxiaomi Empty Fixture</title></head><body><main><h1>No product found</h1><p>There are no products on this page.</p></main></body></html>")}`
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const withImageStatsFixture = (html: string) => html.replace(
+  "<section aria-label=\"Image tools\">",
+  [
+    "<section aria-label=\"产品图片\"><h2>产品图片</h2>",
+    "<img src=\"https://example.test/main-1000.jpg\" width=\"1000\" height=\"1000\" style=\"width:80px;height:80px\" alt=\"main image\" />",
+    "<span>0.8MB</span></section>",
+    "<section aria-label=\"产品描述\"><h2>产品描述</h2>",
+    "<img src=\"https://example.test/detail-1200.jpg\" width=\"1200\" height=\"1200\" style=\"width:90px;height:90px\" alt=\"detail image\" />",
+    "<span>1.4MB</span></section>",
+    "<section aria-label=\"SKU图片\"><h2>SKU图片</h2>",
+    "<img src=\"https://example.test/sku-800.jpg\" width=\"800\" height=\"800\" style=\"width:72px;height:72px\" alt=\"sku image\" />",
+    "<span>500KB</span></section>",
+    "<section aria-label=\"Product manual\"><h2>Product manual</h2><button type=\"button\">Upload file</button><span>manual-guide.pdf 1.2MB</span></section>",
+    "<section aria-label=\"Listing video\"><h2>Listing video</h2><img src=\"https://example.test/video-cover.jpg\" width=\"1600\" height=\"900\" style=\"width:120px;height:68px\" alt=\"video cover\" /><button type=\"button\">Play</button><button type=\"button\">Delete</button><span>demo-video.mp4 12MB</span></section>",
+    "<section aria-label=\"Size chart\"><h2>Size chart</h2><img src=\"https://example.test/size-chart.png\" width=\"1000\" height=\"1500\" style=\"width:66px;height:100px\" alt=\"size chart\" /><span>size-chart.png 2.4MB</span></section>",
+    "<section aria-label=\"Fulfillment\"><h2>Fulfillment</h2><p>Warehouse: US Warehouse</p><p>Lead time 5 days</p></section>",
+    "<section aria-label=\"Image tools\">"
+  ].join("")
+)
 
 const requestJson = async <T>(url: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(url, init)
@@ -1188,7 +1272,17 @@ const expectDianxiaomiRequirementRules = async () => {
   const defaultRules = await requestJson<DianxiaomiListingRequirementRules>(`${baseUrl}/dianxiaomi/requirement-rules`)
   assert(defaultRules.presetName, "dianxiaomi requirement rules should expose a preset name")
   assert(defaultRules.images.minCount >= 0, "dianxiaomi requirement rules should expose image requirements")
+  assert.equal(defaultRules.title.maxLength, 250, "default Temu title guard should allow up to 250 characters")
+  assert.equal(defaultRules.media.maxSizeMb, 2, "default Temu image size guard should limit images to 2MB")
+  assert.equal(defaultRules.listingMetadata.maxVariantCount, 20, "default metadata rules should cap variants at 20")
+  assert.equal(defaultRules.listingMetadata.requireSizeChart, false, "default metadata rules should not require a size chart without category signals")
+  assert.deepEqual(defaultRules.listingMetadata.manualDocumentAllowedFormats, ["pdf"], "default metadata rules should only allow PDF manuals")
+  assert(defaultRules.listingMetadata.videoAllowedAspectRatios.includes("16:9"), "default metadata rules should expose supported video aspect ratios")
+  assert.deepEqual(defaultRules.listingMetadata.sizeChartAllowedFormats, ["jpg", "jpeg", "png"], "default metadata rules should expose allowed size-chart formats")
+  assert(defaultRules.compliance.blockedTerms.includes("relateproductdetail"), "default compliance rules should block the Temu description placeholder token")
   assert(defaultRules.media.dianxiaomiTools.length > 0, "dianxiaomi requirement rules should expose native media tools")
+  assert(defaultRules.media.imageTypes.mainImage.dianxiaomiTools.length > 0, "dianxiaomi requirement rules should expose main-image native tools")
+  assert(defaultRules.media.imageTypes.detailImage.requireTranslation, "detail image rules should prefer Dianxiaomi one-click image translation")
 
   const workItem = await requestJson<DianxiaomiProductWorkItem>(`${baseUrl}/dianxiaomi/product-work-items`, {
     method: "POST",
@@ -1222,6 +1316,341 @@ const expectDianxiaomiRequirementRules = async () => {
     })
   })
   assert.equal(workItem.status, "ready-for-automation", "baseline rules should allow a complete three-image item")
+
+  const localTitle = `temu local ${"l".repeat(290)}`
+  const localWorkItem = await requestJson<DianxiaomiProductWorkItem>(`${baseUrl}/dianxiaomi/product-work-items`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      id: `dxm-local-rules-smoke-${runId}`,
+      pageUrl: "https://www.dianxiaomi.com/product/edit/local-rules-smoke",
+      pageTitle: "Temu local listing smoke",
+      pageProfile: "Temu local listing",
+      title: localTitle,
+      rawTextSample: "temu local listing with contribution sku",
+      notes: ["temu local listing"],
+      snapshot: {
+        hasTitle: true,
+        imageCount: 3,
+        skuCount: 2,
+        variantCount: 2,
+        priceFieldCount: 2,
+        stockFieldCount: 2,
+        attributeKeys: ["color", "size"],
+        imageStats: {
+          minWidthPx: 1000,
+          minHeightPx: 1000,
+          maxWidthPx: 1200,
+          maxHeightPx: 1200,
+          unknownDimensionCount: 0
+        },
+        mediaToolSignals: ["image translation", "Xiaomi image editor"],
+        sizeChart: {
+          required: true,
+          present: true,
+          imageCount: 1,
+          format: "png",
+          sizeMb: 2.2
+        }
+      }
+    })
+  })
+  assert.equal(localWorkItem.requirements.presetName, "temu-local-listing-readiness", "Temu local hints should switch to the local readiness preset")
+  assert.equal(localWorkItem.status, "ready-for-automation", "Temu local preset should allow titles longer than the semi-managed 250-character cap")
+  assert(
+    localWorkItem.requirements.checks.some((check) => check.id === "title-length" && check.ok),
+    "Temu local preset should keep the long title within limits"
+  )
+
+  const localSizeChartMissing = await requestJson<DianxiaomiProductWorkItem>(`${baseUrl}/dianxiaomi/product-work-items`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      id: `dxm-local-size-chart-missing-${runId}`,
+      pageUrl: "https://www.dianxiaomi.com/product/edit/local-size-chart-missing",
+      pageTitle: "Temu local women clothing listing smoke",
+      pageProfile: "Temu local listing",
+      title: "Temu local women clothing product missing size chart smoke",
+      rawTextSample: "temu local listing women clothing apparel category",
+      notes: ["temu local listing", "women clothing"],
+      snapshot: {
+        hasTitle: true,
+        imageCount: 3,
+        skuCount: 2,
+        variantCount: 2,
+        priceFieldCount: 2,
+        stockFieldCount: 2,
+        attributeKeys: ["color", "size"],
+        imageStats: {
+          minWidthPx: 1000,
+          minHeightPx: 1000,
+          maxWidthPx: 1200,
+          maxHeightPx: 1200,
+          unknownDimensionCount: 0
+        },
+        mediaToolSignals: ["image translation", "Xiaomi image editor"]
+      }
+    })
+  })
+  assert.equal(localSizeChartMissing.requirements.presetName, "temu-local-size-chart-readiness", "Temu local apparel hints should use the local size-chart preset")
+  assert.equal(localSizeChartMissing.status, "needs-revision", "Temu local apparel items should require a size chart before unattended readiness")
+  assert(
+    localSizeChartMissing.requirements.checks.some((check) => check.id === "size-chart-present" && check.level === "required" && !check.ok),
+    "missing size chart should be a required blocker for local apparel"
+  )
+
+  const semiManagedSizeChartMissing = await requestJson<DianxiaomiProductWorkItem>(`${baseUrl}/dianxiaomi/product-work-items`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      id: `dxm-semi-size-chart-missing-${runId}`,
+      pageUrl: "https://www.dianxiaomi.com/product/edit/semi-size-chart-missing",
+      pageTitle: "Temu semi managed apparel listing smoke",
+      pageProfile: "Temu semi managed listing",
+      title: "Temu semi managed apparel product missing size chart smoke",
+      rawTextSample: "women clothing apparel category",
+      notes: ["women clothing"],
+      snapshot: {
+        hasTitle: true,
+        imageCount: 3,
+        skuCount: 2,
+        variantCount: 2,
+        priceFieldCount: 2,
+        stockFieldCount: 2,
+        attributeKeys: ["color", "size"],
+        imageStats: {
+          minWidthPx: 1000,
+          minHeightPx: 1000,
+          maxWidthPx: 1200,
+          maxHeightPx: 1200,
+          unknownDimensionCount: 0
+        },
+        mediaToolSignals: ["image translation", "Xiaomi image editor"]
+      }
+    })
+  })
+  assert.equal(semiManagedSizeChartMissing.requirements.presetName, "temu-size-chart-category-readiness", "semi-managed apparel hints should use the category size-chart preset")
+  assert.equal(semiManagedSizeChartMissing.status, "needs-revision", "semi-managed apparel items should require a size chart when the category requires one")
+  assert(
+    semiManagedSizeChartMissing.requirements.checks.some((check) => check.id === "size-chart-present" && check.level === "required" && !check.ok),
+    "missing size chart should be a required blocker for apparel category"
+  )
+
+  const localMetadataFailureTitle = `temu local metadata ${"m".repeat(270)}`
+  const localMetadataFailure = await requestJson<DianxiaomiProductWorkItem>(`${baseUrl}/dianxiaomi/product-work-items`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      id: `dxm-local-metadata-failure-${runId}`,
+      pageUrl: "https://www.dianxiaomi.com/product/edit/local-metadata-failure",
+      pageTitle: "Temu local metadata failure smoke",
+      pageProfile: "Temu local listing",
+      title: localMetadataFailureTitle,
+      rawTextSample: "temu local listing with contribution sku and size chart",
+      notes: ["temu local listing", "size chart"],
+      snapshot: {
+        hasTitle: true,
+        imageCount: 3,
+        skuCount: 21,
+        variantCount: 21,
+        priceFieldCount: 2,
+        stockFieldCount: 2,
+        attributeKeys: ["color", "size"],
+        imageStats: {
+          minWidthPx: 1000,
+          minHeightPx: 1000,
+          maxWidthPx: 1200,
+          maxHeightPx: 1200,
+          unknownDimensionCount: 0
+        },
+        mediaToolSignals: ["image translation", "Xiaomi image editor"],
+        manualDocument: {
+          present: true,
+          format: "docx",
+          sizeMb: 18,
+          englishOnly: false
+        },
+        video: {
+          present: true,
+          aspectRatio: "9:16",
+          sizeMb: 600
+        },
+        sizeChart: {
+          required: true,
+          present: true,
+          imageCount: 2,
+          format: "gif",
+          sizeMb: 4
+        },
+        fulfillment: {
+          mode: "semi-managed",
+          warehouseName: "CN Warehouse",
+          leadTimeDays: 9,
+          valid: false
+        }
+      }
+    })
+  })
+  assert.equal(localMetadataFailure.requirements.presetName, "temu-local-size-chart-readiness", "metadata failure fixture should use the Temu local size-chart preset")
+  assert.equal(localMetadataFailure.status, "needs-revision", "invalid Temu local metadata should block unattended readiness")
+  assert(
+    localMetadataFailure.requirements.checks.some((check) => check.id === "variant-count-limit" && !check.ok),
+    "variant-count precheck should block more than 20 variants"
+  )
+  assert(
+    localMetadataFailure.requirements.checks.some((check) => check.id === "manual-document-format" && !check.ok),
+    "manual document precheck should reject non-PDF uploads"
+  )
+  assert(
+    localMetadataFailure.requirements.checks.some((check) => check.id === "manual-document-size" && !check.ok),
+    "manual document precheck should reject files larger than 15MB"
+  )
+  assert(
+    localMetadataFailure.requirements.checks.some((check) => check.id === "manual-document-language" && !check.ok),
+    "manual document precheck should reject non-English manuals"
+  )
+  assert(
+    localMetadataFailure.requirements.checks.some((check) => check.id === "video-aspect-ratio" && !check.ok),
+    "video precheck should reject unsupported aspect ratios"
+  )
+  assert(
+    localMetadataFailure.requirements.checks.some((check) => check.id === "video-file-size" && !check.ok),
+    "video precheck should reject files larger than 500MB"
+  )
+  assert(
+    localMetadataFailure.requirements.checks.some((check) => check.id === "size-chart-image-count" && !check.ok),
+    "size chart precheck should require exactly one image"
+  )
+  assert(
+    localMetadataFailure.requirements.checks.some((check) => check.id === "size-chart-format" && !check.ok),
+    "size chart precheck should reject unsupported image formats"
+  )
+  assert(
+    localMetadataFailure.requirements.checks.some((check) => check.id === "size-chart-file-size" && !check.ok),
+    "size chart precheck should reject files larger than 3MB"
+  )
+  assert(
+    localMetadataFailure.requirements.checks.some((check) => check.id === "fulfillment-routing" && !check.ok),
+    "fulfillment precheck should block invalid routing metadata"
+  )
+
+  const realMetadataSample = await requestJson<DianxiaomiProductWorkItem>(`${baseUrl}/dianxiaomi/product-work-items`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      id: `dxm-real-metadata-sample-${runId}`,
+      pageUrl: "https://www.dianxiaomi.com/web/popTemu/edit?id=161406453047896278",
+      pageTitle: "Temu semi managed real calibration sample",
+      pageProfile: "Temu semi managed listing",
+      title: "Real Dianxiaomi calibration sample product for queue readiness coverage",
+      rawTextSample: "semi managed listing sampled from real dianxiaomi edit page",
+      notes: ["real calibration sample", "video present", "size chart present"],
+      snapshot: {
+        hasTitle: true,
+        imageCount: 36,
+        skuCount: 29,
+        variantCount: 29,
+        priceFieldCount: 29,
+        stockFieldCount: 29,
+        attributeKeys: ["material", "size"],
+        mediaToolSignals: ["image translation", "image management"],
+        manualDocument: {
+          present: false
+        },
+        video: {
+          present: true,
+          aspectRatio: "16:9",
+          sizeMb: 12
+        },
+        sizeChart: {
+          required: false,
+          present: true,
+          imageCount: 1,
+          format: "png",
+          sizeMb: 2.4
+        },
+        fulfillment: {
+          mode: "semi-managed",
+          warehouseName: "US Warehouse",
+          leadTimeDays: 5,
+          valid: true
+        }
+      }
+    })
+  })
+  assert.equal(
+    realMetadataSample.requirements.presetName,
+    "temu-size-chart-category-readiness",
+    "real Dianxiaomi Temu edit pages with size-chart signals should use the category size-chart preset"
+  )
+  assert.equal(
+    realMetadataSample.status,
+    "needs-revision",
+    "real-page metadata with more than 20 variants should stop unattended readiness"
+  )
+  assert(
+    realMetadataSample.requirements.checks.some((check) => check.id === "variant-count-limit" && !check.ok),
+    "real-page metadata should surface the variant-count blocker"
+  )
+  assert(
+    realMetadataSample.requirements.checks.some((check) => check.id === "video-aspect-ratio" && check.ok),
+    "real-page metadata should keep supported video aspect ratios passing"
+  )
+  assert(
+    realMetadataSample.requirements.checks.some((check) => check.id === "video-file-size" && check.ok),
+    "real-page metadata should keep small enough videos passing"
+  )
+  assert(
+    realMetadataSample.requirements.checks.some((check) => check.id === "size-chart-image-count" && check.ok),
+    "real-page metadata should accept a single size-chart image when one is present"
+  )
+  assert(
+    realMetadataSample.requirements.checks.some((check) => check.id === "size-chart-file-size" && check.ok),
+    "real-page metadata should accept a size chart under 3MB"
+  )
+  assert(
+    realMetadataSample.requirements.checks.some((check) => check.id === "fulfillment-routing" && check.ok),
+    "real-page metadata should keep valid fulfillment routing passing"
+  )
+  assert(
+    !realMetadataSample.requirements.checks.some((check) => check.id.startsWith("manual-document-")),
+    "missing manuals should stay non-blocking until the page actually shows an uploaded manual"
+  )
+
+  const relaxedVariantRules = await requestJson<DianxiaomiListingRequirementRules>(`${baseUrl}/dianxiaomi/requirement-rules`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      ...defaultRules,
+      presetName: `${defaultRules.presetName}-variant-30`,
+      listingMetadata: {
+        ...defaultRules.listingMetadata,
+        maxVariantCount: 30
+      }
+    })
+  })
+  assert.equal(relaxedVariantRules.listingMetadata.maxVariantCount, 30, "metadata rules update should persist the variant cap")
+
+  const workItemsAfterVariantRelax = await requestJson<DianxiaomiProductWorkItem[]>(`${baseUrl}/dianxiaomi/product-work-items`)
+  const relaxedVariantSample = workItemsAfterVariantRelax.find((item) => item.id === realMetadataSample.id)
+  assert(relaxedVariantSample, "variant rules update should keep the real metadata sample in the queue")
+  assert.equal(relaxedVariantSample.status, "ready-for-automation", "raising the variant cap should release the real metadata sample")
+  assert(
+    relaxedVariantSample.requirements.checks.some((check) => check.id === "variant-count-limit" && check.ok),
+    "raising the variant cap should flip the variant-count check to passing"
+  )
 
   const stricterRules = await requestJson<DianxiaomiListingRequirementRules>(`${baseUrl}/dianxiaomi/requirement-rules`, {
     method: "PUT",
@@ -1262,6 +1691,30 @@ const expectDianxiaomiRequirementRules = async () => {
   const restored = workItemsAfterRestore.find((item) => item.id === workItem.id)
   assert(restored, "restored requirement rules should keep existing work queue items")
   assert.equal(restored.status, "ready-for-automation", "restored rules should rescore queued work items back to ready")
+  const restoredLocalSizeChartMissing = workItemsAfterRestore.find((item) => item.id === localSizeChartMissing.id)
+  assert(restoredLocalSizeChartMissing, "restored rules should keep the local apparel size-chart fixture in the queue")
+  assert.equal(
+    restoredLocalSizeChartMissing.status,
+    "needs-revision",
+    "restored base rules should still keep Temu local apparel items blocked when the size chart is missing"
+  )
+  assert.equal(
+    restoredLocalSizeChartMissing.requirements.presetName,
+    "temu-local-size-chart-readiness",
+    "restored base rules should preserve the derived Temu local size-chart preset"
+  )
+  const restoredSemiManagedSizeChartMissing = workItemsAfterRestore.find((item) => item.id === semiManagedSizeChartMissing.id)
+  assert(restoredSemiManagedSizeChartMissing, "restored rules should keep the semi-managed apparel size-chart fixture in the queue")
+  assert.equal(
+    restoredSemiManagedSizeChartMissing.status,
+    "needs-revision",
+    "restored base rules should still keep apparel items blocked when the size chart is missing"
+  )
+  assert.equal(
+    restoredSemiManagedSizeChartMissing.requirements.presetName,
+    "temu-size-chart-category-readiness",
+    "restored base rules should preserve the derived category size-chart preset"
+  )
 
   const mediaWorkItem = await requestJson<DianxiaomiProductWorkItem>(`${baseUrl}/dianxiaomi/product-work-items`, {
     method: "POST",
@@ -1289,6 +1742,28 @@ const expectDianxiaomiRequirementRules = async () => {
           maxWidthPx: 1200,
           maxHeightPx: 1200,
           unknownDimensionCount: 0
+        },
+        imageTypeStats: {
+          mainImage: {
+            count: 1,
+            minWidthPx: 800,
+            minHeightPx: 800,
+            maxWidthPx: 800,
+            maxHeightPx: 800,
+            unknownDimensionCount: 0,
+            maxSizeMb: 1.5,
+            unknownSizeCount: 0
+          },
+          detailImage: {
+            count: 3,
+            minWidthPx: 800,
+            minHeightPx: 800,
+            maxWidthPx: 800,
+            maxHeightPx: 800,
+            unknownDimensionCount: 0,
+            maxSizeMb: 2,
+            unknownSizeCount: 0
+          }
         },
         mediaToolSignals: []
       }
@@ -1343,6 +1818,73 @@ const expectDianxiaomiRequirementRules = async () => {
     })
   })
   assert.equal(mediaUpdatedWorkItem.status, "ready-for-automation", "Dianxiaomi media tool signals should satisfy required media checks")
+
+  await requestJson<DianxiaomiListingRequirementRules>(`${baseUrl}/dianxiaomi/requirement-rules`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      ...defaultRules,
+      presetName: `${defaultRules.presetName}-smoke-main-image-fixed-size`,
+      media: {
+        ...defaultRules.media,
+        imageTypes: {
+          ...defaultRules.media.imageTypes,
+          mainImage: {
+            ...defaultRules.media.imageTypes.mainImage,
+            required: true,
+            widthPx: 1000,
+            heightPx: 1000,
+            maxSizeMb: 1,
+            requireTranslation: true,
+            requireSizeNormalization: true,
+            dianxiaomiTools: ["image translation", "batch resize"]
+          }
+        }
+      }
+    })
+  })
+
+  const typedImageWorkItemsAfterRuleUpdate = await requestJson<DianxiaomiProductWorkItem[]>(`${baseUrl}/dianxiaomi/product-work-items`)
+  const typedImageRescored = typedImageWorkItemsAfterRuleUpdate.find((item) => item.id === mediaUpdatedWorkItem.id)
+  assert(typedImageRescored, "typed image rules update should keep existing work queue items")
+  assert.equal(typedImageRescored.status, "needs-revision", "strict main image size rules should rescore queued work items")
+  assert(
+    typedImageRescored.requirements.checks.some((check) => check.id === "image-type-mainImage-dimensions" && !check.ok),
+    "strict main image size rules should fail the fixed-dimension check"
+  )
+  assert(
+    typedImageRescored.requirements.checks.some((check) => check.id === "image-type-mainImage-file-size" && !check.ok),
+    "strict main image size rules should fail the max file-size check"
+  )
+
+  const typedImageUpdatedWorkItem = await requestJson<DianxiaomiProductWorkItem>(`${baseUrl}/dianxiaomi/product-work-items`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      ...mediaUpdatedWorkItem,
+      snapshot: {
+        ...mediaUpdatedWorkItem.snapshot,
+        imageTypeStats: {
+          ...mediaUpdatedWorkItem.snapshot.imageTypeStats,
+          mainImage: {
+            count: 1,
+            minWidthPx: 1000,
+            minHeightPx: 1000,
+            maxWidthPx: 1000,
+            maxHeightPx: 1000,
+            unknownDimensionCount: 0,
+            maxSizeMb: 0.8,
+            unknownSizeCount: 0
+          }
+        }
+      }
+    })
+  })
+  assert.equal(typedImageUpdatedWorkItem.status, "ready-for-automation", "fixed main-image stats and Dianxiaomi media signal should satisfy typed image rules")
 
   await requestJson<DianxiaomiListingRequirementRules>(`${baseUrl}/dianxiaomi/requirement-rules`, {
     method: "PUT",
@@ -2784,8 +3326,39 @@ const runSelectorCalibration = async (fixtureUrl: string) => {
   assert.equal(job.artifactDir, screenshots)
 
   const artifacts = readdirSync(path.join(repoRoot, screenshots))
-  assert(artifacts.some((fileName) => /^dianxiaomi-snapshot-.*\.json$/.test(fileName)), "selector calibration should create a snapshot json")
+  const snapshotFile = artifacts
+    .filter((fileName) => /^dianxiaomi-snapshot-.*\.json$/.test(fileName))
+    .sort()
+    .at(-1)
+  assert(snapshotFile, "selector calibration should create a snapshot json")
   assert(artifacts.some((fileName) => /^dianxiaomi-diagnosis-.*\.json$/.test(fileName)), "selector calibration should create a diagnosis json")
+  const snapshot = JSON.parse(readFileSync(path.join(repoRoot, screenshots, snapshotFile!), "utf8")) as {
+    variantCount?: number
+    imageTypeStats?: Record<string, { count: number; minWidthPx: number; maxWidthPx: number; maxSizeMb?: number }>
+    manualDocument?: { present: boolean; format?: string; sizeMb?: number }
+    video?: { present: boolean; aspectRatio?: string; sizeMb?: number }
+    sizeChart?: { required?: boolean; present: boolean; imageCount?: number; format?: string; sizeMb?: number }
+    fulfillment?: { mode?: string; warehouseName?: string; leadTimeDays?: number }
+  }
+  assert.equal(snapshot.variantCount, 2, "selector calibration should capture total variant rows")
+  assert.equal(snapshot.imageTypeStats?.mainImage?.count, 1, "selector calibration should classify main images")
+  assert.equal(snapshot.imageTypeStats?.mainImage?.minWidthPx, 1000, "selector calibration should capture main-image width")
+  assert.equal(snapshot.imageTypeStats?.detailImage?.count, 1, "selector calibration should classify detail images")
+  assert.equal(snapshot.imageTypeStats?.skuImage?.count, 1, "selector calibration should classify SKU images")
+  assert.equal(snapshot.imageTypeStats?.skuImage?.maxSizeMb, Number((500 / 1024).toFixed(3)), "selector calibration should parse visible SKU image file size")
+  assert.equal(snapshot.manualDocument?.present, true, "selector calibration should detect an uploaded manual document")
+  assert.equal(snapshot.manualDocument?.format, "pdf", "selector calibration should capture the manual document format")
+  assert.equal(snapshot.manualDocument?.sizeMb, 1.2, "selector calibration should capture the manual document file size")
+  assert.equal(snapshot.video?.present, true, "selector calibration should detect an uploaded listing video")
+  assert.equal(snapshot.video?.aspectRatio, "16:9", "selector calibration should capture the video aspect ratio from the preview")
+  assert.equal(snapshot.video?.sizeMb, 12, "selector calibration should capture the uploaded video file size")
+  assert.equal(snapshot.sizeChart?.required, true, "selector calibration should mark the size chart section as required when present")
+  assert.equal(snapshot.sizeChart?.present, true, "selector calibration should detect an uploaded size chart")
+  assert.equal(snapshot.sizeChart?.imageCount, 1, "selector calibration should count size chart images")
+  assert.equal(snapshot.sizeChart?.format, "png", "selector calibration should capture the size chart format")
+  assert.equal(snapshot.sizeChart?.sizeMb, 2.4, "selector calibration should capture the size chart file size")
+  assert.equal(snapshot.fulfillment?.warehouseName, "US Warehouse", "selector calibration should capture fulfillment warehouse text")
+  assert.equal(snapshot.fulfillment?.leadTimeDays, 5, "selector calibration should capture fulfillment lead time")
 
   const workbench = await requestJson<SelectorWorkbench>(`${baseUrl}/selector-workbench`)
   assert(workbench.diagnosis, "selector workbench should expose the latest diagnosis")
@@ -3030,6 +3603,39 @@ const runSelectorCalibrationWithMediaSampling = async (fixtureUrl: string) => {
   assert(snapshot.mediaActionSampling?.tools.some((tool) => tool.id === "white-background" && tool.status === "skipped"), "selector calibration media sampling should skip non-allowlisted tools")
 }
 
+const runSelectorCalibrationSaveConfigRejectsFixture = async (fixtureUrl: string) => {
+  const before = readFileSync(selectorConfigPath, "utf8")
+  const screenshots = `${smokeRoot}/selector-calibration-save-config-fixture`
+  mkdirSync(path.join(repoRoot, screenshots), {
+    recursive: true
+  })
+
+  const started = await requestJson<{ id: string; artifactDir: string; saveConfig: boolean }>(`${baseUrl}/selector-calibration`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      headed: false,
+      url: `${fixtureUrl}#selector-media-actions`,
+      profile: `${smokeRoot}/selector-calibration-save-config-fixture-profile`,
+      screenshots,
+      saveConfig: true
+    })
+  })
+
+  assert.equal(started.artifactDir, screenshots)
+  assert.equal(started.saveConfig, true, "selector calibration should echo saveConfig=true")
+
+  const job = await waitForSelectorCalibrationJob(started.id)
+  const log = await requestJson<JobLog>(`${baseUrl}/selector-calibration/jobs/${started.id}/logs?maxChars=5000`)
+  const after = readFileSync(selectorConfigPath, "utf8")
+  assert.equal(job.status, "failed", `fixture selector calibration with saveConfig should fail before saving. stderr: ${log.stderr}`)
+  assert.equal(job.selectorConfigResult, null, "fixture selector calibration should not save selector config")
+  assert.match(job.selectorConfigError ?? job.error ?? "", /real Dianxiaomi|fixture/i, "fixture selector calibration should explain the real-page requirement")
+  assert.equal(after, before, "fixture selector calibration with saveConfig must not overwrite selector config")
+}
+
 const runWrongSurfaceSelectorCalibration = async () => {
   const screenshots = `${smokeRoot}/selector-calibration-wrong-surface`
   mkdirSync(path.join(repoRoot, screenshots), {
@@ -3149,7 +3755,7 @@ const main = async () => {
   assert(existsSync(selectorConfigPath), `selector config not found: ${selectorConfig}`)
   writeRepairApplyFixturePlan()
 
-  const fixtureHtml = readFileSync(fixturePath, "utf8")
+  const fixtureHtml = withImageStatsFixture(readFileSync(fixturePath, "utf8"))
   const originalSelectorConfig = readFileSync(selectorConfigPath, "utf8")
   const originalPlannerState = existsSync(plannerStatePath) ? readFileSync(plannerStatePath, "utf8") : null
   const fixtureUrl = `data:text/html;charset=utf-8,${encodeURIComponent(fixtureHtml)}`
@@ -3178,6 +3784,7 @@ const main = async () => {
     await expectRunningTargetLock(fixtureUrl)
     await runSelectorCalibration(fixtureUrl)
     await runSelectorCalibrationWithMediaSampling(fixtureUrl)
+    await runSelectorCalibrationSaveConfigRejectsFixture(fixtureUrl)
 
     const results = []
     results.push(await runMode("dry-run", fixtureUrl))

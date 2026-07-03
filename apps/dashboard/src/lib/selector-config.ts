@@ -4,7 +4,7 @@ const selectorFieldKeys = ["title", "description", "price", "stock", "attribute"
 const selectorButtonKeys = ["save", "submit"] as const
 const selectorMediaToolKeys = ["imageTranslation", "whiteBackground", "imageEditor", "batchResize", "imageManagement"] as const
 const selectorMediaToolActionKeys = ["apply", "close"] as const
-const requiredSelectorFields = ["title", "description", "price", "stock"] as const
+const requiredSelectorFields = ["title", "price", "stock"] as const
 const requiredSelectorButtons = ["save"] as const
 
 export const defaultSkuRowSelector = "tr, [role='row'], [class*='sku' i], [class*='table-row' i], [class*='row' i]"

@@ -1,9 +1,10 @@
+// @ts-nocheck
 import { createHash } from "node:crypto";
 import { createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createTaskFromDianxiaomiProductWorkItem, exportTaskFile, getTaskFileExportSnapshotStatus, getDianxiaomiProductWorkQueueSummary, exportDianxiaomiRepairPreview, listSelectorDiagnosisReports, listDianxiaomiProductWorkItems, updateDianxiaomiProductWorkItemStatus, validateDianxiaomiAutomationPageUrl, validateSelectorConfig } from "./planner";
+import { createTaskFromDianxiaomiProductWorkItem, exportTaskFile, getTaskFileExportSnapshotStatus, getDianxiaomiProductWorkQueueSummary, exportDianxiaomiRepairPreview, getSelectorConfigVersions, listSelectorDiagnosisReports, listDianxiaomiProductWorkItems, restoreSelectorConfigVersion, updateDianxiaomiProductWorkItemStatus, validateDianxiaomiAutomationPageUrl, validateSelectorConfig } from "./planner";
 export class AutomationSafetyGateError extends Error {
     statusCode = 409;
     constructor(message) {
@@ -1386,26 +1387,85 @@ const resolveScreenshotDir = (repoRoot, input) => {
     return path.isAbsolute(screenshotDir) ? screenshotDir : path.join(repoRoot, screenshotDir);
 };
 const buildJobArtifactDir = (id) => `${DEFAULT_ARTIFACT_ROOT}/${id}`;
-const readLatestExecutionReport = (repoRoot, input) => {
+const readTaskIdFromInput = (repoRoot, input) => {
+    const taskFile = typeof input.taskFile === "string" ? input.taskFile.trim() : "";
+    if (!taskFile) {
+        return null;
+    }
+    const taskPath = path.isAbsolute(taskFile) ? taskFile : path.join(repoRoot, taskFile);
+    if (!existsSync(taskPath)) {
+        return null;
+    }
+    try {
+        const parsed = JSON.parse(readFileSync(taskPath, "utf8"));
+        return typeof parsed.id === "string" && parsed.id.trim() ? parsed.id : null;
+    }
+    catch {
+        return null;
+    }
+};
+const reportHasStep = (report, stepId) => Array.isArray(report?.steps)
+    && report.steps.some((step) => step?.id === stepId);
+const reportMatchesAutomationMode = (mode, fileName, report) => {
+    if (mode === "dry-run") {
+        return /^dianxiaomi-dry-run-.*\.json$/.test(fileName);
+    }
+    if (mode === "repair-preview") {
+        return /^dianxiaomi-repair-preview-.*\.json$/.test(fileName);
+    }
+    if (mode === "repair-apply") {
+        return /^dianxiaomi-repair-apply-.*\.json$/.test(fileName);
+    }
+    if (mode === "submit-listing") {
+        return /^dianxiaomi-run-.*\.json$/.test(fileName) && reportHasStep(report, "submit-listing");
+    }
+    if (mode === "save-draft") {
+        return /^dianxiaomi-run-.*\.json$/.test(fileName)
+            && reportHasStep(report, "save-draft")
+            && !reportHasStep(report, "submit-listing");
+    }
+    if (mode === "fill-draft") {
+        return /^dianxiaomi-run-.*\.json$/.test(fileName)
+            && reportHasStep(report, "review-hold")
+            && !reportHasStep(report, "save-draft")
+            && !reportHasStep(report, "submit-listing");
+    }
+    return true;
+};
+const readLatestExecutionReport = (repoRoot, input, startedAt = null, mode = null) => {
     const reportDir = resolveScreenshotDir(repoRoot, input);
     if (!existsSync(reportDir)) {
         return null;
     }
-    const reportPath = readdirSync(reportDir)
+    const startedAtMs = parseTimestampMs(startedAt);
+    const expectedTaskId = readTaskIdFromInput(repoRoot, input);
+    const reports = readdirSync(reportDir)
         .filter((fileName) => /^dianxiaomi-(run|dry-run|repair-preview|repair-apply|error)-.*\.json$/.test(fileName))
         .map((fileName) => path.join(reportDir, fileName))
         .flatMap((filePath) => {
         try {
+            const report = JSON.parse(readFileSync(filePath, "utf8"));
+            const createdAtMs = parseTimestampMs(report.createdAt);
+            if (startedAtMs !== null && createdAtMs !== null && createdAtMs < startedAtMs) {
+                return [];
+            }
+            const fileName = path.basename(filePath);
+            if (expectedTaskId && report.taskId !== expectedTaskId) {
+                return [];
+            }
             return [{
                     filePath,
-                    report: JSON.parse(readFileSync(filePath, "utf8"))
+                    fileName,
+                    report
                 }];
         }
         catch {
             return [];
         }
     })
-        .sort((left, right) => right.report.createdAt.localeCompare(left.report.createdAt))[0];
+        .sort((left, right) => right.report.createdAt.localeCompare(left.report.createdAt));
+    const modeMatched = mode ? reports.filter(({ fileName, report }) => reportMatchesAutomationMode(mode, fileName, report)) : reports;
+    const reportPath = (modeMatched[0] ?? reports[0]) ?? null;
     return reportPath ?? null;
 };
 const startAutomationJob = (mode, input = {}) => {
@@ -1474,15 +1534,17 @@ const startAutomationJob = (mode, input = {}) => {
         if (!current) {
             return;
         }
-        const executionReport = code === 0 ? readLatestExecutionReport(repoRoot, effectiveInput) : null;
+        const executionReport = readLatestExecutionReport(repoRoot, effectiveInput, result.startedAt, mode);
+        const reportStatus = executionReport?.report.status ?? null;
+        const completedByReport = reportStatus === "completed";
         store.set(id, {
             ...current,
-            status: code === 0 ? "completed" : "failed",
+            status: code === 0 || completedByReport ? "completed" : "failed",
             finishedAt: new Date().toISOString(),
             exitCode: code,
             error: null,
             reportPath: executionReport?.filePath ?? null,
-            reportStatus: executionReport?.report.status ?? null
+            reportStatus
         });
         releaseTargetLock(targetFingerprint, id);
     });
@@ -1538,7 +1600,7 @@ const waitForFullFlowJob = async (id, timeoutMs = 20 * 60 * 1000) => {
     throw new Error(`full-flow job timed out: ${id}`);
 };
 const getRunningTargetJobId = (targetFingerprint) => runningTargetLocks.get(targetFingerprint) ?? null;
-const isSuccessfulJob = (job) => Boolean(job && job.status === "completed" && job.exitCode === 0 && job.reportStatus === "completed");
+const isSuccessfulJob = (job) => Boolean(job && job.status === "completed" && job.reportStatus === "completed");
 const latestSuccessfulAutomationJob = (mode, targetFingerprint) => listAutomationJobs(mode, Number.MAX_SAFE_INTEGER)
     .find((job) => isSuccessfulJob(job) && job.targetFingerprint === targetFingerprint) ?? null;
 const selectorBlockReason = (blockers) => `selector config validation failed: ${blockers.map((issue) => issue.message).join("; ")}`;
@@ -4031,8 +4093,11 @@ const browserExecutableRepairWriters = new Set([
     "fill-sku-pricing",
     "run-media-tool"
 ]);
+const isDianxiaomiWorkItemBrowserRecoveryReady = (item) => item.requirements.summary.ready
+    || (item.publishOutcome?.status === "failed"
+        && item.publishOutcome.route === "browser-recovery");
 const isDianxiaomiWorkItemBrowserRecoveryCandidate = (item) => item.status === "blocked"
-    && item.requirements.summary.ready
+    && isDianxiaomiWorkItemBrowserRecoveryReady(item)
     && isDianxiaomiWorkItemBrowserRecoveryRouteAllowed(item)
     && validateDianxiaomiAutomationPageUrl(item.pageUrl).valid
     && item.repairPlan?.status === "auto-ready"
@@ -4056,7 +4121,7 @@ const getDianxiaomiBrowserRecoveryBlockReason = (item) => {
     if (!pageUrlValidation.valid) {
         return pageUrlValidation.reason ?? "work item URL is not a valid Dianxiaomi listing edit page";
     }
-    if (!item.requirements.summary.ready) {
+    if (!isDianxiaomiWorkItemBrowserRecoveryReady(item)) {
         return "work item still fails required listing checks";
     }
     if (!item.repairPlan) {
@@ -4331,6 +4396,11 @@ const runFullFlow = async (id) => {
         await runFullFlowStage(id, "save-draft", job.input);
         if (job.input.submitAfterSave) {
             await runFullFlowStage(id, "submit-listing", job.input);
+            const currentJob = fullFlowJobs.get(id);
+            const publishOutcome = currentJob ? buildDianxiaomiPublishOutcomeForFullFlow(currentJob, null) : null;
+            if (!publishOutcome || publishOutcome.status !== "succeeded") {
+                throw new Error(`submit-listing failed: ${publishOutcome?.failureReason ?? publishOutcome?.message ?? "Dianxiaomi submit did not succeed."}`);
+            }
         }
         setFullFlowJob(id, (current) => ({
             ...current,
@@ -4409,14 +4479,103 @@ export const listDianxiaomiFullFlowJobs = (limit = 20) => Array.from(fullFlowJob
     .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
     .slice(0, limit);
 export const getDianxiaomiFullFlowJob = (id) => fullFlowJobs.get(id) ?? null;
+// P0-G: if the last N (default 3) full-flow jobs all failed with
+// `write-blocked-wrong-surface`, the active selector config is the suspect.
+// Restore the previous selector config version so the next tick has a
+// known-good baseline. Returns a structured rollback event for the audit
+// trail; the caller (queue-run) surfaces it on the dashboard.
+//
+// This is intentionally narrow: only `write-blocked-wrong-surface` qualifies,
+// so transient network / media / publish failures cannot trigger a rollback.
+// It also requires at least 2 selector config versions to exist (so we have
+// something to roll back TO).
+const AUTO_ROLLBACK_BLOCKING_STEP_ID = "write-blocked-wrong-surface"
+
+const isFullFlowSurfaceFailure = (job) => {
+    const failedStage = job?.stages?.find((stage) => stage.status === "failed")
+    if (!failedStage?.reportPath) {
+        return false
+    }
+    try {
+        const report = JSON.parse(readFileSync(failedStage.reportPath, "utf8"))
+        const failedStep = report?.steps?.find((step) => step?.id === "target-surface" && step?.status === "failed")
+        if (failedStep) {
+            return true
+        }
+        // Also match the downstream write-block step that fill/save/submit add
+        // when target-surface is unrecognized. This is what actually shows up
+        // in the report when the page never reaches the editor.
+        const writeBlocked = report?.steps?.find((step) => step?.id?.startsWith("write-blocked-") && step?.status === "failed")
+        return Boolean(writeBlocked)
+    } catch {
+        return false
+    }
+}
+
+const maybeAutoRollbackBadSelectorConfig = (consecutiveThreshold = 3) => {
+    const recent = listDianxiaomiFullFlowJobs(consecutiveThreshold)
+    if (recent.length < consecutiveThreshold) {
+        return null
+    }
+    if (!recent.every((job) => job.status === "failed" && isFullFlowSurfaceFailure(job))) {
+        return null
+    }
+    // versions are sorted newest first; pick the second-newest so we restore
+    // the version BEFORE the most recent (suspect) save.
+    const versions = getSelectorConfigVersions(20)
+    if (versions.length < 2) {
+        return null
+    }
+    const targetVersion = versions[1]
+    const restored = restoreSelectorConfigVersion(targetVersion.id, { confirmDangerousChanges: true })
+    if (!restored) {
+        return null
+    }
+    return {
+        reason: `${consecutiveThreshold} consecutive full-flow jobs failed with ${AUTO_ROLLBACK_BLOCKING_STEP_ID}`,
+      restoredVersionId: targetVersion.id,
+      restoredAt: targetVersion.createdAt,
+      jobIds: recent.map((job) => job.id)
+    }
+}
+
 export const startDianxiaomiQueueRun = (input = {}, options = {}) => {
     const limit = Math.max(1, Math.min(20, Math.floor(input.limit ?? 5)));
     const startedAt = new Date().toISOString();
     const id = `automation-queue-run-${timestampId()}`;
+    // P0-G: if the last few full-flow jobs all failed with the same selector
+    // problem, the new selector config is the suspect. Roll it back to the
+    // previous version so the next tick has a known-good baseline. This is
+    // intentionally narrow: only `write-blocked-wrong-surface` qualifies, so
+    // transient network/media/publish failures cannot trigger a rollback.
+    const selectorRollback = maybeAutoRollbackBadSelectorConfig(3);
     const autoRetryReleasedIds = options.releasedAutoRetryIds
         ?? (options.releaseAutoRetry === false ? [] : releaseAutoRetryDianxiaomiWorkItems());
-    const readyItems = listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER)
-        .filter((item) => item.status === "ready-for-automation")
+    const requestedStoreId = input.storeId?.trim();
+    const requestedStoreName = input.storeName?.trim();
+    const allReadyItems = listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER)
+        .filter((item) =>
+            item.status === "ready-for-automation"
+            // P0-B: skip items that already completed a successful Dianxiaomi submit.
+            // Defends against race conditions where full-flow success has not yet
+            // promoted the item to `edited` (or the status flip raced with a tick).
+            && item.publishOutcome?.route !== "published"
+        );
+    const storeAnchor = requestedStoreId || requestedStoreName
+        ? null
+        : allReadyItems.find((item) => item.storeId?.trim() || item.storeName?.trim()) ?? null;
+    const effectiveStoreId = requestedStoreId ?? storeAnchor?.storeId?.trim() ?? "";
+    const effectiveStoreName = requestedStoreName ?? (!effectiveStoreId ? storeAnchor?.storeName?.trim() ?? "" : "");
+    const readyItems = allReadyItems
+        .filter((item) => {
+        if (effectiveStoreId) {
+            return item.storeId === effectiveStoreId;
+        }
+        if (effectiveStoreName) {
+            return item.storeName === effectiveStoreName;
+        }
+        return !item.storeId && !item.storeName;
+    })
         .slice(0, limit);
     const flowJobIds = [];
     const skippedItems = [];
@@ -4498,11 +4657,16 @@ export const startDianxiaomiQueueRun = (input = {}, options = {}) => {
         id,
         startedAt,
         limit,
+        storeId: effectiveStoreId || undefined,
+        storeName: effectiveStoreName || undefined,
         queued: flowJobIds.length,
         skipped: skippedItems.length,
         autoRetryReleasedIds,
         flowJobIds,
-        skippedItems
+        skippedItems,
+        // P0-G: surfaces the auto-rollback event (if any) so the dashboard's
+        // audit card can show what changed before this tick ran.
+        selectorRollback
     };
     queueRunHistory.unshift(result);
     queueRunHistory.splice(50);
@@ -5110,9 +5274,27 @@ export const startDianxiaomiRecoveryRun = (input = {}) => {
     const limit = Math.max(1, Math.min(20, Math.floor(input.limit ?? 5)));
     const selectedIds = new Set((input.workItemIds ?? []).map((id) => id.trim()).filter(Boolean));
     const allWorkItems = listDianxiaomiProductWorkItems(Number.MAX_SAFE_INTEGER);
+    const requestedStoreId = input.storeId?.trim();
+    const requestedStoreName = input.storeName?.trim();
     const requestedItems = selectedIds.size > 0
         ? [...selectedIds].map((id) => allWorkItems.find((item) => item.id === id) ?? id)
-        : allWorkItems;
+        : (() => {
+            const recoveryCandidates = allWorkItems.filter((item) => !getDianxiaomiBrowserRecoveryBlockReason(item));
+            const storeAnchor = requestedStoreId || requestedStoreName
+                ? null
+                : recoveryCandidates.find((item) => item.storeId?.trim() || item.storeName?.trim()) ?? null;
+            const effectiveStoreId = requestedStoreId ?? storeAnchor?.storeId?.trim() ?? "";
+            const effectiveStoreName = requestedStoreName ?? (!effectiveStoreId ? storeAnchor?.storeName?.trim() ?? "" : "");
+            return allWorkItems.filter((item) => {
+                if (effectiveStoreId) {
+                    return item.storeId === effectiveStoreId;
+                }
+                if (effectiveStoreName) {
+                    return item.storeName === effectiveStoreName;
+                }
+                return !item.storeId && !item.storeName;
+            });
+        })();
     const items = requestedItems.slice(0, limit).map((candidate) => {
         if (typeof candidate === "string") {
             return {

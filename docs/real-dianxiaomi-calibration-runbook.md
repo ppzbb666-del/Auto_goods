@@ -7,6 +7,50 @@
 - 一个真实 Dianxiaomi 商品编辑/刊登页 URL
 - 本仓库根目录
 
+## Latest Real-Page Calibration Note
+
+Last verified on 2026-06-06 with:
+
+```bash
+npm run real-calibration --workspace @temu-ai-ops/automation -- --url="https://www.dianxiaomi.com/web/popTemu/edit?id=161406453047896278" --profile=".runtime/playwright/dianxiaomi-profile" --screenshots=".runtime/real-dianxiaomi-listing-metadata" --headed=false --keep-open=false --sample-media-actions=false
+```
+
+Result: `targetSurface=real-dianxiaomi`, `requiredOk=true`, image stats detected as `mainImage=1`, `detailImage=4`, `skuImage=31`, SKU rows detected as `29`, and the existing Dianxiaomi module/image description preview was accepted. Listing metadata was also captured as `variantCount=29`, `manualDocument=missing`, `video=present`, `sizeChart=present`, and `fulfillment=semi-managed`. This run was read-only for media tools because `sample-media-actions=false`.
+
+Artifacts:
+
+- `.runtime/real-dianxiaomi-listing-metadata/dianxiaomi-snapshot-2026-06-05T22-29-48-779Z.json`
+- `.runtime/real-dianxiaomi-listing-metadata/dianxiaomi-diagnosis-2026-06-05T22-29-49-533Z.json`
+
+Canonical production defaults:
+
+- Browser profile: `.runtime/playwright/dianxiaomi-profile`
+- Selector config: `.runtime/dianxiaomi-selector-config.json`
+- Snapshot/report output: `output/playwright/`
+
+All automation CLI paths are resolved from the repository root. Do not use `apps/automation/.runtime/...` as a production path.
+
+Current follow-up before relying on full unattended real-page publishing: real executable media selectors for white background, image editor, and batch resize remain gated until a safe media-action sampling run proves their open/close/apply surfaces. The sampled page exposes `一键翻译` and `图片检测` as instant actions, so calibration records them as `instant-action-blocked` and does not click them. Do not force a direct `description` selector when Dianxiaomi already shows a module/image description preview; the unattended path preserves that description.
+
+## One-shot real calibration
+
+生产校准优先用一条命令完成采集、诊断和写入选择器配置。该命令只会在诊断结果确认是 `real-dianxiaomi` 真实店小秘商品编辑/刊登页时写入 `.runtime/dianxiaomi-selector-config.json`。
+
+```bash
+npm run real-calibration --workspace @temu-ai-ops/automation -- \
+  --url="https://erp.dianxiaomi.com/product/edit/YOUR_PRODUCT_ID" \
+  --profile=".runtime/playwright/dianxiaomi-profile" \
+  --screenshots=".runtime/selector-calibration/manual-real" \
+  --headed=false \
+  --sample-media-actions=true \
+  --media-automation-tools=image-translation,batch-resize,white-background,image-editor
+```
+
+安全边界：
+- `selector-config:generate --require-real-dianxiaomi=true` 会拒绝 fixture、登录页、未知页面、错误域名和不可检查页面。
+- Dashboard 的 `生产校准` 默认使用当前无人值守 URL/profile 配置，并传入 `saveConfig=true`、`keepOpen=false`。
+- fixture 校准即使传入 `saveConfig=true` 也必须失败，并且不能覆盖 `.runtime/dianxiaomi-selector-config.json`。
+
 ## Step 1: 采集真实页面快照
 
 ```bash
@@ -15,7 +59,7 @@ cd "d:/61590/temu自动上品"
 npm run snapshot --workspace @temu-ai-ops/automation -- \
   --url="https://erp.dianxiaomi.com/product/edit/YOUR_PRODUCT_ID" \
   --headed=true \
-  --profile=".runtime/playwright/dianxiaomi-real-profile"
+  --profile=".runtime/playwright/dianxiaomi-profile"
 ```
 
 运行后：
