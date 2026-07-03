@@ -121,6 +121,7 @@ import {
   SummaryCard,
   TargetSurfaceSummary,
   TaskSnapshotDiffPreview,
+  PodStudio,
   UnattendedStartupCheckCard
 } from "./components"
 import { buildSelectorConfigDiffPreview, cloneSelectorConfig, createSelectorConfigDraft, selectorDiffChangeCount } from "./lib/selector-config"
@@ -624,6 +625,7 @@ export function App() {
   const [automationQueueDaemonInterval, setAutomationQueueDaemonInterval] = useState("60")
   const [automationQueueDaemonMaxFailures, setAutomationQueueDaemonMaxFailures] = useState("3")
   const [showAdvancedConsole, setShowAdvancedConsole] = useState(false)
+  const [showPodStudio, setShowPodStudio] = useState(false)
   const [showDailyDetails, setShowDailyDetails] = useState(false)
   const [selectedStoreScopeKey, setSelectedStoreScopeKey] = useState("auto")
   const [selectedQueueProductScopeMode, setSelectedQueueProductScopeMode] = useState<QueueProductScopeMode>("ready-queue")
@@ -2727,7 +2729,9 @@ export function App() {
 
   return (
     <div className={showAdvancedConsole ? "app-shell advanced-mode" : "app-shell"}>
-      {!showAdvancedConsole ? (
+      {showPodStudio ? (
+        <PodStudio onBack={() => setShowPodStudio(false)} />
+      ) : !showAdvancedConsole ? (
         <main className="daily-workspace">
           <section className={"daily-console " + dailyModeTone}>
             <div className="daily-console-head">
@@ -2810,6 +2814,9 @@ export function App() {
                   disabled={automationQueueRunner.isPending || !dailyStartupCanStart || !selectedQueueProductScopeReady}
                 >
                     {automationQueueRunner.isPending ? "试跑中..." : "开始试跑"}
+                </button>
+                <button className="ghost-button" onClick={() => setShowPodStudio(true)}>
+                    POD 图片裂变工具
                 </button>
                 <button className="ghost-button" onClick={() => setShowAdvancedConsole(true)}>
                     进入高级区
