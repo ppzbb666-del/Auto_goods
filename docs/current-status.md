@@ -1,18 +1,18 @@
 # Current Status
 
-Updated: 2026-07-04
+Updated: 2026-07-05
 
 ## 当前卡点（先看这里）
 
 **无人值守已跑通第一轮到 Temu 核价交接（2026-07-04 凌晨）**：守护进程自主入队 189-SKU 商品并完成全链（save「产品编辑成功」+ submit「产品已提交发布」，~16 分钟）。冲刺计划 A1–A5 全部走过一遍，产品形态上「能用起来」了。
 
-**规模化前的拦路（按优先级；2026-07-04 深夜第三轮真机验证后更新）**：
+**规模化前的拦路（按优先级；2026-07-05 尺码表修复后更新）**：
 
-1. **尺码表适配缺品类默认值（当前最前排）**：宠物商品 `161406453047896984` 的 fill 已过（见第 2 条），但 save 被店小秘拒：「错误：请完善尺码表1的信息」。`normalize-size-chart` 对该页是 skipped——弹窗里没有可复用模板，而手工填默认值只覆盖了女装两类（`WOMENS_TOP/BOTTOM_SIZE_CHART_DEFAULTS`，[dianxiaomi-adapter.ts:3310](../apps/automation/src/adapters/dianxiaomi-adapter.ts#L3310)），宠物服没有默认值可填 → 弹窗被关掉、尺码表留空 → save 硬拒。下一步：给宠物服装类加尺码表默认值（或通用兜底：读弹窗实际要求的 metric 列再按品类表填），也可评估该品类是否可在店小秘侧免尺码表。
+1. ~~尺码表适配缺品类默认值~~ **已修并真机验证**（commit `6e56654`）：宠物商品 `161406453047896984` 的 save 曾被「请完善尺码表1的信息」硬拒——`applyManualSizeChartFallback` 只覆盖女下装/女上装/文胸，猫狗服饰命中不到默认值 → 弹窗被关、尺码表留空。先用只读探针 `probe-size-chart-structure` dump 出该品类弹窗真实列（尺码分类=猫狗服饰，三列 metric：胸围全围/颈围/背长，尺码 XS…5XL），据此加 `PET_CLOTHES_SIZE_CHART_DEFAULTS`（3 metric/尺码）+ 抽出共享 `fillSizeChartTable` 行填充器 + **通用兜底**（任何未配置品类按弹窗列数动态生成递增 cm 值）。真机复跑：`normalize-size-chart`=done（猫狗服饰，28/28 metric 输入全填），fill=completed，**save 返回「产品编辑成功」**。submit 被另一无关问题挡住（见下一步①）。
 2. ~~新商品 fill 卡 SKU 图片格~~ **已修并真机验证**（commit `9c2dfdf`）：根因不是 DOM 形态——该商品 `edit.json` 的变体 spec 是单个空占位（无颜色名/无每色图要求），0 个图片格是正确现实。`fill-sku-image-links` 现在区分「无每色变体行 → skipped」和「有色行但选择器没匹配 → 仍 failed」。真机复跑：fill 报告 completed，流程首次推进到 save 阶段。新增只读探针 probe-editjson-variant-shape / probe-sku-image-cell-shape。
-3. **OOM 层 1 防护已实现且部分真机验证**（commit `cb83673`）：headless 默认 ✅、daemon 跨自有 flow 不自暂停 ✅（三轮 flow 期间 failures 始终 0）、queue-run 历史持久化 ✅。SKU 上限门与 insufficient-memory 分支有回归测试、真机未触发。**62-SKU OOM 重验仍被上面第 1 项挡住**。
+3. **OOM 层 1 防护已实现且部分真机验证**（commit `cb83673`）：headless 默认 ✅、daemon 跨自有 flow 不自暂停 ✅（三轮 flow 期间 failures 始终 0）、queue-run 历史持久化 ✅。SKU 上限门与 insufficient-memory 分支有回归测试、真机未触发。
 
-**下一步**：① 尺码表品类默认值（宠物服）或通用 metric 兜底；② 过 save 后同商品验证 submit；③ 然后 62-SKU OOM 重验与批量扩池。
+**下一步**：① 宠物商品 submit 被「错误：产品轮播图必须1:1尺寸」挡住（图片比例，非尺码表问题）——查图片比例归一化/白底工具能否补 1:1；② 过 submit 后 62-SKU OOM 重验与批量扩池。
 
 **层 0 提示**：跑批前关 Edge/微信可从 ~3.0GB 腾到 ~4.2GB（实测）；VS Code 多窗口是最大占用（~1.4GB），能关更好。
 

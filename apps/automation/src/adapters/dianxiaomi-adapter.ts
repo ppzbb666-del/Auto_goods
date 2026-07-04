@@ -3370,6 +3370,44 @@ const WOMENS_TOP_SIZE_CHART_DEFAULTS: Record<string, [string, string]> = {
 
 const WOMENS_TOP_SIZE_CHART_FALLBACK = ["96", "64"] as const
 
+// 宠物服饰 (猫狗服饰 / pet clothing) size charts expose body metrics — the live
+// modal for a dog/cat outfit shows three editable columns: 胸围全围 (chest girth),
+// 颈围 (neck girth) and 背长 (back length), all in cm — over sizes XS…5XL.
+// (The full 尺码参数 list also names 带子长 / 适合重量, but only the three above are
+// editable rows on the real page.) Values follow a conventional small-pet
+// progression so a pet listing whose category offers no reusable template can
+// still clear the "请完善尺码表" save gate. Column order: 胸围全围, 颈围, 背长.
+const PET_CLOTHES_SIZE_CHART_DEFAULTS: Record<string, [string, string, string]> = {
+  XS: ["30", "20", "20"],
+  S: ["36", "24", "25"],
+  M: ["42", "28", "30"],
+  L: ["48", "32", "35"],
+  XL: ["54", "36", "40"],
+  XXL: ["60", "40", "45"],
+  "2XL": ["60", "40", "45"],
+  "3XL": ["66", "44", "50"],
+  "4XL": ["72", "48", "55"],
+  "5XL": ["78", "52", "60"]
+}
+
+const PET_CLOTHES_SIZE_CHART_FALLBACK = ["42", "28", "30"] as const
+
+// Generic last-resort metric values for an unconfigured category. The size-chart
+// save gate only requires each row's metric inputs be non-empty and plausible;
+// it does not validate exact body semantics. We fill each blank metric input
+// with a modest cm value that increases by size row so the sequence reads as a
+// sane finished-garment progression instead of a flat/implausible fill. Index 0
+// is the largest metric (a girth), later indices smaller (lengths), matching the
+// usual chart column order (girth first). See docs/current-status.md.
+const GENERIC_SIZE_CHART_BASE_METRICS = [60, 40, 35, 30, 25, 20, 18, 16] as const
+const genericSizeChartMetricValue = (metricIndex: number, sizeStep: number): string => {
+  const base = GENERIC_SIZE_CHART_BASE_METRICS[metricIndex] ?? GENERIC_SIZE_CHART_BASE_METRICS.at(-1) ?? 20
+  // grow ~4cm per size step for the largest metric, less for smaller ones
+  const growth = Math.max(1, Math.round(4 - metricIndex * 0.4))
+  return String(base + sizeStep * growth)
+}
+
+
 const normalizeSizeLabelKey = (value: string) =>
   normalizeFeedbackText(value)
     .replace(/\s+/g, " ")
@@ -3428,6 +3466,96 @@ const deriveBraSizeChartFallbackValues = (sizeLabel: string) => {
   return [underbust, cupHeight]
 }
 
+// Shared size-chart row filler. Walks the modal's size rows, and for each row
+// with a non-empty size label fills its blank editable metric inputs using the
+// per-row values from `resolveRowValues(sizeLabel, sizeStep)`. Pre-filled inputs
+// are preserved. Used by the pet-clothes and generic-category fallbacks so they
+// share one DOM-walk implementation (the women's/bra branches predate this and
+// keep their own copies).
+const fillSizeChartTable = async (
+  modal: Locator,
+  category: string,
+  reasonLabel: string,
+  resolveRowValues: (sizeLabel: string, sizeStep: number) => string[]
+): Promise<SizeChartManualFillResult> => {
+  const rows = modal.locator("table tr")
+  const rowCount = Math.min(await rows.count().catch(() => 0), 16)
+  let filledInputs = 0
+  let sizeStep = 0
+  const filledRows: Array<{ sizeLabel: string; values: string[] }> = []
+
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    const row = rows.nth(rowIndex)
+    if (!await row.isVisible().catch(() => false)) {
+      continue
+    }
+    const cells = row.locator("td")
+    if (await cells.count().catch(() => 0) < 2) {
+      continue
+    }
+    const sizeLabel = normalizeFeedbackText(await cells.first().innerText().catch(() => ""))
+    if (!sizeLabel) {
+      continue
+    }
+
+    const inputCandidates = row.locator("input")
+    const inputCount = Math.min(await inputCandidates.count().catch(() => 0), 8)
+    const editableInputs: Locator[] = []
+    for (let inputIndex = 0; inputIndex < inputCount; inputIndex += 1) {
+      const input = inputCandidates.nth(inputIndex)
+      if (!await input.isVisible().catch(() => false)) {
+        continue
+      }
+      const inputType = await input.evaluate((element) => (element as HTMLInputElement).type || "").catch(() => "")
+      if (["checkbox", "radio", "search", "hidden", "button", "submit", "file"].includes(inputType.toLowerCase())) {
+        continue
+      }
+      editableInputs.push(input)
+    }
+
+    if (editableInputs.length === 0) {
+      continue
+    }
+
+    const rowValues = resolveRowValues(sizeLabel, sizeStep)
+    const appliedValues: string[] = []
+    for (let inputIndex = 0; inputIndex < editableInputs.length; inputIndex += 1) {
+      const input = editableInputs[inputIndex]
+      const currentValue = await readFieldValue(input).catch(() => "")
+      if (currentValue.trim()) {
+        appliedValues.push(currentValue.trim())
+        continue
+      }
+      const nextValue = rowValues[inputIndex] ?? rowValues.at(-1) ?? ""
+      if (!nextValue) {
+        continue
+      }
+      await fillTextField(input, nextValue)
+      const actualValue = await readFieldValue(input).catch(() => "")
+      if (actualValue.trim()) {
+        filledInputs += 1
+        appliedValues.push(actualValue.trim())
+      }
+    }
+
+    if (appliedValues.length > 0) {
+      filledRows.push({ sizeLabel, values: appliedValues })
+    }
+    sizeStep += 1
+  }
+
+  return {
+    applied: filledInputs > 0,
+    reason: filledInputs > 0
+      ? `Filled ${filledInputs} blank metric inputs from ${reasonLabel}`
+      : "No compatible blank metric inputs were filled",
+    category,
+    filledInputs,
+    templateNameApplied: null,
+    rows: filledRows
+  }
+}
+
 const applyManualSizeChartFallback = async (modal: Locator, sizeCategoryText: string): Promise<SizeChartManualFillResult> => {
   const category = normalizeFeedbackText(sizeCategoryText)
   const isWomensBottomCategory =
@@ -3435,7 +3563,6 @@ const applyManualSizeChartFallback = async (modal: Locator, sizeCategoryText: st
     || category.includes("\u4e0b\u88c5")
     || category.includes("\u88e4\u5b50")
     || category.toLowerCase().includes("pants")
-
   if (isWomensBottomCategory) {
     const rows = modal.locator("table tr")
     const rowCount = Math.min(await rows.count().catch(() => 0), 16)
@@ -3624,15 +3751,32 @@ const applyManualSizeChartFallback = async (modal: Locator, sizeCategoryText: st
     }
   }
 
+  const isPetClothesCategory =
+    category.includes("猫狗")
+    || category.includes("宠物")
+    || category.includes("狗")
+    || category.includes("猫")
+    || category.toLowerCase().includes("pet")
+    || category.toLowerCase().includes("dog")
+    || category.toLowerCase().includes("cat")
+
+  if (isPetClothesCategory) {
+    return fillSizeChartTable(modal, category, "pet-clothes defaults", (sizeLabel) =>
+      PET_CLOTHES_SIZE_CHART_DEFAULTS[normalizeSizeLabelKey(sizeLabel)]
+        ?? [...PET_CLOTHES_SIZE_CHART_FALLBACK]
+    )
+  }
+
   if (!category.includes("文胸")) {
-    return {
-      applied: false,
-      reason: `Manual size chart fallback is not configured for category ${category || "unknown"}`,
-      category,
-      filledInputs: 0,
-      templateNameApplied: null,
-      rows: []
-    }
+    // Generic last-resort fallback for any other category with no configured
+    // table and no reusable template. Fill each row's blank metric inputs with a
+    // plausible cm value that grows by size row, so the sequence reads as a sane
+    // increasing progression and clears the "请完善尺码表" save gate. Values are
+    // resolved per input count at fill time, so it adapts to however many metric
+    // columns the category's chart exposes.
+    return fillSizeChartTable(modal, category, "generic category defaults", (_sizeLabel, sizeStep) =>
+      GENERIC_SIZE_CHART_BASE_METRICS.map((_base, metricIndex) => genericSizeChartMetricValue(metricIndex, sizeStep))
+    )
   }
 
   const rows = modal.locator("table tr")
