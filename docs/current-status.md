@@ -6,13 +6,15 @@ Updated: 2026-07-04
 
 **无人值守已跑通第一轮到 Temu 核价交接（2026-07-04 凌晨）**：守护进程自主入队 189-SKU 商品并完成全链（save「产品编辑成功」+ submit「产品已提交发布」，~16 分钟）。冲刺计划 A1–A5 全部走过一遍，产品形态上「能用起来」了。
 
-**规模化前的三道拦路（按优先级）**：
+**规模化前的拦路（按优先级；2026-07-04 晚真机验证后更新）**：
 
-1. **OOM（最硬）**：322 SKU 必崩、新商品 62 SKU 也崩过；账号里没有 ≤30 SKU 的商品，只有 62/189/322 三档。诊断 + 四层方案见 [oom-mitigation-plan.md](oom-mitigation-plan.md)。**层 1 四项代码防护已实现**（2026-07-04，commit `cb83673`）：视口截图默认（`UNATTENDED_FULLPAGE_SCREENSHOTS`）、SKU 上限门（`UNATTENDED_MAX_SKU=200`，超限跳过记 `sku-count-over-cap`）、空闲内存预检（`UNATTENDED_MIN_FREE_MEM_MB=3072`，不足时 tick 干净等待不计失败）、无人值守默认 headless；含回归测试。**真实验证未做**：62-SKU 商品在层 0（关大程序）+ 层 1 下重跑 full-flow 是下一个动作。
-2. ~~守护进程自暂停误伤~~ **已修**（2026-07-04，commit `99527e0`）：awaiting-flow-completion 分支挪到 startup-block 之前，自己的 in-flight flow 持有 profile lockfile 不再被误判暂停；含回归测试。
-3. ~~queue-run 历史重启即丢~~ **已修**（同 commit）：`QUEUE_RUN_HISTORY_PATH` 持久化（默认 `.runtime/data/queue-run-history.json`，保留 50 条），试跑门不再因 server 重启回锁。
+1. **新商品页面形态适配（当前最前排）**：headless daemon 真机跑新商品（1-SKU 宠物四脚衣 `161406453047896984`）到 fill 阶段，`fill-sku-image-links` 失败——「SKU image cells were not found」（该页 9 个变体但 SKU 表形态与已验证商品不同），full-flow 记 partial 停在 save 前。**不是 OOM**（全程内存充足、headless 稳定、无浏览器崩溃），是店小秘页面形态差异的适配问题。这与更早 `13-12` 那条失败 flow 同因。下一步：用只读探针对比该页与 189-SKU 已验证页的 SKU 图片区结构，再决定适配或豁免（无每色图要求的品类可 skip 而非 fail）。
+2. **OOM 层 1 防护已实现且部分真机验证**（commit `cb83673`）：headless 默认 ✅ 真机生效；`awaiting-flow-completion` 优先于 startup-block ✅ 真机验证（flow 运行 7 分钟内 3 次 tick 全部 awaiting、failures 保持 0、daemon 不再自暂停）；queue-run 历史持久化 ✅ 真机验证（server 重启后 9 条历史仍在）。SKU 上限门与 insufficient-memory 分支有回归测试但真机未触发（当前 ready 池无超限商品；腾内存后 4.2GB > 3GB 门槛）。**62-SKU 商品的 OOM 重验被第 1 项挡住**——先过 fill 适配才轮得到。
+3. ~~守护进程自暂停误伤~~ / ~~queue-run 历史重启即丢~~ **已修并真机验证**（commit `99527e0`，见上）。
 
-**下一步（全部是真实环境验证，代码已就绪）**：① 层 0 关大程序腾内存（VS Code 多窗口/Edge/微信 ≈ 4GB）；② 重启 server + daemon，用 62-SKU 商品重跑 full-flow（同时验证 daemon 不自暂停、insufficient-memory 分支、headless 路径）；③ 62 稳定后按 [oom-mitigation-plan.md](oom-mitigation-plan.md) 层 2/3 决定 322 SKU 的路线。
+**下一步**：① 只读探针对比宠物商品页 vs 已验证页的 SKU 图片区 DOM（`fill-sku-image-links` 的选择器为何找不到 cell）；② 按差异做适配或按品类豁免；③ 过了 fill 后回到 62-SKU OOM 重验与批量扩池。
+
+**层 0 提示**：跑批前关 Edge/微信可从 ~3.0GB 腾到 ~4.2GB（本次实测）；VS Code 多窗口是最大占用（~1.4GB），能关更好。
 
 试跑验收流程与实战坑统一看 [limit-3-trial-acceptance.md](limit-3-trial-acceptance.md)（原 handoff-limit3-trial.md 已并入并删除）。
 
