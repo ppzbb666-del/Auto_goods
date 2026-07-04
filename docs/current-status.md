@@ -6,15 +6,15 @@ Updated: 2026-07-04
 
 **无人值守已跑通第一轮到 Temu 核价交接（2026-07-04 凌晨）**：守护进程自主入队 189-SKU 商品并完成全链（save「产品编辑成功」+ submit「产品已提交发布」，~16 分钟）。冲刺计划 A1–A5 全部走过一遍，产品形态上「能用起来」了。
 
-**规模化前的拦路（按优先级；2026-07-04 晚真机验证后更新）**：
+**规模化前的拦路（按优先级；2026-07-04 深夜第三轮真机验证后更新）**：
 
-1. **新商品页面形态适配（当前最前排）**：headless daemon 真机跑新商品（1-SKU 宠物四脚衣 `161406453047896984`）到 fill 阶段，`fill-sku-image-links` 失败——「SKU image cells were not found」（该页 9 个变体但 SKU 表形态与已验证商品不同），full-flow 记 partial 停在 save 前。**不是 OOM**（全程内存充足、headless 稳定、无浏览器崩溃），是店小秘页面形态差异的适配问题。这与更早 `13-12` 那条失败 flow 同因。下一步：用只读探针对比该页与 189-SKU 已验证页的 SKU 图片区结构，再决定适配或豁免（无每色图要求的品类可 skip 而非 fail）。
-2. **OOM 层 1 防护已实现且部分真机验证**（commit `cb83673`）：headless 默认 ✅ 真机生效；`awaiting-flow-completion` 优先于 startup-block ✅ 真机验证（flow 运行 7 分钟内 3 次 tick 全部 awaiting、failures 保持 0、daemon 不再自暂停）；queue-run 历史持久化 ✅ 真机验证（server 重启后 9 条历史仍在）。SKU 上限门与 insufficient-memory 分支有回归测试但真机未触发（当前 ready 池无超限商品；腾内存后 4.2GB > 3GB 门槛）。**62-SKU 商品的 OOM 重验被第 1 项挡住**——先过 fill 适配才轮得到。
-3. ~~守护进程自暂停误伤~~ / ~~queue-run 历史重启即丢~~ **已修并真机验证**（commit `99527e0`，见上）。
+1. **尺码表适配缺品类默认值（当前最前排）**：宠物商品 `161406453047896984` 的 fill 已过（见第 2 条），但 save 被店小秘拒：「错误：请完善尺码表1的信息」。`normalize-size-chart` 对该页是 skipped——弹窗里没有可复用模板，而手工填默认值只覆盖了女装两类（`WOMENS_TOP/BOTTOM_SIZE_CHART_DEFAULTS`，[dianxiaomi-adapter.ts:3310](../apps/automation/src/adapters/dianxiaomi-adapter.ts#L3310)），宠物服没有默认值可填 → 弹窗被关掉、尺码表留空 → save 硬拒。下一步：给宠物服装类加尺码表默认值（或通用兜底：读弹窗实际要求的 metric 列再按品类表填），也可评估该品类是否可在店小秘侧免尺码表。
+2. ~~新商品 fill 卡 SKU 图片格~~ **已修并真机验证**（commit `9c2dfdf`）：根因不是 DOM 形态——该商品 `edit.json` 的变体 spec 是单个空占位（无颜色名/无每色图要求），0 个图片格是正确现实。`fill-sku-image-links` 现在区分「无每色变体行 → skipped」和「有色行但选择器没匹配 → 仍 failed」。真机复跑：fill 报告 completed，流程首次推进到 save 阶段。新增只读探针 probe-editjson-variant-shape / probe-sku-image-cell-shape。
+3. **OOM 层 1 防护已实现且部分真机验证**（commit `cb83673`）：headless 默认 ✅、daemon 跨自有 flow 不自暂停 ✅（三轮 flow 期间 failures 始终 0）、queue-run 历史持久化 ✅。SKU 上限门与 insufficient-memory 分支有回归测试、真机未触发。**62-SKU OOM 重验仍被上面第 1 项挡住**。
 
-**下一步**：① 只读探针对比宠物商品页 vs 已验证页的 SKU 图片区 DOM（`fill-sku-image-links` 的选择器为何找不到 cell）；② 按差异做适配或按品类豁免；③ 过了 fill 后回到 62-SKU OOM 重验与批量扩池。
+**下一步**：① 尺码表品类默认值（宠物服）或通用 metric 兜底；② 过 save 后同商品验证 submit；③ 然后 62-SKU OOM 重验与批量扩池。
 
-**层 0 提示**：跑批前关 Edge/微信可从 ~3.0GB 腾到 ~4.2GB（本次实测）；VS Code 多窗口是最大占用（~1.4GB），能关更好。
+**层 0 提示**：跑批前关 Edge/微信可从 ~3.0GB 腾到 ~4.2GB（实测）；VS Code 多窗口是最大占用（~1.4GB），能关更好。
 
 试跑验收流程与实战坑统一看 [limit-3-trial-acceptance.md](limit-3-trial-acceptance.md)（原 handoff-limit3-trial.md 已并入并删除）。
 
