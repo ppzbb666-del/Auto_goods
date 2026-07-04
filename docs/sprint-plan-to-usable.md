@@ -103,7 +103,7 @@ Invoke-RestMethod `
 | B4 | 本地 JSON 存储 → 轻量数据库 | ✅ 已解 | `node:sqlite`(零新依赖),`PLANNER_STATE_PATH` 兼容保留 |
 | B5 | 批量发布前检查 / 批量版本恢复 | ⬜ 未做 | 首次是小批量(limit=3→几十),不挡 |
 
-> 2026-07-03 晚:单个小 SKU 商品已真实跑通 save-draft(「产品编辑成功」)+ submit-listing(「产品已提交发布」),写链路天花板在单品上打通。阻塞墙 2/3/4 在该商品上均未触发(墙 2 靠白名单绕过;墙 4 对大 SKU 商品仍未验证,受本机内存限制)。冲刺主线回到 A4:limit=3 试跑。详见 [current-status.md](current-status.md)「当前卡点」+ [blocking-walls-diagnosis.md](blocking-walls-diagnosis.md)。
+> **本冲刺已完成（2026-07-04）**：limit=3 试跑门通过、无人值守守护进程跑完第一轮到 Temu 核价交接。本文档保留作历史参考；当前状态与下一步只看 [current-status.md](current-status.md)「当前卡点」，规模化拦路（OOM）见 [oom-mitigation-plan.md](oom-mitigation-plan.md)。
 
 ---
 

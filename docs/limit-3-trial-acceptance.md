@@ -1,6 +1,6 @@
 # `limit=3` 真实试跑验收清单
 
-Updated: 2026-06-30
+Updated: 2026-07-04
 
 > 这份清单只对应默认日间首页的 `小批量试跑`，底层是 `POST /automation/queue-run`。
 > 它**不是** `POST /automation/manual-budget/trials` 那套 Advanced bounded trial / validation 流程。
@@ -18,6 +18,8 @@ Updated: 2026-06-30
 - 所有相关 full-flow job 都是 `completed`
 - 没有 `failed`
 - 没有仍在 `running`
+
+queue-run 历史自 2026-07-04 起持久化到 `.runtime/data/queue-run-history.json`（`QUEUE_RUN_HISTORY_PATH`），server 重启不再丢试跑记录、门不回锁。
 
 ## 前置条件
 
@@ -174,6 +176,14 @@ Advanced bounded trial / validation 看的是：
 - `GET /automation/manual-budget/trials`
 
 后者服务于 proof / replacement / validation rerun，不决定首页 `开始无人值守` 是否解锁。
+
+## 实战坑（2026-07 真跑踩过的，别再踩）
+
+1. **大 SKU 商品是 OOM 炸弹**：322 SKU 必崩、新商品 62 SKU 也崩过（本机 ~2GB 空闲内存）；189 SKU 老商品稳定。试跑用 `itemUrls` 显式圈定小 SKU 商品，别让 queue-run 自由抓队列。缓解路线见 [oom-mitigation-plan.md](oom-mitigation-plan.md)。
+2. **server 别用 `tsx watch` 跑**（热重载会杀 full-flow 子进程）：`cd apps/server && node ../../node_modules/tsx/dist/cli.mjs src/index.ts`。
+3. **别直接调 `POST /automation/full-flow`**（只带 `url` 会 409）；统一走 `queue-run`（自动建任务 + 导出任务文件）。
+4. **入队后工作项常落 `needs-revision`**（admission 会抓浏览器标签页标题当商品标题）。修法：`GET /dianxiaomi/product-work-items` 拿现有对象，改真实 `title`、补 `categoryHint: {"label":"<中文品类>","source":"manual"}`，原样 POST 回去（中文必须 `curl --data-binary @file`，`-d` 会破坏 Content-Length），server 重算后回 `ready-for-automation`。已 `edited` 的商品同法可重置回 ready。
+5. 每阶段结束时报 "Browser crash/disconnect (possible OOM)" 但阶段报告 `completed` 的，是正常 teardown 不是失败。
 
 ## 相关文档
 

@@ -192,10 +192,11 @@
 - `automation-runner.ts` 领域拆分第一阶段：抽出 6 个子模块（constants / scope / alert-webhook / state / failure-classification / ledgers），主文件 6665 → 6077 行，对外 API 经 re-export shim 保持不变。
 - 服务端 typecheck 恢复全绿：靠放宽 `apps/server/tsconfig.json`（`noImplicitAny: false`、`strictNullChecks: false`），**不是** `@ts-nocheck`（文件头没有该注释）。
 
-下一步（按优先级；2026-07-03 晚已在单个小 SKU 商品上真实跑通 save+submit 全链，详见 [current-status.md](current-status.md)「当前卡点」）：
+下一步（按优先级；实时进度只看 [current-status.md](current-status.md)「当前卡点」，此处不重复叙事）：
 
-1. **limit=3 真实试跑全绿 → 解锁「开始无人值守」** —— 唯一里程碑，见 [sprint-plan-to-usable.md](sprint-plan-to-usable.md)。单品已通，现在验证批量。约束：优先小 SKU 商品（本机内存紧）、server 不用 `tsx watch` 跑。
-2. **墙 4 复杂商品验证**：大 SKU 商品（如 322 SKU）在 variant-remap 阶段 OOM 崩溃，主题颜色/变种行适配对复杂商品是否成立未知。探针 [probe-theme-color-structure.ts](../apps/automation/src/probes/probe-theme-color-structure.ts) 可复用。
+1. **OOM 规模化防护** —— 唯一里程碑（limit=3 试跑 + 无人值守第一轮到 Temu 核价交接）已于 2026-07-04 达成；现在挡批量的是内存崩溃。按 [oom-mitigation-plan.md](oom-mitigation-plan.md) 层 1 实现四项代码防护，然后用 62-SKU 商品验证。
+2. **墙 4 复杂商品验证**：大 SKU 商品（322）在 variant-remap 阶段 OOM，主题颜色/变种行适配对复杂商品是否成立未知（依赖第 1 项解决后才能试）。探针 [probe-theme-color-structure.ts](../apps/automation/src/probes/probe-theme-color-structure.ts) 可复用。
 3. **墙 2 收尾**：image-editor「批量编辑」第二层 bug（点确定弹窗不推进）真修；期间默认媒体工具白名单维持 `["image-translation", "batch-resize"]`（不含 image-editor）。
-4. 批量恢复版本和批量发布前检查（不挡首次使用）。
-5. （可选，代码健康）`automation-runner.ts` 剩余 ~4600 行编排核心的进一步拆分：逐域抽取会造成每模块 28~80 处回环 import，需一次性设计全部模块边界再动手；App.tsx（~4400 行）、planner.ts（~4700 行）、dianxiaomi-adapter.ts（~15000 行）同理，功能优先时不强拆。
+4. **单会话 full-flow 重构**（OOM 层 2）：五阶段共用一次页面加载，variant-remap 5 次 → 1 次，单品耗时和内存峰值同降。
+5. 批量恢复版本和批量发布前检查。
+6. （可选，代码健康）`automation-runner.ts` 剩余编排核心的进一步拆分：逐域抽取会造成每模块 28~80 处回环 import，需一次性设计全部模块边界再动手；App.tsx、planner.ts、dianxiaomi-adapter.ts 同理，功能优先时不强拆。

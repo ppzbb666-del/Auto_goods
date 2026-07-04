@@ -4,15 +4,19 @@ Updated: 2026-07-04
 
 ## 当前卡点（先看这里）
 
-**limit=3 试跑门已通过（2026-07-03 深夜）**：queue-run `automation-queue-run-2026-07-03T22-09-12-853Z`（`limit=3`，`itemUrls` 圈定，queued=1、skipped=0）关联的 full-flow job 全部 `completed`，submit-listing 返回「产品已提交发布」。试跑门（`getDailyTrialGate`）判定通过，「开始无人值守」解锁。注意：本次 queued=1（只圈了 1 个商品），满足门的形式条件；批量稳定性尚未用 3 个不同商品验证过。
+**无人值守已跑通第一轮到 Temu 核价交接（2026-07-04 凌晨）**：守护进程自主入队 189-SKU 商品并完成全链（save「产品编辑成功」+ submit「产品已提交发布」，~16 分钟）。冲刺计划 A1–A5 全部走过一遍，产品形态上「能用起来」了。
 
-**当前状态：8 项无人值守启动检查全 pass、`canStart=true`**（需带正确 profile 路径）。此前 dashboard 默认 profile 指向不存在的 `.runtime/dianxiaomi-real-profile` 导致 browser-profile 门误报 block，已修（2026-07-04，commit `a574a2a`）：默认改为真实登录目录 `.runtime/playwright/dianxiaomi-profile`。
+**规模化前的三道拦路（按优先级）**：
 
-**下一步（冲刺 A5，最后一步）**：控制台首页点「开始无人值守」跑真实 ready 队列，商品稳定流到「Temu 核价确认」即为「能用起来」。已知约束不变：本机内存紧（~2GB 空闲），优先小 SKU 商品（当前队列里 ready 的 `161406453261437092` 是 322 SKU OOM 炸弹，需先补小 SKU 商品或把它降级）；server 别用 `tsx watch` 跑；守护进程默认 `limit=1` 每轮、间隔可配。
+1. **OOM（最硬）**：322 SKU 必崩、新商品 62 SKU 也崩过；账号里没有 ≤30 SKU 的商品，只有 62/189/322 三档。诊断 + 四层方案见 [oom-mitigation-plan.md](oom-mitigation-plan.md)；**层 1 代码防护（视口截图、SKU 上限门、空闲内存预检、headless 默认）尚未实现**。当前靠人工把大/未知商品 block 在队列外，ready 池只放已验证商品。
+2. ~~守护进程自暂停误伤~~ **已修**（2026-07-04，commit `99527e0`）：awaiting-flow-completion 分支挪到 startup-block 之前，自己的 in-flight flow 持有 profile lockfile 不再被误判暂停；含回归测试。
+3. ~~queue-run 历史重启即丢~~ **已修**（同 commit）：`QUEUE_RUN_HISTORY_PATH` 持久化（默认 `.runtime/data/queue-run-history.json`，保留 50 条），试跑门不再因 server 重启回锁。
 
-早前实锤（2026-07-03 晚）：商品 `161406453047896424`（~7 SKU）全链 `dry-run → fill-draft（含媒体）→ save-draft（「产品编辑成功」）→ submit-listing（「产品已提交发布」）`。三道墙在该商品上均未触发；墙 4 对大 SKU 商品仍未验证、墙 2 image-editor 第二层未真修（白名单继续排除）。
+**下一步**：① 实现 OOM 层 1 四项防护；② 重启 daemon 验证两个修复在真实环境生效（跨越一条 full-flow 全程不自暂停）；③ 62-SKU 商品在层 0（关大程序腾内存）+ 层 1 生效后重试 full-flow。
 
-代码健康快照（2026-07-04 实测）：全 workspace typecheck ✅、server+shared+extension 测试 ✅；`automation-runner.ts` 6077 行（已抽 6 个子模块）、`planner.ts` 4694 行、`dianxiaomi-adapter.ts` 15371 行、`App.tsx` 4466 行；存储已是 `node:sqlite`；已 `git init`（本地、无 remote）。
+试跑验收流程与实战坑统一看 [limit-3-trial-acceptance.md](limit-3-trial-acceptance.md)（原 handoff-limit3-trial.md 已并入并删除）。
+
+代码健康快照（2026-07-04 实测）：全 workspace typecheck ✅、全部测试 ✅；`automation-runner.ts` ~6150 行（已抽 6 个子模块）、`planner.ts` 4694 行、`dianxiaomi-adapter.ts` 15371 行、`App.tsx` 4466 行；存储 `node:sqlite`；本地 git（无 remote）。
 
 ## Completed In This Iteration
 

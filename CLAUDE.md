@@ -92,8 +92,8 @@ job 日志通用格式：`/jobs/:id/logs`。
 |---------|-----|
 | 理解产品边界和 KPI 定义 | [docs/operating-principles.md](docs/operating-principles.md) |
 | 了解生产路径 roadmap | [docs/roadmap-to-production.md](docs/roadmap-to-production.md) |
-| **跑 limit=3 试跑（当前任务，交接书）** | [docs/handoff-limit3-trial.md](docs/handoff-limit3-trial.md) |
 | 看当前冲刺卡点（阻塞墙） | [docs/blocking-walls-diagnosis.md](docs/blocking-walls-diagnosis.md) |
+| OOM 崩溃诊断与缓解 | [docs/oom-mitigation-plan.md](docs/oom-mitigation-plan.md) |
 | **看到「能用起来」的冲刺计划** | [docs/sprint-plan-to-usable.md](docs/sprint-plan-to-usable.md) |
 | Temu/店小秘字段要求矩阵 | [docs/temu-dianxiaomi-requirements-matrix.md](docs/temu-dianxiaomi-requirements-matrix.md) |
 | 看开发计划 | [docs/development-plan.md](docs/development-plan.md) |
@@ -101,7 +101,7 @@ job 日志通用格式：`/jobs/:id/logs`。
 | 跑店小秘 dry-run | [docs/dianxiaomi-dry-run.md](docs/dianxiaomi-dry-run.md) |
 | 修会话过期/CAPTCHA | [docs/dianxiaomi-session-health-runbook.md](docs/dianxiaomi-session-health-runbook.md) |
 | 真实店小秘校准 | [docs/real-dianxiaomi-calibration-runbook.md](docs/real-dianxiaomi-calibration-runbook.md) |
-| 跑 `limit=3` 真实试跑验收 | [docs/limit-3-trial-acceptance.md](docs/limit-3-trial-acceptance.md) |
+| 跑 `limit=3` 真实试跑验收（含实战坑） | [docs/limit-3-trial-acceptance.md](docs/limit-3-trial-acceptance.md) |
 | 选择器配置 | [docs/dianxiaomi-selector-config.md](docs/dianxiaomi-selector-config.md) + [validation](docs/dianxiaomi-selector-config-validation.md) |
 | 品类校验/回写/诊断 | [docs/dianxiaomi-category-selection.md](docs/dianxiaomi-category-selection.md) |
 | 故障恢复批跑 | [docs/recovery-run.md](docs/recovery-run.md) |
