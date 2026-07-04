@@ -104,6 +104,18 @@ export const classifyDianxiaomiWorkFailure = (reason, source = "queue-daemon"): 
         "图片翻译",
         "白底",
         "批量改图片尺寸",
+        // Temu carousel aspect-ratio rejection at submit
+        // (e.g. 产品轮播图必须1:1尺寸): a media issue the batch-resize 1:1 path
+        // fixes on rerun, not an unknown failure.
+        "轮播图",
+        "1:1",
+        "1：1",
+        "必须1:1",
+        "图片比例",
+        "比例不",
+        "尺寸不合规",
+        "aspect ratio",
+        "carousel",
         "图片空间不足",
         "购买空间",
         "storage quota",
@@ -111,17 +123,22 @@ export const classifyDianxiaomiWorkFailure = (reason, source = "queue-daemon"): 
         "insufficient storage"
     ])) {
         const storageQuota = includesAny(["failurekind=storage-quota", "图片空间不足", "空间不足", "购买空间", "image space", "storage quota", "quota exceeded", "insufficient storage"]);
-        const transient = !storageQuota && includesAny(["failurekind=transient", "retryable=true"]);
+        const aspectRatio = includesAny(["轮播图", "1:1", "1：1", "必须1:1", "图片比例", "比例不", "尺寸不合规", "aspect ratio", "carousel"]);
+        // Aspect-ratio rejections are auto-retryable: rerunning the flow re-applies
+        // batch-resize which now forces the carousel to 1:1 before submit.
+        const transient = !storageQuota && (aspectRatio || includesAny(["failurekind=transient", "retryable=true"]));
         return {
             ...base,
             category: "media-processing",
             retryable: transient,
-            autoRetryRecommended: false,
+            autoRetryRecommended: aspectRatio,
             nextAction: storageQuota
                 ? "Free or purchase Dianxiaomi image space, or switch to a proven image path that does not create new image-space assets, then rerun this product."
-                : transient
-                    ? "Dianxiaomi reported a temporary media-tool issue. Retry only after confirming the same image tool can complete successfully."
-                    : "Check the Dianxiaomi image tool result, fix invalid images or tool configuration, then retry this product."
+                : aspectRatio
+                    ? "Temu rejected the carousel image aspect ratio (must be 1:1). Rerun the flow so batch-resize regenerates the carousel at 1:1 (自定义比例调整 → 1:1) before submit."
+                    : transient
+                        ? "Dianxiaomi reported a temporary media-tool issue. Retry only after confirming the same image tool can complete successfully."
+                        : "Check the Dianxiaomi image tool result, fix invalid images or tool configuration, then retry this product."
         };
     }
     if (includesAny(["submit", "publish", "required", "validation", "missing required", "attribute", "failed feedback", "发布", "提交", "必填", "属性", "失败"])) {

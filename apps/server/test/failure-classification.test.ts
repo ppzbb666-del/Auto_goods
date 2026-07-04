@@ -30,6 +30,9 @@ const cases: Array<{
   { name: "sku count over cap", reason: "sku-count-over-cap: 322 SKU exceeds UNATTENDED_MAX_SKU 200; skipped to avoid variant-remap OOM", category: "sku-count-over-cap", retryable: false, autoRetry: false },
   { name: "task file", reason: "could not export automation task", category: "task-file", retryable: true, autoRetry: true },
   { name: "media processing", reason: "media processing failed during batch resize", category: "media-processing", retryable: false, autoRetry: false },
+  // Temu carousel aspect-ratio rejection at submit → media-processing, and
+  // auto-retryable because rerunning re-applies the batch-resize 1:1 path.
+  { name: "carousel 1:1", reason: "Dianxiaomi submit failed: 产品轮播图必须1:1尺寸", category: "media-processing", retryable: true, autoRetry: true },
   { name: "publish validation", reason: "missing required attribute Color", category: "publish-validation", retryable: true, autoRetry: false },
   { name: "unknown", reason: "something totally unrelated", category: "unknown", retryable: false, autoRetry: false }
 ]
@@ -44,13 +47,15 @@ for (const testCase of cases) {
 }
 console.log("PASS all failure categories + retry routing")
 
-// The only two auto-retry-eligible lanes are transient browser crashes and
-// task-file issues; every content/selector/gate failure must NOT auto-retry.
+// Auto-retry-eligible lanes: transient browser crashes, task-file issues, and
+// carousel aspect-ratio rejections (rerun re-applies the batch-resize 1:1 path).
+// Every other content/selector/gate failure must NOT auto-retry — note the plain
+// "media processing" case above stays autoRetry:false; only the 1:1 sub-case flips.
 const autoRetryReasons = cases.filter((c) => c.autoRetry).map((c) => c.category)
 assert.deepEqual(
   [...new Set(autoRetryReasons)].sort(),
-  ["browser-profile", "task-file"],
-  "only browser crash + task-file auto-retry"
+  ["browser-profile", "media-processing", "task-file"],
+  "only browser crash + task-file + carousel-ratio auto-retry"
 )
 console.log("PASS auto-retry lane is limited to transient failures")
 

@@ -537,6 +537,18 @@ const CATEGORY_RECOVERY_MODAL_KEYWORDS = ["选择类目", "选择分类", "categ
 const CATEGORY_RECOVERY_CONFIRM_TEXTS = ["选择", "确定", "确认"]
 const CATEGORY_RECOVERY_CLOSE_TEXTS = ["关闭", "取消", "返回", "close", "cancel"]
 const CATEGORY_HIDDEN_LEAF_PATTERN = /^(?:其他|其它)[（(](.+?)[）)]$/
+// TODO(ladder-L3, LLM category mapping): this table hardcodes the full Temu
+// category path for a handful of leaf names (currently only 女装长裤 variants),
+// which is customer-specific and cannot cover a stranger's account selling an
+// unseen category (see docs/operating-principles.md Full-Automation ladder). When
+// category selection fails and no KNOWN_CATEGORY_RECOVERY_PATHS entry / public
+// fallback resolves the path, add a rung-3 LLM fallback: call the configured LLM
+// (LLM_* envs, same graceful-degradation contract as packages/shared llm-content —
+// no key or failure ⇒ deterministic fallback, never a crash) to map the product's
+// title + attributes to the nearest Temu category path, then feed that path into
+// the existing normalizeCategorySelection walker. The LLM call must live in-code
+// and run unattended. Not blocking the current task; this table stays as a
+// known-category optimization behind that generic fallback.
 const KNOWN_CATEGORY_RECOVERY_PATHS: Record<string, string[]> = {
   "女装长裤": ["服装、鞋靴和珠宝饰品", "女士时尚", "女装", "女装长裤"],
   "其他（女装长裤）": ["服装、鞋靴和珠宝饰品", "女士时尚", "女装", "女装长裤"],
@@ -9908,7 +9920,7 @@ const findImageOptionsMenuAction = async (
   page: Page,
   keywords: string[]
 ) => {
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
     await waitForDianxiaomiLoadingOverlayToClear(page)
     const existing = await findVisibleMenuItemByKeywords(page, keywords)
     if (existing) {
@@ -9917,16 +9929,29 @@ const findImageOptionsMenuAction = async (
 
     const trigger = await findImageOptionsTrigger(page).catch(() => null)
     if (!trigger) {
-      await page.waitForTimeout(500)
+      // The carousel (产品轮播图) media-tools trigger ("crop 编辑图片") only mounts
+      // as visible once scrolled into view; nudge it in before the next attempt.
+      await page.evaluate(() => {
+        const node = Array.from(document.querySelectorAll(".img-module, [class*='img-module' i]"))
+          .find((n) => /产品轮播图|轮播图|编辑图片/.test((n as HTMLElement).innerText ?? ""))
+          ?? Array.from(document.querySelectorAll("*")).find((n) => /产品轮播图/.test((n as HTMLElement).innerText?.slice(0, 20) ?? ""))
+        node?.scrollIntoView({ block: "center" })
+      }).catch(() => undefined)
+      await page.waitForTimeout(600)
       continue
     }
 
     try {
+      await trigger.scrollIntoViewIfNeeded().catch(() => undefined)
       await clickAfterDianxiaomiIdle(page, trigger, 1)
-      await page.waitForTimeout(400)
-      const menuAction = await findVisibleMenuItemByKeywords(page, keywords)
-      if (menuAction) {
-        return menuAction
+      // ant-dropdown mount can lag on a heavy edit page; wait longer and retry
+      // the item lookup a couple of times before giving up on this open.
+      for (let poll = 0; poll < 4; poll += 1) {
+        await page.waitForTimeout(450)
+        const menuAction = await findVisibleMenuItemByKeywords(page, keywords)
+        if (menuAction) {
+          return menuAction
+        }
       }
     } catch {
       await page.waitForTimeout(750)
@@ -12417,17 +12442,54 @@ const prepareBatchResizeDialog = async (
   const firstSelect = selectCount > 0 ? selects.nth(0) : null
   const secondSelect = selectCount > 1 ? selects.nth(1) : null
   const firstSelectText = await readVisibleText(firstSelect)
-  const secondSelectText = await readVisibleText(secondSelect)
-  const selectedResizeMode = !firstSelect
-    ? null
-    : firstSelectText.includes("等比例")
+
+  // OOM/aspect fix: Temu carousel images must be 1:1 (submit rejects otherwise
+  // with 产品轮播图必须1:1尺寸). The dialog exposes a 自定义比例调整 mode whose
+  // ratio select offers 1:1 / 3:4 / 4:3 / 9:16 / 16:9. Prefer 自定义比例调整 + 1:1
+  // so the carousel comes out square; fall back to the previous 等比例调整 (which
+  // only preserves the original ratio) if those options are not present on this
+  // account's dialog. We READ the options — never assume they exist.
+  let selectedResizeMode: string | null = firstSelectText || null
+  let selectedRatio: string | null = null
+  let squareModeApplied = false
+  if (firstSelect) {
+    const customMode = firstSelectText.includes("自定义比例")
       ? firstSelectText
-      : await selectAntOption(page, firstSelect, ["等比例调整", "等比例"], "等比例")
+      : await selectAntOption(page, firstSelect, ["自定义比例调整", "自定义比例"], "自定义比例")
+    if (customMode) {
+      selectedResizeMode = customMode
+      await page.waitForTimeout(400)
+      // After switching to custom-ratio the row shows a ratio select (default
+      // 保持原图比例). Pick the exact 1:1 option by reading its options.
+      const ratioSelect = dialog.locator(".ant-select:visible").filter({
+        has: dialog.locator(".ant-select-selection-item[title='保持原图比例']")
+      }).first()
+      const ratioTarget = (await ratioSelect.count().catch(() => 0)) > 0
+        ? ratioSelect
+        : dialog.locator(".ant-select:visible").nth(2)
+      selectedRatio = await selectAntOption(page, ratioTarget, ["1 : 1", "1:1", "1：1"], "1")
+      squareModeApplied = Boolean(selectedRatio && /1\s*[:：]\s*1/.test(selectedRatio))
+    }
+  }
+  // Fallback: if the square (custom-ratio 1:1) path was not available, keep the
+  // proven proportional-short-side behaviour so resizing still runs.
+  if (!squareModeApplied && firstSelect) {
+    selectedResizeMode = firstSelectText.includes("等比例")
+      ? firstSelectText
+      : await selectAntOption(page, firstSelect, ["等比例调整", "等比例"], "等比例") ?? selectedResizeMode
+  }
+  const secondSelectText = await readVisibleText(secondSelect)
   const selectedResizeSide = !secondSelect
     ? null
-    : secondSelectText.includes("图片小边") || secondSelectText.includes("小边")
-      ? secondSelectText
-      : await selectAntOption(page, secondSelect, ["图片小边", "小边"], "图片小边")
+    : squareModeApplied
+      // In square mode the second select is the dimension (图片宽); 变化至 <side>
+      // then applies to both W and H because the ratio is locked to 1:1.
+      ? (secondSelectText.includes("图片宽") || secondSelectText.includes("宽")
+        ? secondSelectText
+        : await selectAntOption(page, secondSelect, ["图片宽", "宽"], "图片宽"))
+      : (secondSelectText.includes("图片小边") || secondSelectText.includes("小边")
+        ? secondSelectText
+        : await selectAntOption(page, secondSelect, ["图片小边", "小边"], "图片小边"))
 
   const valueInput = await firstVisible([
     dialog.locator("input[name='valueW']"),
@@ -12440,7 +12502,9 @@ const prepareBatchResizeDialog = async (
       prepared: false,
       reason: "batch resize value input missing",
       selectedResizeMode,
-      selectedResizeSide
+      selectedResizeSide,
+      selectedRatio,
+      squareModeApplied
     }
     return false
   }
@@ -12453,6 +12517,8 @@ const prepareBatchResizeDialog = async (
     targetSidePx,
     selectedResizeMode,
     selectedResizeSide,
+    selectedRatio,
+    squareModeApplied,
     selectAllChecked,
     actualValue
   }
