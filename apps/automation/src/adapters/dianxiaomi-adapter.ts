@@ -325,6 +325,15 @@ type MediaProcessingSafetyPlan = {
   manualConfirmationRequired: boolean
   pageState: PageSafetyState
   tools: MediaToolSafetyItem[]
+  // Broken-source-images recovery outcome (present only when a re-pull was attempted).
+  carouselRepull?: {
+    attempted: boolean
+    repulled: boolean
+    reason: string
+    healthyUrlCount: number
+    addedUrlCount: number
+    brokenTilesRemoved: number
+  }
 }
 
 type TargetSurfaceStatus = "real-dianxiaomi" | "fixture" | "missing-fields" | "login-or-captcha" | "unknown"
@@ -777,10 +786,11 @@ const fetchDianxiaomiProductCategorySnapshot = async (page: Page) => {
 // them 1:1 (submit rejects 轮播图必须1:1; classified broken-source-images). BUT the
 // ORIGINAL 1688 source images (cbu01.alicdn.com, from materialImgUrl / the
 // collected product sourceUrl) are still HEALTHY. Per the Full-Automation charter,
-// the unblock path should be automated: when the carousel URLs are dead, re-pull
-// the images from the 1688 source (collected product sourceUrl / alicdn URLs) and
-// re-upload them into the carousel (选择图片 → 网络图片 / 引用采集图片), then batch-resize
-// 1:1. This is the actual fix for this whole page-reference batch, not just cleanup.
+// the unblock path is automated by repullBrokenCarouselImages() below (called from
+// applyUnattendedMediaTools before batch-resize): when the carousel is entirely
+// broken it HEAD-checks the edit.json source URLs and re-adds the healthy ones via
+// the carousel 选择图片 → 网络图片 dialog (reuse-to-3), so batch-resize 1:1 then has
+// real pixels. This function is the source-URL provider for that recovery.
 const fetchProductImagesFromEditJson = async (page: Page): Promise<string[]> => {
   const productId = (() => {
     try {
@@ -8606,6 +8616,210 @@ const submitSkuImageUrls = async (page: Page, dialog: Locator, urls: string[]) =
   }
 }
 
+// ── Carousel re-pull (broken-source-images recovery) ────────────────────────
+// Some page-reference products keep DELETED carousel copies (wxalbum-*.dianxiaomi.com
+// URLs that now 404 → images render 0×0 → submit rejects 轮播图必须1:1 and no
+// batch-resize can fix them). Their ORIGINAL 1688 source images (cbu01.alicdn.com,
+// from materialImgUrl / previewImgUrls) are still healthy. Per the Full-Automation
+// charter (ladder rung 1 — generic mechanism, read the live page), when the carousel
+// is provably broken we re-pull the healthy source URLs and re-add them to the
+// carousel via its own 选择图片 → 网络图片 dialog (probed shape: 1 textarea +
+// 取消/添加), reuse-to-3 so Temu's ≥3-image rule is met, then let batch-resize 1:1
+// proceed on real pixels. Purely additive and idempotent-guarded: it ONLY runs when
+// every carousel image is 0×0, so a healthy product is never touched.
+
+type CarouselHealthProbe = {
+  total: number
+  broken: number
+  allBroken: boolean
+}
+
+// Read the live carousel img natural dimensions (same convention as the
+// broken-source guard in prepareBatchResizeDialog). allBroken=true means every
+// carousel image is 0×0 — the only case we re-pull.
+const probeCarouselImageHealth = async (page: Page): Promise<CarouselHealthProbe> =>
+  page.evaluate(() => {
+    const root = document.querySelector(".img-module") ?? document.body
+    const imgs = Array.from(root.querySelectorAll("img")).slice(0, 30) as HTMLImageElement[]
+    const carousel = imgs.filter(
+      (im) => !/material-img/i.test((im.closest("[class*='module' i]") as HTMLElement | null)?.className ?? "")
+    )
+    const considered = carousel.length > 0 ? carousel : imgs
+    const broken = considered.filter((im) => im.complete && im.naturalWidth === 0 && im.naturalHeight === 0)
+    return { total: considered.length, broken: broken.length, allBroken: considered.length > 0 && broken.length === considered.length }
+  }).catch(() => ({ total: 0, broken: 0, allBroken: false }))
+
+// HEAD/GET each candidate URL through the authenticated context; keep only ones
+// that return real image bytes (>512 B, image/* content-type). We never re-add a
+// URL that is itself dead — that would just recreate the broken state.
+const filterHealthyImageUrls = async (page: Page, urls: string[], limit = 8): Promise<string[]> => {
+  const healthy: string[] = []
+  for (const url of urls) {
+    if (healthy.length >= limit) {
+      break
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      continue
+    }
+    const response = await page.context().request.get(url).catch(() => null)
+    if (!response || !response.ok()) {
+      continue
+    }
+    const type = response.headers()["content-type"] ?? ""
+    const body = await response.body().catch(() => Buffer.alloc(0))
+    if (/image\//i.test(type) && body.length > 512) {
+      healthy.push(url)
+    }
+  }
+  return healthy
+}
+
+// Open the CAROUSEL-level 选择图片 → 网络图片 dialog (top-level .img-module scope,
+// not a SKU cell). Probed menu: 本地图片 / 空间图片 / 网络图片 / 引用采集图片.
+const openCarouselNetworkDialog = async (page: Page): Promise<{ opened: boolean; reason: string; dialog: Locator | null }> => {
+  const carousel = page.locator(".img-module").first()
+  const chooseTrigger = await firstVisible([
+    carousel.getByText(/^选择图片/).first(),
+    carousel.locator("button, a, .ant-dropdown-trigger").filter({ hasText: /选择图片/ }),
+    page.getByText(/^选择图片/).first()
+  ])
+  if (!chooseTrigger) {
+    return { opened: false, reason: "carousel 选择图片 trigger not found", dialog: null }
+  }
+  await chooseTrigger.scrollIntoViewIfNeeded().catch(() => undefined)
+  await clickAfterDianxiaomiIdle(page, chooseTrigger, 2)
+  await page.waitForTimeout(400)
+
+  const networkClicked = await clickVisibleMenuItemByKeywords(page, ["网络图片", "网络地址"], 3)
+  if (!networkClicked) {
+    return { opened: false, reason: "carousel 网络图片 menu item not found", dialog: null }
+  }
+  await page.waitForTimeout(500)
+  const dialogs = await visibleAntModalLocators(page)
+  for (let index = dialogs.length - 1; index >= 0; index -= 1) {
+    const dialog = dialogs[index]
+    const hasTextarea = (await dialog.locator("textarea").count().catch(() => 0)) > 0
+    const text = normalizeFeedbackText(await dialog.innerText().catch(() => ""))
+    if (hasTextarea && keywordMatch(text, ["网络地址", "网络图片", "url"])) {
+      return { opened: true, reason: "ok", dialog }
+    }
+  }
+  return { opened: false, reason: "carousel network image dialog did not appear", dialog: null }
+}
+
+type CarouselRepullResult = {
+  attempted: boolean
+  repulled: boolean
+  reason: string
+  healthyUrlCount: number
+  addedUrlCount: number
+  brokenTilesRemoved: number
+}
+
+// Remove the broken 0×0 carousel tiles (dead wxalbum copies). Probed tile shape:
+// .single-image.img-item wrapping one <img>, with an <a class="icon_delete"> delete
+// affordance. Temu's submit gate checks EVERY carousel image is 1:1, so a lingering
+// 0×0 tile fails 轮播图必须1:1 even after healthy images are added — they must go.
+// Removes only tiles whose img is provably 0×0; healthy tiles are never touched.
+const removeBrokenCarouselTiles = async (page: Page, maxRemovals = 15): Promise<number> => {
+  let removed = 0
+  const carousel = page.locator(".img-module").first()
+  for (let attempt = 0; attempt < maxRemovals; attempt += 1) {
+    // Find the first broken tile (img naturalWidth/Height === 0) and its delete link.
+    const handle = await carousel.evaluateHandle((root) => {
+      const tiles = Array.from(root.querySelectorAll(".img-item, .single-image")) as HTMLElement[]
+      for (const tile of tiles) {
+        const img = tile.querySelector("img") as HTMLImageElement | null
+        if (img && img.complete && img.naturalWidth === 0 && img.naturalHeight === 0) {
+          const del = tile.querySelector(".icon_delete, [class*='delete' i], [class*='remove' i]") as HTMLElement | null
+          if (del) {
+            return del
+          }
+        }
+      }
+      return null
+    }).catch(() => null)
+    const element = handle?.asElement()
+    if (!element) {
+      if (handle) {
+        await handle.dispose().catch(() => undefined)
+      }
+      break
+    }
+    const clicked = await element.click().then(() => true).catch(() => false)
+    await handle?.dispose().catch(() => undefined)
+    if (!clicked) {
+      break
+    }
+    removed += 1
+    await page.waitForTimeout(400)
+    // Some carousels prompt a confirm on delete — accept it if present.
+    await clickVisibleMenuItemByKeywords(page, ["确定", "确认", "删除"], 1).catch(() => undefined)
+    await page.waitForTimeout(300)
+  }
+  return removed
+}
+
+// Full re-pull step: only fires when the carousel is entirely broken. Gathers
+// healthy source URLs from edit.json, HEAD-checks them, reuse-to-3, and re-adds
+// them via the carousel 网络图片 dialog. Returns a structured result; never throws
+// into the media loop (worst case attempted=true, repulled=false → the existing
+// broken-source-images isolation still applies downstream).
+// Exported for the read-only+repair probe (probe-carousel-repull) so the real-machine
+// verification calls the PRODUCTION function, not a copy.
+export const repullBrokenCarouselImages = async (page: Page, minImages = 3): Promise<CarouselRepullResult> => {
+  const health = await probeCarouselImageHealth(page)
+  if (!health.allBroken) {
+    return { attempted: false, repulled: false, reason: `carousel not fully broken (${health.broken}/${health.total} broken)`, healthyUrlCount: 0, addedUrlCount: 0, brokenTilesRemoved: 0 }
+  }
+
+  const candidateUrls = await fetchProductImagesFromEditJson(page)
+  if (candidateUrls.length === 0) {
+    return { attempted: true, repulled: false, reason: "no source URLs in edit.json", healthyUrlCount: 0, addedUrlCount: 0, brokenTilesRemoved: 0 }
+  }
+  const healthy = await filterHealthyImageUrls(page, candidateUrls)
+  if (healthy.length === 0) {
+    return { attempted: true, repulled: false, reason: "no healthy source URLs (all dead)", healthyUrlCount: 0, addedUrlCount: 0, brokenTilesRemoved: 0 }
+  }
+  // Temu requires ≥3 carousel images. Reuse the healthy set to reach the floor.
+  const toAdd: string[] = []
+  const target = Math.max(minImages, healthy.length)
+  for (let i = 0; toAdd.length < target; i += 1) {
+    toAdd.push(healthy[i % healthy.length])
+  }
+
+  const opened = await openCarouselNetworkDialog(page)
+  if (!opened.opened || !opened.dialog) {
+    return { attempted: true, repulled: false, reason: opened.reason, healthyUrlCount: healthy.length, addedUrlCount: 0, brokenTilesRemoved: 0 }
+  }
+  const added = await submitSkuImageUrls(page, opened.dialog, toAdd)
+  if (!added.added) {
+    // best-effort: dismiss any lingering dialog so the media loop starts clean
+    await waitForVisibleAntModalCountAtMost(page, 0, 4_000).catch(() => undefined)
+    return { attempted: true, repulled: false, reason: `add failed: ${added.reason}`, healthyUrlCount: healthy.length, addedUrlCount: 0, brokenTilesRemoved: 0 }
+  }
+  await page.waitForTimeout(1_200)
+  // Healthy images added; now remove the lingering 0×0 tiles so the submit 1:1 gate
+  // does not trip on them. Done AFTER adding so the carousel never dips below ≥3.
+  const brokenTilesRemoved = await removeBrokenCarouselTiles(page).catch(() => 0)
+  await page.waitForTimeout(800)
+  const afterHealth = await probeCarouselImageHealth(page)
+  // Success = at least the healthy images are present AND no broken tile remains.
+  const repulled = !afterHealth.allBroken && afterHealth.broken === 0 && afterHealth.total >= minImages
+  return {
+    attempted: true,
+    repulled,
+    reason: repulled
+      ? "ok"
+      : afterHealth.broken > 0
+        ? `${afterHealth.broken} broken tile(s) remain after removal`
+        : `only ${afterHealth.total} carousel image(s) after re-pull`,
+    healthyUrlCount: healthy.length,
+    addedUrlCount: toAdd.length,
+    brokenTilesRemoved
+  }
+}
+
 const clearSkuImageCellStable = async (page: Page, cell: Locator, maxRemovals = 20) => {
   let removed = 0
 
@@ -13957,6 +14171,29 @@ const applyUnattendedMediaTools = async (
 
   if (options.mediaAutomationMode !== "unattended-apply" || plan.guardStatus === "blocked") {
     return plan
+  }
+
+  // Broken-source-images recovery (ladder rung 1). Before running any media tool,
+  // if the carousel images are entirely broken (0×0 — deleted wxalbum copies) but
+  // healthy 1688 source URLs exist in edit.json, re-pull them into the carousel so
+  // batch-resize 1:1 has real pixels to work on. Runs at most once per apply pass,
+  // only when a batch-resize tool would actually apply (carousel media is in play).
+  // Idempotent-guarded: no-op unless every carousel image is 0×0. Recorded on the
+  // plan for diagnosis; a failed re-pull leaves the existing broken-source-images
+  // isolation to fire downstream unchanged.
+  const batchResizePlanned = plan.tools.some((tool) => tool.id === "batch-resize" && tool.wouldApply)
+  if (batchResizePlanned) {
+    const repull = await repullBrokenCarouselImages(page).catch((error) => ({
+      attempted: true,
+      repulled: false,
+      reason: error instanceof Error ? error.message : "re-pull threw",
+      healthyUrlCount: 0,
+      addedUrlCount: 0,
+      brokenTilesRemoved: 0
+    }))
+    if (repull.attempted) {
+      plan.carouselRepull = repull
+    }
   }
 
   let blockedByPriorFailure = false

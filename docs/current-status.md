@@ -611,3 +611,18 @@ Next, continue hardening the unattended publish success/failure loop: add route-
 - **墙 3 图片缺失（已写修复，未真实验证）**：234/238 个「页面引用型」work item 完全没有图片 URL → fill 阶段 `fillSkuImageLinks` skip → save-draft 被「服装类颜色属性必须上传3张图片」拒。修复：新增 `fetchProductImagesFromEditJson(page)` 从店小秘 `edit.json`（`mainProductSkuSpecReqsList[].previewImgUrls`，`|` 分隔按色变体；`materialImgUrl`/`mainImage`/`extraImages` 兜底）即时把现有图捞回，`fillDraft` 在 `productImages` 为空时调用它，恢复后正常走 `fillSkuImageLinks` + `normalizeDescriptionImageModules`。`npm run typecheck --workspace @temu-ai-ops/automation` 通过。**尚未在真实页面跑过 fill→save 验证能否过「每色3图」门**。
 - **墙 4 主题颜色（新发现，仅探针）**：save 还会被「主题颜色至少需要选一个」拒。只读探针 [probe-theme-color-structure.ts](../apps/automation/src/probes/probe-theme-color-structure.ts) 已就位（dump 主题颜色提及 + `.skuAttrItem_1001` SKC 勾选态 + color-table 行），**适配代码未写**，下轮处理。
 - **辅助探针**：[probe-category-detection-compare.ts](../apps/automation/src/probes/probe-category-detection-compare.ts) 对比 `textContent` vs `innerText` 两种「未选择分类」判定差异（只读）。
+
+### 轮播图重拉自动化（broken-source-images 真修，2026/07/05）
+
+承接 [broken-source-images 隔离](#) 那一轮的关键发现：整批「页面引用型」商品的轮播图副本（`wxalbum-*.dianxiaomi.com`）已被店小秘删除返回 404 → 图片 0×0，submit 恒被「产品轮播图必须1:1尺寸」拒；但其 **1688 原图（`cbu01.alicdn.com`，来自 `materialImgUrl` / `previewImgUrls`）仍健康**。本轮按 Full-Automation 阶梯第 1 级（通用机制、读实时页）把这条 unblock 做成自动化。
+
+- **机制**（[dianxiaomi-adapter.ts](../apps/automation/src/adapters/dianxiaomi-adapter.ts) `repullBrokenCarouselImages`，在 `applyUnattendedMediaTools` 内 batch-resize 之前跑一次，仅当轮播图整体 0×0 时触发）：
+  1. `probeCarouselImageHealth` 读实时 `.img-module` 内 img 的 `naturalWidth/Height`，`allBroken`（全 0×0）才动手——健康商品绝不碰。
+  2. `fetchProductImagesFromEditJson` 取 edit.json 里的源 URL，`filterHealthyImageUrls` 逐个 GET 校验真实图片字节（>512B、`image/*`），只留活的。
+  3. 打开轮播图自身的 `选择图片 → 网络图片` 弹窗（探针实测：1 个 textarea + 取消/添加），`submitSkuImageUrls` 填换行 URL、reuse-to-3 达 Temu ≥3 图下限。
+  4. `removeBrokenCarouselTiles` 删掉残留的 0×0 tile（探针实测 tile = `.single-image.img-item` + `a.icon_delete`），否则 submit 1:1 门仍会被这些死图绊倒。**先加后删**，全程不低于 3 张。
+- **真机验收（896984，宠物绒衣）**：`probe-carousel-repull` 调**生产函数**，5 张全 0×0 → 找到 2 个健康 alicdn 源、加 3 张（reuse-to-3）、删 5 张死 tile → 结果 **3 张 800×800 / 1:1，0 broken**，verdict `REPULLED-HEALTHY`；截图确认「已经选择了 3 张、比例1:1、不小于800*800」，素材图也自动取到 800×800。加的 alicdn 原图本就 800×800（1:1），batch-resize 甚至无需再压。
+- **失败兜底**：re-pull 失败（无源 URL / 全死 / 弹窗打不开 / tile 删不净）时 `repulled=false`，下游既有 `broken-source-images` 隔离原样生效（商品置 blocked、不重试、不计 daemon 失败预算），不会崩。
+- **探针（只读/只修，保留复验用）**：[probe-carousel-network-image.ts](../apps/automation/src/probes/probe-carousel-network-image.ts)（dump 网络图片弹窗）、[probe-carousel-tile-delete.ts](../apps/automation/src/probes/probe-carousel-tile-delete.ts)（dump tile 删除结构）、[probe-carousel-repull.ts](../apps/automation/src/probes/probe-carousel-repull.ts)（调生产 re-pull 验证轮播图变健康，改草稿不保存不提交）。
+- **验证**：`npm run typecheck`（automation + server）全绿；`npm test --workspace @temu-ai-ops/server` 全过。
+- **未做（下轮）**：完整 daemon full-flow 把 re-pull 后的草稿 save「产品编辑成功」+ submit「产品已提交发布」跑出第一个"新商品全链全自动"绿样本——机制已就位，剩的是把它挂进一次真实 full-flow 跑通（会写盘保存）。
