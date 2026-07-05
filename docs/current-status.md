@@ -6,16 +6,17 @@ Updated: 2026-07-05
 
 **无人值守已跑通第一轮到 Temu 核价交接（2026-07-04 凌晨）**：守护进程自主入队 189-SKU 商品并完成全链（save「产品编辑成功」+ submit「产品已提交发布」，~16 分钟）。冲刺计划 A1–A5 全部走过一遍，产品形态上「能用起来」了。
 
-**规模化前的拦路（按优先级；2026-07-05 媒体工具发现修复后更新）**：
+**规模化前的拦路（按优先级；2026-07-05 broken-source-images 隔离后更新）**：
 
-1. **媒体工具发现缺陷（已修 + 验证）+ 896984 轮播图源图损坏（数据问题，另立）**：
-   - **媒体工具发现已修并验证**（commit `a2e91ae`）：`batch-resize`/`image-translation` 在 fill 阶段报 `missing-tool`（→ `media processing plan completed (skipped)`）的根因——`findImageOptionsTrigger` 第一个候选 `.img-module .img-options-action-btn.ant-dropdown-trigger` **没带文字过滤**，抓到了同类名的**添加水印**下拉（和「crop 编辑图片」共享该 class），添加水印菜单里没有媒体工具 → 打开了错菜单 → 报工具缺失。用只读探针 `probe-media-tool-discovery`（直接调**生产** `collectMediaToolCandidates`）实锤：找到的 trigger 是「添加水印」。修法：所有候选加 `编辑图片/crop` 文字过滤 + 探针验证过的宽松兜底（`<a>` / cursor:pointer div，**限定在 `.img-module` 内**不全局放宽）。修后生产 `collectMediaToolCandidates` 返回全部 5 个工具 `hasLocator=true`（原 batch-resize/image-translation=false），media apply 真机跑起来了，batch-resize 应用了 `自定义比例调整 + 1:1`（`squareModeApplied=true`），另加 apply 前重勾「选择全部」。
-   - **但 896984 submit 仍过不了——是源图损坏，不是机制问题**：只读探针实测该商品 5 张轮播图 `naturalWidth=0/naturalHeight=0`（`wxalbum-*.dianxiaomi.com` URL 返回空图），batch-resize 弹窗里没有可选的图 → apply 报「请选择要更改尺寸的图片」，submit 仍被「轮播图必须1:1」拒**因为图本身是坏的（0×0），不是比例问题**。任何图片工具都改不了 0×0 的图。这是这个「页面引用型」商品的源图数据损坏，和 1:1 机制无关。→ **1:1 机制 + 发现修复都正确、对有真实图的商品即生效**；896984 需要重新上传/刷新源图（另立数据修复，非本任务）。
-2. ~~尺码表适配缺品类默认值~~ **已修并真机验证**（commit `ccde6e8`）：只读探针 dump 出弹窗真实列（猫狗服饰，三列 胸围全围/颈围/背长，XS…5XL），加 `PET_CLOTHES_SIZE_CHART_DEFAULTS` + 共享 `fillSizeChartTable` + **通用兜底**。真机 `normalize-size-chart`=done（28/28 输入全填），**save 返回「产品编辑成功」**。
-3. ~~新商品 fill 卡 SKU 图片格~~ **已修并真机验证**（commit `9c2dfdf`）：根因是 `edit.json` 变体 spec 为空占位（无每色图要求）。`fill-sku-image-links` 区分「无每色变体行 → skipped」和「有色行但选择器没匹配 → 仍 failed」。
+1. **媒体工具发现（已修+验证）+ 这批「页面引用型」商品轮播图源图 404（已隔离，真修=从 1688 源重拉）**：
+   - **媒体工具发现已修并验证**（commit `a2e91ae`）：`batch-resize`/`image-translation` fill 阶段报 `missing-tool` 的根因——`findImageOptionsTrigger` 第一候选没带文字过滤，抓到同类名的**添加水印**下拉（和「crop 编辑图片」共享 class），菜单里没工具 → 报缺失。只读探针 `probe-media-tool-discovery`（直调**生产** `collectMediaToolCandidates`）实锤。修法：所有候选加 `编辑图片/crop` 文字过滤 + `.img-module` 内宽松兜底。修后生产函数返回全部 5 个工具 `hasLocator=true`，media apply 真机跑起来、batch-resize 应用了 `自定义比例调整 + 1:1`（`squareModeApplied=true`）。
+   - **broken-source-images 商品级隔离（commit `5407fdb`）**：submit/media 失败若源于轮播图 0×0（batch-resize 弹窗无可选图 + 页面 img `naturalWidth=0`），失败分类为新类别 `broken-source-images`（`retryable=false`/`autoRetry=false`，nextAction「需重新上传源图」），商品自动 blocked、不自动重试、非 browser-recovery、不消耗 daemon 失败预算。已给 896984 打标、清零 daemon 熔断（3→0）。加了回归测试；补了 `index.ts` POST Zod 枚举（顺带补上漏掉的 `sku-count-over-cap`）。
+   - **关键发现（只读探针 `probe-product-image-health`，读 edit.json + HEAD/GET 图 URL）**：队列里所有 blocked 商品（`896984`/`896128`/`896488`）的轮播图**都是 404**——`wxalbum-*.dianxiaomi.com` 的店小秘轮播副本已被删，但**原始 1688 源图（`cbu01.alicdn.com`）还健康**（250–785KB 真 JPEG）。所以：① 这批商品谁都上不了架（不是机制问题，是轮播副本没了）；② **真修路径 = 从 1688 源重拉图上传轮播图**（见下一步①，已在 `fetchProductImagesFromEditJson` 上方立 TODO）。已 submit 成功的（`896424`/`896278`/`236108408`）当时轮播图是好的。
+2. ~~尺码表适配缺品类默认值~~ **已修并真机验证**（commit `ccde6e8`）：加 `PET_CLOTHES_SIZE_CHART_DEFAULTS` + 共享 `fillSizeChartTable` + **通用兜底**。真机 `normalize-size-chart`=done（28/28 输入全填），**save 返回「产品编辑成功」**。
+3. ~~新商品 fill 卡 SKU 图片格~~ **已修并真机验证**（commit `9c2dfdf`）：`fill-sku-image-links` 区分「无每色变体行 → skipped」和「有色行但选择器没匹配 → 仍 failed」。
 4. **OOM 层 1 防护已实现且部分真机验证**（commit `cb83673`）：headless 默认、daemon 跨自有 flow 不自暂停、queue-run 历史持久化；SKU 上限门 + insufficient-memory 分支有回归测试。
 
-**下一步**：① 用一个**有真实图**的非 1:1 商品完整验证 1:1 机制让 submit 过（896984 源图坏，做不了这个证明）。② 896984 这类页面引用型商品的**源图损坏（0×0）修复**：探原始 1688/alicdn URL 是否有效、能否重传刷新轮播图。③ ladder-L3 LLM 品类映射兜底（`KNOWN_CATEGORY_RECOVERY_PATHS` 上方已立 TODO，不阻塞）。④ 其余 blocked 新商品逐个放回 ready 让 daemon 消化、记录每个新门；然后 62-SKU OOM 重验与批量扩池。
+**下一步**：① **轮播图从 1688 源重拉自动化**（这批 blocked 商品的真正解锁路径 + 全自动章程要求；TODO 已在 `fetchProductImagesFromEditJson` 上方）：轮播 URL 404 时，从采集商品 sourceUrl / alicdn 源图重新拉图，走「选择图片 → 网络图片/引用采集图片」重上传，再 batch-resize 1:1。② 修好①后即可拿一个源图健康的商品做「新商品全链全自动到 submit 产品已提交发布」的首个完整样本（当前队列没有源图健康的可用商品）。③ ladder-L3 LLM 品类映射兜底（`KNOWN_CATEGORY_RECOVERY_PATHS` 上方 TODO，不阻塞）。④ 62-SKU OOM 重验与批量扩池。
 
 **层 0 提示**：跑批前关 Edge/微信可从 ~3.0GB 腾到 ~4.2GB（实测）；VS Code 多窗口是最大占用（~1.4GB），能关更好。
 
