@@ -6,14 +6,16 @@ Updated: 2026-07-05
 
 **无人值守已跑通第一轮到 Temu 核价交接（2026-07-04 凌晨）**：守护进程自主入队 189-SKU 商品并完成全链（save「产品编辑成功」+ submit「产品已提交发布」，~16 分钟）。冲刺计划 A1–A5 全部走过一遍，产品形态上「能用起来」了。
 
-**规模化前的拦路（按优先级；2026-07-05 轮播图1:1机制修复后更新）**：
+**规模化前的拦路（按优先级；2026-07-05 媒体工具发现修复后更新）**：
 
-1. **轮播图未达 1:1 → submit 被拒（当前最前排；实际卡点已转移）**：宠物商品 `161406453047896984` submit 被「错误：产品轮播图必须1:1尺寸」拒。按 Full-Automation 阶梯先只读探针 dump 原生媒体工具（commit `598d0a2`）：`批量改图片尺寸` 弹窗 mode 选择有「等比例调整」（现用，保原比例，永远不 1:1）和「自定义比例调整」，后者的比例下拉给 `保持原图比例 / 1:1 / 3:4 / 4:3 / 9:16 / 16:9`。据此改 `prepareBatchResizeDialog`：优先选「自定义比例调整」+「1:1」（读弹窗实际选项，缺则回退等比例短边）；并把「产品轮播图必须1:1尺寸」归类为 `media-processing` + `autoRetryRecommended=true`（原为 unknown），失败自动重试。**但真机复跑 submit 仍被 1:1 拒**——因为 **media apply 被整体 skip 了**：`batch-resize`+`image-translation` 在该商品页报 `missing-tool`（日志 `media processing plan completed (skipped)`），batch-resize 根本没跑到。这是一个**独立的、先于本次的媒体工具发现缺陷**（工具在「crop 编辑图片」下拉里确实存在，探针能找到，但 `collectMediaToolCandidates`/`findImageOptionsMenuAction` 在 fill 阶段发现不了它们；我加的 scroll+加长轮询没解决）。→ **真正的下一道门是媒体工具发现，不是 1:1 机制本身**。1:1 机制正确、就绪，工具被发现后即生效。
-2. ~~尺码表适配缺品类默认值~~ **已修并真机验证**（commit `ccde6e8`）：宠物商品 save 曾被「请完善尺码表1的信息」硬拒。只读探针 dump 出弹窗真实列（猫狗服饰，三列 胸围全围/颈围/背长，XS…5XL），加 `PET_CLOTHES_SIZE_CHART_DEFAULTS` + 共享 `fillSizeChartTable` + **通用兜底**。真机复跑 `normalize-size-chart`=done（28/28 输入全填），**save 返回「产品编辑成功」**。
+1. **媒体工具发现缺陷（已修 + 验证）+ 896984 轮播图源图损坏（数据问题，另立）**：
+   - **媒体工具发现已修并验证**（commit `a2e91ae`）：`batch-resize`/`image-translation` 在 fill 阶段报 `missing-tool`（→ `media processing plan completed (skipped)`）的根因——`findImageOptionsTrigger` 第一个候选 `.img-module .img-options-action-btn.ant-dropdown-trigger` **没带文字过滤**，抓到了同类名的**添加水印**下拉（和「crop 编辑图片」共享该 class），添加水印菜单里没有媒体工具 → 打开了错菜单 → 报工具缺失。用只读探针 `probe-media-tool-discovery`（直接调**生产** `collectMediaToolCandidates`）实锤：找到的 trigger 是「添加水印」。修法：所有候选加 `编辑图片/crop` 文字过滤 + 探针验证过的宽松兜底（`<a>` / cursor:pointer div，**限定在 `.img-module` 内**不全局放宽）。修后生产 `collectMediaToolCandidates` 返回全部 5 个工具 `hasLocator=true`（原 batch-resize/image-translation=false），media apply 真机跑起来了，batch-resize 应用了 `自定义比例调整 + 1:1`（`squareModeApplied=true`），另加 apply 前重勾「选择全部」。
+   - **但 896984 submit 仍过不了——是源图损坏，不是机制问题**：只读探针实测该商品 5 张轮播图 `naturalWidth=0/naturalHeight=0`（`wxalbum-*.dianxiaomi.com` URL 返回空图），batch-resize 弹窗里没有可选的图 → apply 报「请选择要更改尺寸的图片」，submit 仍被「轮播图必须1:1」拒**因为图本身是坏的（0×0），不是比例问题**。任何图片工具都改不了 0×0 的图。这是这个「页面引用型」商品的源图数据损坏，和 1:1 机制无关。→ **1:1 机制 + 发现修复都正确、对有真实图的商品即生效**；896984 需要重新上传/刷新源图（另立数据修复，非本任务）。
+2. ~~尺码表适配缺品类默认值~~ **已修并真机验证**（commit `ccde6e8`）：只读探针 dump 出弹窗真实列（猫狗服饰，三列 胸围全围/颈围/背长，XS…5XL），加 `PET_CLOTHES_SIZE_CHART_DEFAULTS` + 共享 `fillSizeChartTable` + **通用兜底**。真机 `normalize-size-chart`=done（28/28 输入全填），**save 返回「产品编辑成功」**。
 3. ~~新商品 fill 卡 SKU 图片格~~ **已修并真机验证**（commit `9c2dfdf`）：根因是 `edit.json` 变体 spec 为空占位（无每色图要求）。`fill-sku-image-links` 区分「无每色变体行 → skipped」和「有色行但选择器没匹配 → 仍 failed」。
 4. **OOM 层 1 防护已实现且部分真机验证**（commit `cb83673`）：headless 默认、daemon 跨自有 flow 不自暂停、queue-run 历史持久化；SKU 上限门 + insufficient-memory 分支有回归测试。
 
-**下一步**：① **媒体工具发现**——查为什么 `batch-resize`/`image-translation` 在 fill 阶段报 `missing-tool`（工具在「crop 编辑图片」下拉里，探针能开出来）；发现修好后 1:1 机制即生效、submit 应过。② ladder-L3 LLM 品类映射兜底（已在 `KNOWN_CATEGORY_RECOVERY_PATHS` 上方立 TODO，不阻塞）。③ 过 submit 后把其余 blocked 新商品逐个放回 ready 让 daemon 消化、记录每个新门；然后 62-SKU OOM 重验与批量扩池。
+**下一步**：① 用一个**有真实图**的非 1:1 商品完整验证 1:1 机制让 submit 过（896984 源图坏，做不了这个证明）。② 896984 这类页面引用型商品的**源图损坏（0×0）修复**：探原始 1688/alicdn URL 是否有效、能否重传刷新轮播图。③ ladder-L3 LLM 品类映射兜底（`KNOWN_CATEGORY_RECOVERY_PATHS` 上方已立 TODO，不阻塞）。④ 其余 blocked 新商品逐个放回 ready 让 daemon 消化、记录每个新门；然后 62-SKU OOM 重验与批量扩池。
 
 **层 0 提示**：跑批前关 Edge/微信可从 ~3.0GB 腾到 ~4.2GB（实测）；VS Code 多窗口是最大占用（~1.4GB），能关更好。
 
