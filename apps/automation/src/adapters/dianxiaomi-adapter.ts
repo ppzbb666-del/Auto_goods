@@ -3952,6 +3952,143 @@ const findSizeChartModal = async (page: Page) => {
   return null
 }
 
+// Temu rejects a listing when its volumetric weight exceeds the actual weight:
+//   接口报错：材积重量大于实际重量，无法录入，请调整体积或者重量
+// This is a UNIVERSAL Temu shipping rule every customer hits, not a per-product
+// quirk — placeholder / account-scan work items routinely carry an inflated
+// package volume against a small real weight (e.g. 30×25×2 cm @ 80 g → volumetric
+// 250 g > 80 g). Per the Full-Automation ladder (rung 1: generic mechanism, read
+// the live page and correct dynamically), normalize-sku-logistics reads each SKU
+// row's 尺寸(cm) (skuLength/skuWidth/skuHeight) + 重量(g) (weight) and, for any row
+// that violates the rule, shrinks the DIMENSIONS to satisfy it — keeping the real
+// weight (which is usually the trustworthy value) and cutting the inflated volume.
+//
+// Temu volumetric weight (材积重), air divisor 抛比 = 6000:
+//   volumetricGrams = L(cm) × W(cm) × H(cm) ÷ 6000 × 1000  ==  L×W×H ÷ 6
+// Rule to satisfy: volumetricGrams ≤ weightGrams   ⇔   L×W×H ≤ 6 × weightGrams.
+// Fix: scale L/W/H uniformly by f = (targetVolume / currentVolume)^(1/3) where
+// targetVolume = 6 × weightGrams × SAFETY (0.9), so the corrected box comfortably
+// clears the boundary. Works for ANY dimensions/weight because cube-root scaling
+// always drives the product below the limit. Dimensions floor at 1 cm.
+const TEMU_VOLUMETRIC_DIVISOR = 6000
+const LOGISTICS_SAFETY_MARGIN = 0.9
+
+// Exported for the repair probe (probe-sku-logistics-fix) so real-machine
+// verification calls the PRODUCTION function, not a copy.
+export const normalizeSkuLogistics = async (page: Page) => {
+  const readRows = async () =>
+    page.evaluate(() => {
+      const val = (el: Element | null) => (el as HTMLInputElement | null)?.value ?? ""
+      const lengths = Array.from(document.querySelectorAll("input[name='skuLength']")) as HTMLInputElement[]
+      const widths = Array.from(document.querySelectorAll("input[name='skuWidth']")) as HTMLInputElement[]
+      const heights = Array.from(document.querySelectorAll("input[name='skuHeight']")) as HTMLInputElement[]
+      const weights = Array.from(document.querySelectorAll("input[name='weight']")) as HTMLInputElement[]
+      const rowCount = Math.max(lengths.length, widths.length, heights.length, weights.length)
+      const rows: Array<{ i: number; L: number; W: number; H: number; weightG: number }> = []
+      for (let i = 0; i < rowCount; i += 1) {
+        rows.push({
+          i,
+          L: parseFloat(val(lengths[i])) || 0,
+          W: parseFloat(val(widths[i])) || 0,
+          H: parseFloat(val(heights[i])) || 0,
+          weightG: parseFloat(val(weights[i])) || 0
+        })
+      }
+      return rows
+    }).catch(() => [] as Array<{ i: number; L: number; W: number; H: number; weightG: number }>)
+
+  const rowsBefore = await readRows()
+  if (rowsBefore.length === 0) {
+    return stepResult(
+      "normalize-sku-logistics",
+      "Normalize SKU logistics",
+      "skipped",
+      "No SKU dimension/weight fields (skuLength/skuWidth/skuHeight/weight) on the page"
+    )
+  }
+
+  const volumetricGrams = (L: number, W: number, H: number) => (L * W * H) / TEMU_VOLUMETRIC_DIVISOR * 1000
+  const violating = rowsBefore.filter((r) => r.L > 0 && r.W > 0 && r.H > 0 && r.weightG > 0 && volumetricGrams(r.L, r.W, r.H) > r.weightG)
+  const skippedNoWeight = rowsBefore.filter((r) => (r.weightG <= 0) && r.L > 0 && r.W > 0 && r.H > 0 && volumetricGrams(r.L, r.W, r.H) > 0)
+
+  if (violating.length === 0) {
+    return stepResult(
+      "normalize-sku-logistics",
+      "Normalize SKU logistics",
+      "skipped",
+      skippedNoWeight.length > 0
+        ? `No fixable violations, but ${skippedNoWeight.length} row(s) have volume yet no weight to compare — cannot verify the Temu 材积重 rule`
+        : `All ${rowsBefore.length} SKU row(s) already satisfy 材积重 ≤ 实际重量 (divisor ${TEMU_VOLUMETRIC_DIVISOR})`,
+      { rowCount: rowsBefore.length, divisor: TEMU_VOLUMETRIC_DIVISOR, skippedNoWeight: skippedNoWeight.length }
+    )
+  }
+
+  const lengthInputs = page.locator("input[name='skuLength']")
+  const widthInputs = page.locator("input[name='skuWidth']")
+  const heightInputs = page.locator("input[name='skuHeight']")
+  const corrections: Array<Record<string, unknown>> = []
+  let repaired = 0
+
+  for (const row of violating) {
+    const currentVolume = row.L * row.W * row.H
+    const targetVolume = 6 * row.weightG * LOGISTICS_SAFETY_MARGIN // cm³; == 材积重 boundary × safety
+    // uniform cube-root scale so L×W×H drops to targetVolume
+    const scale = Math.cbrt(targetVolume / currentVolume)
+    const nextL = Math.max(1, Math.floor(row.L * scale))
+    const nextW = Math.max(1, Math.floor(row.W * scale))
+    const nextH = Math.max(1, Math.floor(row.H * scale))
+    // Guard: flooring can still leave volume just over the line for tiny boxes; if so,
+    // shave the largest dimension by 1 cm until the rule holds (or a dim hits 1).
+    let [L, W, H] = [nextL, nextW, nextH]
+    let guard = 0
+    while (volumetricGrams(L, W, H) > row.weightG && guard < 50) {
+      if (L >= W && L >= H && L > 1) L -= 1
+      else if (W >= H && W > 1) W -= 1
+      else if (H > 1) H -= 1
+      else break
+      guard += 1
+    }
+    const ok = volumetricGrams(L, W, H) <= row.weightG
+    try {
+      if (L !== row.L) await fillTextField(lengthInputs.nth(row.i), String(L))
+      if (W !== row.W) await fillTextField(widthInputs.nth(row.i), String(W))
+      if (H !== row.H) await fillTextField(heightInputs.nth(row.i), String(H))
+      await page.waitForTimeout(120)
+      if (ok) repaired += 1
+    } catch (error) {
+      corrections.push({ row: row.i, error: error instanceof Error ? error.message : String(error) })
+      continue
+    }
+    corrections.push({
+      row: row.i,
+      from: { L: row.L, W: row.W, H: row.H, weightG: row.weightG, volumetricG: Number(volumetricGrams(row.L, row.W, row.H).toFixed(1)) },
+      to: { L, W, H, volumetricG: Number(volumetricGrams(L, W, H).toFixed(1)) },
+      satisfiesRule: ok
+    })
+  }
+
+  // Verify: re-read and confirm no row still violates.
+  const rowsAfter = await readRows()
+  const stillViolating = rowsAfter.filter((r) => r.L > 0 && r.W > 0 && r.H > 0 && r.weightG > 0 && volumetricGrams(r.L, r.W, r.H) > r.weightG)
+
+  return stepResult(
+    "normalize-sku-logistics",
+    "Normalize SKU logistics",
+    stillViolating.length === 0 ? "done" : "failed",
+    stillViolating.length === 0
+      ? `Corrected ${repaired}/${violating.length} SKU row(s) so 材积重 ≤ 实际重量 (divisor ${TEMU_VOLUMETRIC_DIVISOR}); shrank package volume, kept real weight`
+      : `Corrected ${repaired}/${violating.length} but ${stillViolating.length} row(s) still violate after write`,
+    {
+      divisor: TEMU_VOLUMETRIC_DIVISOR,
+      safetyMargin: LOGISTICS_SAFETY_MARGIN,
+      violatingBefore: violating.length,
+      stillViolating: stillViolating.length,
+      skippedNoWeight: skippedNoWeight.length,
+      corrections: corrections.slice(0, 12)
+    }
+  )
+}
+
 const normalizeSizeChart = async (page: Page) => {
   const openDialogCount = (await visibleAntModalLocators(page)).length
   const existingModal = await findSizeChartModal(page)
@@ -6982,6 +7119,7 @@ const prepareDraftPageWriteSurface = async (
     stepLabel: "Normalize category selection after variant remap"
   }))
   correctionSteps.push(await normalizeSizeChart(page))
+  correctionSteps.push(await normalizeSkuLogistics(page))
   correctionSteps.push(await normalizeVariantAttributes(page))
   correctionSteps.push(await normalizeSiteWarehouse(page))
   correctionSteps.push(await normalizeShipmentPromise(page))
