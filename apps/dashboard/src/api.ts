@@ -78,6 +78,9 @@ import type {
   SelectorConfigValidationResult,
   SelectorConfigVersion,
   SelectorConfigVersionDiffResult,
+  StandardProduct,
+  PlatformCapabilityProfile,
+  ShopAccount,
   SelectorWorkbench,
   SelectorDiagnosisReport,
   SelectorCalibrationJob,
@@ -96,6 +99,7 @@ import type {
   DianxiaomiImageCheckStartInput,
   DianxiaomiImageCheckStartResult,
   DianxiaomiStoreMetrics
+  ,PublishingTaskSummary
 } from "@temu-ai-ops/shared"
 
 const API_BASE = "http://localhost:8787"
@@ -160,6 +164,54 @@ const automationQuery = (input: AutomationDryRunStartInput = {}) => {
 export const fetchTasks = async (): Promise<PublishTask[]> => {
   const response = await fetch(`${API_BASE}/tasks`)
   assertOk(response, "任务列表加载失败")
+  return response.json()
+}
+
+export type CatalogProductList = {
+  items: StandardProduct[]
+  total: number
+  source: "legacy-publish-tasks"
+  readOnly: true
+}
+
+export const fetchCatalogProducts = async (query: { search?: string; source?: StandardProduct["source"] } = {}): Promise<CatalogProductList> => {
+  const params = new URLSearchParams()
+  if (query.search?.trim()) params.set("search", query.search.trim())
+  if (query.source) params.set("source", query.source)
+  const suffix = params.size ? `?${params.toString()}` : ""
+  const response = await fetch(`${API_BASE}/catalog/products${suffix}`)
+  assertOk(response, "商品目录加载失败")
+  return response.json()
+}
+
+export const fetchCatalogProduct = async (productId: string): Promise<StandardProduct> => {
+  const response = await fetch(`${API_BASE}/catalog/products/${encodeURIComponent(productId)}`)
+  assertOk(response, "商品详情加载失败")
+  return response.json()
+}
+
+export const fetchPlatformCapabilities = async (): Promise<PlatformCapabilityProfile[]> => {
+  const response = await fetch(`${API_BASE}/platforms/capabilities`)
+  assertOk(response, "平台能力加载失败")
+  return response.json()
+}
+
+export type ShopAccountSummary = {
+  account: ShopAccount
+  metrics: DianxiaomiStoreMetrics
+  source: "legacy-dianxiaomi-metrics"
+  readOnly: true
+}
+
+export const fetchShopAccounts = async (): Promise<ShopAccountSummary[]> => {
+  const response = await fetch(`${API_BASE}/shops`)
+  assertOk(response, "统一店铺列表加载失败")
+  return response.json()
+}
+
+export const fetchPublishingTasks = async (): Promise<PublishingTaskSummary[]> => {
+  const response = await fetch(`${API_BASE}/publishing/tasks`)
+  assertOk(response, "统一发布任务加载失败")
   return response.json()
 }
 

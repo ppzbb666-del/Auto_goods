@@ -41,9 +41,12 @@ const clone = (config: DianxiaomiSelectorConfig) => JSON.parse(JSON.stringify(co
     buttons: {},
     mediaTools: {},
     mediaToolActions: {},
-    skuRows: []
+    skuRows: [],
+    shippingWarehouse: " LIVELY "
   } as unknown as DianxiaomiSelectorConfig
-  assert.deepEqual(cloneSelectorConfig(messy).fields.title, ["#t"], "clone dedups/trims nested selectors")
+  const normalizedClone = cloneSelectorConfig(messy)
+  assert.deepEqual(normalizedClone.fields.title, ["#t"], "clone dedups/trims nested selectors")
+  assert.equal(normalizedClone.shippingWarehouse, "LIVELY", "clone preserves account-level shipping warehouse")
 
   console.log("PASS normalizeSelectorList / cloneSelectorConfig")
 }

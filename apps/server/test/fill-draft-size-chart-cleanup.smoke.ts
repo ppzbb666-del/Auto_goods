@@ -1,123 +1,309 @@
 import { strict as assert } from "node:assert"
-import { spawn } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs"
-import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { chromium } from "playwright"
+import { normalizeSizeChart } from "../../automation/src/adapters/dianxiaomi-adapter"
 
-type StepStatus = "done" | "failed" | "skipped"
+const buildBlockedClickFixture = () => `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>Dianxiaomi Dry Run Fixture</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; }
+    .page-content.smt-content { position: relative; padding: 24px; min-height: 100vh; }
+    .skuAttrSizeChart { margin-top: 24px; }
+    .skuAttrSizeChart .link {
+      display: inline-block;
+      color: #1677ff;
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+      z-index: 1;
+    }
+    .pointer-blocker {
+      position: absolute;
+      inset: 0;
+      background: rgba(255,255,255,0.01);
+      z-index: 5;
+      pointer-events: auto;
+    }
+    .ant-modal { position: fixed; inset: 0; display: none; z-index: 20; }
+    .ant-modal.ant-modal-open { display: block; }
+    .ant-modal-mask { position: absolute; inset: 0; background: rgba(0,0,0,0.35); }
+    .ant-modal-wrap {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ant-modal-content { background: #fff; width: 720px; border-radius: 8px; overflow: hidden; }
+    .ant-modal-body { padding: 16px; }
+    .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
+    .toolbar { display: flex; gap: 12px; margin-bottom: 16px; }
+    .ant-select { border: 1px solid #d9d9d9; padding: 8px 12px; min-width: 160px; }
+    .ant-select.selection-placeholder { color: #999; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #eee; padding: 8px; text-align: left; }
+    input { width: 100%; box-sizing: border-box; padding: 6px 8px; }
+    .footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    button { padding: 8px 14px; }
+  </style>
+</head>
+<body>
+  <div class="page-content smt-content">
+    <div>
+      <input name="title" value="Fixture title" />
+      <textarea name="description">Fixture description</textarea>
+      <button type="button">保存</button>
+      <button type="button">发布</button>
+    </div>
+    <div class="skuAttrSizeChart">
+      <span class="label">尺码表</span>
+      <span class="link" id="size-chart-trigger">添加尺码表</span>
+    </div>
+    <div class="pointer-blocker" aria-hidden="true"></div>
+  </div>
 
-type ExecutionStep = {
-  id: string
-  status: StepStatus
-  detail: string
-  data?: Record<string, unknown>
-}
+  <div class="ant-modal" id="size-chart-modal">
+    <div class="ant-modal-mask"></div>
+    <div class="ant-modal-wrap">
+      <div class="ant-modal-content">
+        <div class="ant-modal-body">
+          <div class="modal-title">尺码表</div>
+          <div class="toolbar">
+            <div class="ant-select">女装上衣</div>
+            <div class="ant-select selection-placeholder">---请选择引用模板---</div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>尺码</th>
+                <th>胸围全围</th>
+                <th>衣长</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>XS</td>
+                <td><input placeholder="请输入胸围" /></td>
+                <td><input placeholder="请输入衣长" /></td>
+              </tr>
+              <tr>
+                <td>S</td>
+                <td><input placeholder="请输入胸围" /></td>
+                <td><input placeholder="请输入衣长" /></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="footer">
+            <button type="button" id="size-chart-confirm">确定</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
-type ExecutionReport = {
-  status: "completed" | "partial" | "failed"
-  steps: ExecutionStep[]
-}
+  <script>
+    const modal = document.getElementById("size-chart-modal");
+    const trigger = document.getElementById("size-chart-trigger");
+    const confirm = document.getElementById("size-chart-confirm");
+    const openModal = () => modal.classList.add("ant-modal-open");
+    const closeModal = () => modal.classList.remove("ant-modal-open");
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..")
-const runId = new Date().toISOString().replace(/[:.]/g, "-")
-const fixturePath = path.join(repoRoot, ".runtime/dianxiaomi-dry-run-fixture.html")
-const taskFile = path.join(repoRoot, ".runtime/dianxiaomi-dry-run-task.json")
-const selectorConfig = path.join(repoRoot, ".runtime/dianxiaomi-selector-config.json")
-const artifactDir = path.join(repoRoot, `.runtime/fill-draft-size-chart-cleanup-smoke/${runId}`)
-const profileDir = path.join(repoRoot, `.runtime/playwright/fill-draft-size-chart-cleanup-smoke-profile/${runId}`)
+    trigger.addEventListener("mousedown", openModal);
+    confirm.addEventListener("click", closeModal);
+  </script>
+</body>
+</html>`
 
-const latestReport = (directory: string) => {
-  const reports = readdirSync(directory)
-    .filter((fileName) => fileName.endsWith(".json"))
-    .map((fileName) => path.join(directory, fileName))
-    .sort((left, right) => right.localeCompare(left))
+const buildResidualDialogFixture = () => `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>Dianxiaomi Dry Run Fixture</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; }
+    .page-content.smt-content { position: relative; padding: 24px; min-height: 100vh; }
+    .skuAttrSizeChart { margin-top: 24px; }
+    .skuAttrSizeChart .link { display: inline-block; color: #1677ff; cursor: pointer; }
+    .ant-modal { position: fixed; inset: 0; display: none; z-index: 20; }
+    .ant-modal.ant-modal-open { display: block; }
+    .ant-modal-mask { position: absolute; inset: 0; background: rgba(0,0,0,0.35); }
+    .ant-modal-wrap {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ant-modal-content { background: #fff; width: 720px; border-radius: 8px; overflow: hidden; }
+    .ant-modal-body { padding: 16px; }
+    .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
+    .toolbar { display: flex; gap: 12px; margin-bottom: 16px; }
+    .ant-select { border: 1px solid #d9d9d9; padding: 8px 12px; min-width: 160px; }
+    .ant-select.selection-placeholder { color: #999; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #eee; padding: 8px; text-align: left; }
+    input { width: 100%; box-sizing: border-box; padding: 6px 8px; }
+    .footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    button { padding: 8px 14px; }
+    #desc-modal { z-index: 40; }
+  </style>
+</head>
+<body>
+  <div class="page-content smt-content">
+    <div>
+      <input name="title" value="Fixture title" />
+      <textarea name="description">Fixture description</textarea>
+      <button type="button">保存</button>
+      <button type="button">发布</button>
+    </div>
+    <div class="skuAttrSizeChart">
+      <span class="label">尺码表</span>
+      <span class="link" id="size-chart-trigger">添加尺码表</span>
+    </div>
+  </div>
 
-  assert(reports[0], `no execution report found in ${directory}`)
-  return JSON.parse(readFileSync(reports[0], "utf8")) as ExecutionReport
-}
+  <div class="ant-modal ant-modal-open" id="desc-modal">
+    <div class="ant-modal-mask"></div>
+    <div class="ant-modal-wrap">
+      <div class="ant-modal-content">
+        <div class="ant-modal-body">
+          <div class="modal-title">Temu产品描述</div>
+          <div style="margin-bottom: 16px;">这里是残留的描述编辑弹窗</div>
+          <div class="footer">
+            <button type="button" id="desc-close">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ant-modal" id="size-chart-modal">
+    <div class="ant-modal-mask"></div>
+    <div class="ant-modal-wrap">
+      <div class="ant-modal-content">
+        <div class="ant-modal-body">
+          <div class="modal-title">尺码表</div>
+          <div class="toolbar">
+            <div class="ant-select">女装上衣</div>
+            <div class="ant-select selection-placeholder">---请选择引用模板---</div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>尺码</th>
+                <th>胸围全围</th>
+                <th>衣长</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>XS</td>
+                <td><input placeholder="请输入胸围" /></td>
+                <td><input placeholder="请输入衣长" /></td>
+              </tr>
+              <tr>
+                <td>S</td>
+                <td><input placeholder="请输入胸围" /></td>
+                <td><input placeholder="请输入衣长" /></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="footer">
+            <button type="button" id="size-chart-confirm">确定</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const descModal = document.getElementById("desc-modal");
+    const descClose = document.getElementById("desc-close");
+    const sizeChartModal = document.getElementById("size-chart-modal");
+    const sizeChartTrigger = document.getElementById("size-chart-trigger");
+    const sizeChartConfirm = document.getElementById("size-chart-confirm");
+    descClose.addEventListener("click", () => descModal.classList.remove("ant-modal-open"));
+    sizeChartTrigger.addEventListener("click", () => sizeChartModal.classList.add("ant-modal-open"));
+    sizeChartConfirm.addEventListener("click", () => sizeChartModal.classList.remove("ant-modal-open"));
+  </script>
+</body>
+</html>`
 
 const run = async () => {
-  assert(existsSync(fixturePath), `fixture file missing: ${fixturePath}`)
-  assert(existsSync(taskFile), `task file missing: ${taskFile}`)
-  assert(existsSync(selectorConfig), `selector config missing: ${selectorConfig}`)
-
-  mkdirSync(artifactDir, {
-    recursive: true
-  })
-  mkdirSync(profileDir, {
-    recursive: true
+  const browser = await chromium.launch({
+    headless: true
   })
 
-  const fixtureHtml = readFileSync(fixturePath, "utf8")
-  const fixtureUrl = `data:text/html;charset=utf-8,${encodeURIComponent(fixtureHtml)}#size-chart-template-missing`
-  const tsxCliPath = path.join(repoRoot, "node_modules/tsx/dist/cli.mjs")
-  const automationEntry = path.join(repoRoot, "apps/automation/src/temu-publish.ts")
-  assert(existsSync(tsxCliPath), `tsx CLI not found: ${tsxCliPath}`)
-  assert(existsSync(automationEntry), `automation entry not found: ${automationEntry}`)
+  try {
+    const page = await browser.newPage({
+      viewport: {
+        width: 1440,
+        height: 960
+      }
+    })
+    await page.setContent(buildBlockedClickFixture(), {
+      waitUntil: "domcontentloaded"
+    })
 
-  const child = spawn(process.execPath, [
-    tsxCliPath,
-    automationEntry,
-    "--platform=dianxiaomi",
-    `--url=${fixtureUrl}`,
-    `--task-file=${taskFile}`,
-    `--profile=${profileDir}`,
-    "--headed=false",
-    "--keep-open=false",
-    "--slow-mo=0",
-    "--dry-run=false",
-    "--review=true",
-    "--save-draft=false",
-    "--submit=false",
-    `--screenshots=${artifactDir}`,
-    `--selector-config=${selectorConfig}`
-  ], {
-    cwd: repoRoot,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true
-  })
+    const result = await normalizeSizeChart(page)
+    assert.equal(result.status, "done", "size chart normalization should succeed even when pointer events block normal click")
+    assert.equal(result.data?.triggerOpenMethod, "native-mouse", "size chart trigger should fall back to native mouse dispatch")
+    const blockedSurface = result.data?.triggerSurfaceDiagnostics as {
+      visibleDialogCount?: number
+      trigger?: {
+        topHitLooksLikeTrigger?: boolean
+        hitTestTopElements?: Array<Record<string, unknown>>
+      }
+    } | undefined
+    assert.equal(blockedSurface?.visibleDialogCount, 0, "blocked-click fixture should start without any open dialogs")
+    assert.ok(Array.isArray(blockedSurface?.trigger?.hitTestTopElements), "size chart diagnostics should record hit-test elements around the trigger")
+    assert.equal(blockedSurface?.trigger?.topHitLooksLikeTrigger, false, "diagnostics should show another element intercepting the trigger before fallback")
 
-  let stdout = ""
-  let stderr = ""
-  child.stdout.on("data", (chunk) => {
-    stdout += String(chunk)
-  })
-  child.stderr.on("data", (chunk) => {
-    stderr += String(chunk)
-  })
+    const triggerAttempts = Array.isArray(result.data?.triggerOpenAttempts)
+      ? result.data?.triggerOpenAttempts as Array<Record<string, unknown>>
+      : []
+    assert.equal(triggerAttempts.length, 3, "size chart trigger should record all fallback attempts")
+    assert.equal(triggerAttempts[0]?.method, "idle-click")
+    assert.equal(triggerAttempts[1]?.method, "force-click")
+    assert.equal(triggerAttempts[2]?.method, "native-mouse")
+    assert.equal(triggerAttempts[2]?.outcome, "opened", "native mouse fallback should open the modal")
 
-  const exitCode = await new Promise<number | null>((resolve) => {
-    child.once("exit", (code) => resolve(code))
-  })
+    const openDialogs = await page.locator(".ant-modal.ant-modal-open").count()
+    assert.equal(openDialogs, 0, "size chart normalization should not leave the modal open")
 
-  assert.equal(exitCode, 0, `fill-draft size chart cleanup smoke should exit cleanly.\nstdout:\n${stdout}\nstderr:\n${stderr}`)
-
-  const report = latestReport(artifactDir)
-  const sizeChartStep = report.steps.find((step) => step.id === "normalize-size-chart")
-  const mediaSafety = report.steps.find((step) => step.id === "media-processing-safety")
-  const mediaPlan = report.steps.find((step) => step.id === "media-processing-plan")
-  const reviewHold = report.steps.find((step) => step.id === "review-hold")
-
-  assert.equal(report.status, "completed", "fill-draft size chart cleanup should not leave a partial report")
-  assert(sizeChartStep, "fill-draft size chart cleanup should report normalize-size-chart")
-  assert.equal(sizeChartStep?.status, "skipped", "size chart cleanup should skip when no reusable template exists")
-  assert.match(sizeChartStep?.detail ?? "", /closed/i, "size chart cleanup should close the modal before skipping")
-
-  assert(mediaSafety, "fill-draft size chart cleanup should report media-processing-safety")
-  assert.equal(mediaSafety?.status, "done", "media-processing-safety should recover after size chart cleanup")
-  assert.equal(mediaSafety?.data?.guardStatus, "manual-ready", "media-processing-safety should return to manual-ready")
-  assert.equal(mediaSafety?.data?.manualConfirmationRequired, true, "media-processing-safety should still require manual confirmation")
-  assert.equal(mediaSafety?.data?.pageState?.visibleDialogCount, 0, "size chart cleanup should not leave visible dialogs behind")
-
-  assert(mediaPlan, "fill-draft size chart cleanup should report media-processing-plan")
-  assert.equal(mediaPlan?.status, "skipped", "media-processing-plan should stay non-blocking in plan-only mode")
-  assert.equal(mediaPlan?.data?.guardStatus, "manual-ready", "media-processing-plan should stay manual-ready after cleanup")
-  assert.equal(mediaPlan?.data?.pageState?.visibleDialogCount, 0, "media-processing-plan should observe a clean page after cleanup")
-
-  assert(reviewHold, "fill-draft size chart cleanup should stop at review hold")
-  assert.equal(reviewHold?.status, "skipped", "review hold should remain a skipped stop marker")
-
-  console.log(`fill-draft size chart cleanup smoke passed: ${artifactDir}`)
+    await page.setContent(buildResidualDialogFixture(), {
+      waitUntil: "domcontentloaded"
+    })
+    const residualDialogResult = await normalizeSizeChart(page)
+    assert.equal(residualDialogResult.status, "done", "size chart normalization should recover when a non-size-chart modal is already open")
+    assert.equal(residualDialogResult.data?.triggerOpenMethod, "idle-click", "size chart should open normally after the residual modal is dismissed")
+    const residualTopmost = residualDialogResult.data?.triggerTopmostBeforeOpen as {
+      closed?: boolean
+      dialogText?: string
+      surfaceBeforeClose?: {
+        visibleDialogCount?: number
+      }
+      surfaceAfterClose?: {
+        visibleDialogCount?: number
+      }
+    } | undefined
+    assert.equal(
+      residualTopmost?.closed,
+      true,
+      "size chart normalization should close the topmost non-size-chart modal before opening the size chart"
+    )
+    assert.match(
+      String(residualTopmost?.dialogText ?? ""),
+      /Temu.*产品描述|产品描述/i,
+      "size chart normalization should report which residual modal was dismissed"
+    )
+    assert.ok((residualTopmost?.surfaceBeforeClose?.visibleDialogCount ?? 0) >= 1, "diagnostics should record the pre-close residual dialog")
+    assert.equal(residualTopmost?.surfaceAfterClose?.visibleDialogCount, 0, "diagnostics should record that the residual dialog was cleared")
+  } finally {
+    await browser.close()
+  }
 }
 
 run().catch((error) => {

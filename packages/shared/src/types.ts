@@ -651,6 +651,7 @@ export type DianxiaomiSelectorConfig = {
   mediaTools?: Record<string, string[]>
   mediaToolActions?: Record<string, Record<string, string[]>>
   skuRows: string[]
+  shippingWarehouse?: string
 }
 
 export type SelectorConfigGenerationResult = {

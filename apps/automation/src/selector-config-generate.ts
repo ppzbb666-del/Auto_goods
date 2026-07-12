@@ -3,7 +3,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { SelectorDiagnosisReport, SelectorMediaActionSamplingTool } from "@temu-ai-ops/shared"
 import { DEFAULT_SCREENSHOT_DIR, ensureDirectory, getArgValue, parseBoolean } from "./common"
-import type { DianxiaomiSelectorConfig } from "./selector-config"
+import { loadSelectorConfig, type DianxiaomiSelectorConfig } from "./selector-config"
 
 const getRepoRoot = () => {
   // selector-config-generate.ts lives at apps/automation/src/; go up 3 levels.
@@ -110,6 +110,7 @@ const main = () => {
   if (requireRealDianxiaomi && !isUsableRealDianxiaomiDiagnosis(report)) {
     throw new Error(`Diagnosis is not a usable real Dianxiaomi listing edit page: ${diagnosisSurfaceStatus(report)}`)
   }
+  const existingConfig = loadSelectorConfig(outputPath)
   const config: DianxiaomiSelectorConfig = {
     fields: {
       title: [firstSelector(report, "fields", "title")].filter(Boolean) as string[],
@@ -145,7 +146,8 @@ const main = () => {
         imageManagement: mediaToolActionSelectorForConfig(report, "close", "imageManagement")
       }
     },
-    skuRows: report.skuRows.ok ? ["tr, [role='row'], [class*='sku' i], [class*='table-row' i]"] : []
+    skuRows: report.skuRows.ok ? ["tr, [role='row'], [class*='sku' i], [class*='table-row' i]"] : [],
+    shippingWarehouse: existingConfig.shippingWarehouse
   }
 
   ensureDirectory(path.dirname(outputPath))

@@ -58,6 +58,7 @@ import {
   fetchSelectorConfigValidation,
   fetchSelectorWorkbench,
   fetchTasks,
+  fetchPlatformCapabilities,
   generateSelectorConfig,
   importCsvProducts,
   importExcelProducts,
@@ -96,6 +97,14 @@ import {
 import { useDashboardStore } from "./store"
 import {
   AutomationPreflightCard,
+  CatalogProductCenter,
+  ShopCenter,
+  TaskCenter,
+  RuleCenter,
+  AnalyticsCenter,
+  PublishCenter,
+  CollectionCenter,
+  MediaCenter,
   AutomationRunConfirmation,
   DailyMetric,
   DailyWorkItemList,
@@ -576,6 +585,13 @@ const resolveStoreScopeOptionFromContext = (
 export function App() {
   const { tasks, setTasks, activeTaskId, setActiveTaskId } = useDashboardStore()
   const [csvText, setCsvText] = useState(csvExample)
+  const [workspaceView, setWorkspaceView] = useState<"home" | "catalog" | "collection" | "publish" | "tasks" | "shops" | "media" | "rules" | "analytics">("home")
+  const [selectedPlatform, setSelectedPlatform] = useState("temu")
+  const platformCapabilitiesQuery = useQuery({
+    queryKey: ["platform-capabilities"],
+    queryFn: fetchPlatformCapabilities,
+    staleTime: 60_000
+  })
   const [selectedExcelFile, setSelectedExcelFile] = useState<File | null>(null)
   const [pricingDraft, setPricingDraft] = useState<PricingRules | null>(null)
   const [logisticsTiersText, setLogisticsTiersText] = useState("")
@@ -2729,7 +2745,77 @@ export function App() {
 
   return (
     <div className={showAdvancedConsole ? "app-shell advanced-mode" : "app-shell"}>
-      {showPodStudio ? (
+      <aside className="platform-sidebar">
+        <div className="platform-brand">
+          <span className="platform-brand-mark">AP</span>
+          <div>
+            <strong>AutoPilot</strong>
+            <small>多平台商品运营中台</small>
+          </div>
+        </div>
+        <nav className="platform-nav" aria-label="主导航">
+          <button className={workspaceView === "home" ? "active" : ""} onClick={() => setWorkspaceView("home")}><span>⌂</span>首页总览</button>
+          <button className={workspaceView === "catalog" ? "active" : ""} onClick={() => setWorkspaceView("catalog")}><span>□</span>商品中心</button>
+          <button className={workspaceView === "collection" ? "active" : ""} onClick={() => setWorkspaceView("collection")}><span>＋</span>采集中心</button>
+          <button className={workspaceView === "publish" ? "active" : ""} onClick={() => setWorkspaceView("publish")}><span>↗</span>发布中心</button>
+          <button className={workspaceView === "tasks" ? "active" : ""} onClick={() => setWorkspaceView("tasks")}><span>≡</span>任务中心</button>
+          <button className={workspaceView === "shops" ? "active" : ""} onClick={() => setWorkspaceView("shops")}><span>▣</span>店铺管理</button>
+          <button className={workspaceView === "media" ? "active" : ""} onClick={() => setWorkspaceView("media")}><span>◇</span>素材中心</button>
+          <button className={workspaceView === "rules" ? "active" : ""} onClick={() => setWorkspaceView("rules")}><span>⚙</span>模板与规则</button>
+          <button className={workspaceView === "analytics" ? "active" : ""} onClick={() => setWorkspaceView("analytics")}><span>⌁</span>数据分析</button>
+        </nav>
+        <div className="platform-sidebar-foot">
+          <span className={platformCapabilitiesQuery.isError ? "connection-dot offline" : "connection-dot"} />
+          <div><strong>{platformCapabilitiesQuery.isError ? "服务未连接" : "服务运行中"}</strong><small>{platformCapabilitiesQuery.isError ? "等待服务端恢复" : "Temu 自动化已连接"}</small></div>
+        </div>
+      </aside>
+      <div className="platform-main">
+        <header className="platform-topbar">
+          <div className="platform-page-title">
+            <strong>{workspaceView === "catalog" ? "商品中心" : workspaceView === "collection" ? "采集中心" : workspaceView === "publish" ? "发布中心" : workspaceView === "tasks" ? "任务中心" : workspaceView === "shops" ? "店铺管理" : workspaceView === "media" ? "素材中心" : workspaceView === "rules" ? "模板与规则" : workspaceView === "analytics" ? "数据分析" : showAdvancedConsole ? "高级控制台" : showPodStudio ? "POD 素材工具" : "首页总览"}</strong>
+            <span>统一查看商品、店铺和自动发布任务</span>
+          </div>
+          <div className="platform-context">
+            <label>
+              <span>平台</span>
+              <select value={selectedPlatform} onChange={(event) => setSelectedPlatform(event.target.value)}>
+                <option value="all">全部平台</option>
+                {(platformCapabilitiesQuery.data ?? [{ platform: "temu", displayName: "Temu", stage: "production-compatible", readEnabled: true }]).map((profile) => (
+                  <option key={profile.platform} value={profile.platform} disabled={!profile.readEnabled}>
+                    {profile.displayName}{profile.readEnabled ? "" : profile.stage === "research" ? "（研究中）" : "（规划中）"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>店铺</span>
+              <select value={selectedStoreScopeKey} onChange={(event) => handleStoreScopeChange(event.target.value)}>
+                <option value="auto">自动选择当前店铺</option>
+                <option value={ALL_STORES_SCOPE_KEY}>全部店铺</option>
+                {storeScopeOptions.map((option) => <option key={option.key} value={option.key}>{formatStoreScopeLabel(option)}</option>)}
+              </select>
+            </label>
+            <div className="platform-user"><span>管</span><div><strong>管理员</strong><small>运营工作台</small></div></div>
+          </div>
+        </header>
+        <div className="platform-content">
+      {workspaceView === "catalog" ? (
+        <CatalogProductCenter />
+      ) : workspaceView === "collection" ? (
+        <CollectionCenter onOpenLegacyTools={() => { setWorkspaceView("home"); setShowAdvancedConsole(true) }} />
+      ) : workspaceView === "publish" ? (
+        <PublishCenter onOpenLegacyFlow={() => setWorkspaceView("home")} />
+      ) : workspaceView === "tasks" ? (
+        <TaskCenter />
+      ) : workspaceView === "shops" ? (
+        <ShopCenter />
+      ) : workspaceView === "media" ? (
+        <MediaCenter onOpenPodStudio={() => { setWorkspaceView("home"); setShowPodStudio(true) }} />
+      ) : workspaceView === "rules" ? (
+        <RuleCenter />
+      ) : workspaceView === "analytics" ? (
+        <AnalyticsCenter />
+      ) : showPodStudio ? (
         <PodStudio onBack={() => setShowPodStudio(false)} />
       ) : !showAdvancedConsole ? (
         <main className="daily-workspace">
@@ -4461,6 +4547,8 @@ export function App() {
       </main>
         </>
       )}
+        </div>
+      </div>
     </div>
   )
 }

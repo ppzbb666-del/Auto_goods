@@ -3966,8 +3966,14 @@ const getSelectorConfigVersionDir = () =>
 const normalizeSelectorList = (selectors: string[] | undefined) =>
   Array.from(new Set((selectors ?? []).map((selector) => selector.trim()).filter(Boolean)))
 
+const normalizeOptionalString = (value: string | undefined) => {
+  const normalized = value?.trim()
+  return normalized || undefined
+}
+
 const normalizeSelectorConfig = (config: DianxiaomiSelectorConfig): DianxiaomiSelectorConfig => {
   const rawConfig = config as Partial<DianxiaomiSelectorConfig>
+  const shippingWarehouse = normalizeOptionalString(rawConfig.shippingWarehouse)
 
   return {
     fields: Object.fromEntries(
@@ -3987,7 +3993,8 @@ const normalizeSelectorConfig = (config: DianxiaomiSelectorConfig): DianxiaomiSe
         )
       ])
     ),
-    skuRows: normalizeSelectorList(rawConfig.skuRows)
+    skuRows: normalizeSelectorList(rawConfig.skuRows),
+    ...(shippingWarehouse ? { shippingWarehouse } : {})
   }
 }
 
@@ -4360,7 +4367,10 @@ const buildSelectorWorkbenchItem = (
   }
 }
 
-const selectorConfigFromDiagnosis = (diagnosis: SelectorDiagnosisReport): DianxiaomiSelectorConfig => ({
+const selectorConfigFromDiagnosis = (
+  diagnosis: SelectorDiagnosisReport,
+  currentConfig?: DianxiaomiSelectorConfig | null
+): DianxiaomiSelectorConfig => ({
   fields: {
     title: [firstSelector(diagnosis, "fields", "title")].filter(Boolean) as string[],
     description: [firstSelector(diagnosis, "fields", "description")].filter(Boolean) as string[],
@@ -4395,7 +4405,8 @@ const selectorConfigFromDiagnosis = (diagnosis: SelectorDiagnosisReport): Dianxi
       imageManagement: [diagnosis.mediaToolActions?.close?.imageManagement?.candidates[0]?.selectorHint].filter(Boolean) as string[]
     }
   },
-  skuRows: diagnosis.skuRows.ok ? ["tr, [role='row'], [class*='sku' i], [class*='table-row' i], [class*='row' i]"] : []
+  skuRows: diagnosis.skuRows.ok ? ["tr, [role='row'], [class*='sku' i], [class*='table-row' i], [class*='row' i]"] : [],
+  ...(currentConfig?.shippingWarehouse ? { shippingWarehouse: currentConfig.shippingWarehouse } : {})
 })
 
 const latestCandidateMatchesConfig = (
@@ -4681,7 +4692,8 @@ export const generateSelectorConfigFromLatestDiagnosis = (): SelectorConfigGener
     throw new Error(`latest selector diagnosis is not a recognized Dianxiaomi listing edit surface: ${String(diagnosis.targetSurface?.data?.surfaceStatus ?? "unknown")}`)
   }
 
-  const config = selectorConfigFromDiagnosis(diagnosis)
+  const currentConfig = getSelectorConfigStatus().config
+  const config = selectorConfigFromDiagnosis(diagnosis, currentConfig)
   const saved = writeSelectorConfig(config, `generated from diagnosis ${diagnosis.createdAt}`)
 
   return {

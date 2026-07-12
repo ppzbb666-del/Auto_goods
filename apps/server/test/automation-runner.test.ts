@@ -61,6 +61,7 @@ const {
   updateDianxiaomiProductWorkItemStatus,
   exportTaskFile,
   listTaskFileExports,
+  getSelectorConfigStatus,
   validateSelectorConfig,
   validateDianxiaomiAutomationPageUrl
 } = await import("../src/planner")
@@ -882,8 +883,15 @@ writeFileSync(target.selectorConfig, JSON.stringify({
   buttons: {
     save: ["button.save"]
   },
-  skuRows: []
+  skuRows: [],
+  shippingWarehouse: " LIVELY "
 }, null, 2), "utf8")
+
+assert.equal(
+  getSelectorConfigStatus(validSelectorConfigPath).config?.shippingWarehouse,
+  "LIVELY",
+  "server selector config normalization should preserve and trim shippingWarehouse"
+)
 
 const targetFingerprint = buildAutomationTargetFingerprint(target)
 assert.equal(targetFingerprint, buildAutomationTargetFingerprint({ ...target }), "same target input should produce the same fingerprint")

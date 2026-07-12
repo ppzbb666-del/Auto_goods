@@ -13,6 +13,8 @@
     "restore:description": "tsx src/restore-description-payload.ts",
     "probe:image-check-page-save": "tsx src/probes/probe-image-check-page-save.ts",
     "report": "tsx src/report.ts",
+    "test": "npm run test:selector-config",
+    "test:selector-config": "tsx test/selector-config-generate.test.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

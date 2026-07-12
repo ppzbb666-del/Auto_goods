@@ -2017,7 +2017,7 @@ const visibleModalCandidates = async (page: Page) => {
     ...await visibleAntModalWrapLocators(page),
     ...await visibleDialogLocators(page)
   ]) {
-    const key = await locatorIdentityKey(dialog)
+    const key = await dialogIdentityKey(dialog)
     if (!key || seen.has(key)) {
       continue
     }
@@ -2051,6 +2051,25 @@ const locatorIdentityKey = async (locator: Locator) =>
     const text = (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 80)
     return [
       element.tagName.toLowerCase(),
+      className.slice(0, 120),
+      `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)},${Math.round(rect.height)}`,
+      text
+    ].join("|")
+  }).catch(() => "")
+
+const dialogIdentityKey = async (locator: Locator) =>
+  locator.evaluate((element) => {
+    const root = element.closest(
+      ".ant-modal, .el-dialog, [role='dialog'], [aria-modal='true'], .modal, [class*='dialog' i], [class*='popup' i], [class*='layer' i], [class*='drawer' i], [class*='overlay' i]"
+    ) ?? element
+    const rect = root.getBoundingClientRect()
+    const html = root instanceof HTMLElement ? root : null
+    const className = typeof html?.className === "string"
+      ? html.className
+      : ""
+    const text = (root.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 80)
+    return [
+      root.tagName.toLowerCase(),
       className.slice(0, 120),
       `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)},${Math.round(rect.height)}`,
       text
@@ -4145,6 +4164,325 @@ const findSizeChartModal = async (page: Page) => {
   return null
 }
 
+const waitForSizeChartModal = async (page: Page, timeoutMs = 2_000) => {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const modal = await findSizeChartModal(page)
+    if (modal) {
+      return modal
+    }
+    await page.waitForTimeout(200)
+  }
+  return null
+}
+
+const clipSizeChartDiagnosticText = (value: string, maxLength = 160) => {
+  const normalized = normalizeFeedbackText(value)
+  if (normalized.length <= maxLength) {
+    return normalized
+  }
+
+  return `${normalized.slice(0, maxLength)}...`
+}
+
+const summarizeVisibleDialogsForSizeChart = async (page: Page, limit = 3) => {
+  const dialogs = await visibleModalCandidates(page)
+  const startIndex = Math.max(0, dialogs.length - limit)
+  const summaries: Array<Record<string, unknown>> = []
+
+  for (let index = startIndex; index < dialogs.length; index += 1) {
+    const dialog = dialogs[index]
+    const text = clipSizeChartDiagnosticText(await dialog.innerText().catch(() => ""))
+    const className = await dialog.evaluate((node) =>
+      node instanceof HTMLElement ? node.className : ""
+    ).catch(() => "")
+    summaries.push({
+      index,
+      className,
+      hasSizeChart: text.includes("\u5c3a\u7801\u8868"),
+      text
+    })
+  }
+
+  return {
+    visibleDialogCount: dialogs.length,
+    visibleDialogs: summaries
+  }
+}
+
+const inspectSizeChartTriggerHitTarget = async (trigger: Locator | null) => {
+  if (!trigger) {
+    return null
+  }
+
+  const boundingBox = await trigger.boundingBox().catch(() => null)
+  const text = await readVisibleText(trigger)
+  const nodeMeta = await trigger.evaluate((node) => {
+    if (!(node instanceof HTMLElement)) {
+      return null
+    }
+
+    const style = window.getComputedStyle(node)
+    const rect = node.getBoundingClientRect()
+    return {
+      tagName: node.tagName.toLowerCase(),
+      className: node.className,
+      pointerEvents: style.pointerEvents,
+      visible: !(style.display === "none" || style.visibility === "hidden" || rect.width <= 0 || rect.height <= 0)
+    }
+  }).catch((error) => ({
+    evaluateError: error instanceof Error ? error.message : String(error)
+  }))
+
+  if (!boundingBox) {
+    return {
+      text,
+      rect: null,
+      ...(nodeMeta ?? {})
+    }
+  }
+
+  const center = {
+    x: Math.round(boundingBox.x + boundingBox.width / 2),
+    y: Math.round(boundingBox.y + boundingBox.height / 2)
+  }
+  const hitTestTopElements = await trigger.page().evaluate(({ x, y }) =>
+    document.elementsFromPoint(x, y).slice(0, 5).map((element) => {
+      const html = element instanceof HTMLElement ? element : null
+      return {
+        tagName: element.tagName.toLowerCase(),
+        className: html?.className || "",
+        text: (html?.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80)
+      }
+    }),
+  center).catch(() => [] as Array<Record<string, unknown>>)
+
+  const targetSignature = `${String((nodeMeta as Record<string, unknown> | null)?.tagName ?? "")}|${String((nodeMeta as Record<string, unknown> | null)?.className ?? "")}|${text}`
+  const topSignature = hitTestTopElements[0]
+    ? `${String(hitTestTopElements[0].tagName ?? "")}|${String(hitTestTopElements[0].className ?? "")}|${String(hitTestTopElements[0].text ?? "")}`
+    : ""
+
+  return {
+    text,
+    rect: {
+      left: Math.round(boundingBox.x),
+      top: Math.round(boundingBox.y),
+      width: Math.round(boundingBox.width),
+      height: Math.round(boundingBox.height)
+    },
+    hitPoint: center,
+    hitTestTopElements,
+    topHitLooksLikeTrigger: Boolean(topSignature && topSignature === targetSignature),
+    ...(nodeMeta ?? {})
+  }
+}
+
+const collectSizeChartSurfaceDiagnostics = async (page: Page, trigger: Locator | null = null) => ({
+  currentUrl: page.url(),
+  ...(await summarizeVisibleDialogsForSizeChart(page)),
+  trigger: await inspectSizeChartTriggerHitTarget(trigger)
+})
+
+const closeTopmostNonSizeChartDialogIfPresent = async (page: Page) => {
+  const dialogs = await visibleModalCandidates(page)
+  const topmost = dialogs[dialogs.length - 1] ?? null
+  const surfaceBeforeClose = await summarizeVisibleDialogsForSizeChart(page)
+  if (!topmost) {
+    return {
+      closed: false,
+      dialogText: "",
+      reason: "no-dialog",
+      surfaceBeforeClose
+    }
+  }
+
+  const dialogText = normalizeFeedbackText(await topmost.innerText().catch(() => ""))
+  if (dialogText.includes("\u5c3a\u7801\u8868")) {
+    return {
+      closed: false,
+      dialogText,
+      reason: "size-chart-dialog",
+      surfaceBeforeClose
+    }
+  }
+
+  const closeAction = await firstVisible([
+    topmost.locator(".ant-modal-close, .el-dialog__headerbtn, .modal-close, [class*='close' i]"),
+    topmost.locator("[aria-label*='close' i]"),
+    topmost.locator("[title*='close' i]")
+  ]) ?? await findInteractiveInRootByKeywords(topmost, [
+    "\u5173\u95ed",
+    "\u53d6\u6d88",
+    "\u6211\u77e5\u9053\u4e86",
+    "\u77e5\u9053\u4e86",
+    "\u8fd4\u56de",
+    "\u7ee7\u7eed\u7f16\u8f91",
+    "\u786e\u5b9a",
+    "\u786e\u8ba4",
+    "close",
+    "cancel",
+    "back",
+    "continue",
+    "ok",
+    "confirm"
+  ]) ?? await findLastVisibleActionInRoot(topmost)
+
+  if (!closeAction) {
+    return {
+      closed: false,
+      dialogText,
+      reason: "no-close-action",
+      surfaceBeforeClose
+    }
+  }
+
+  const baselineDialogCount = Math.max(0, dialogs.length - 1)
+  await clickAfterDianxiaomiIdle(page, closeAction, 1).catch(async () => {
+    await closeAction.click({
+      force: true,
+      timeout: 5_000
+    }).catch(() => undefined)
+  })
+
+  return {
+    closed: await waitForVisibleModalCandidateCountAtMost(page, baselineDialogCount, 5_000),
+    dialogText,
+    reason: "attempted-close",
+    surfaceBeforeClose,
+    surfaceAfterClose: await summarizeVisibleDialogsForSizeChart(page)
+  }
+}
+
+const dispatchNativeMouseGesture = async (locator: Locator) =>
+  locator.evaluate((node) => {
+    if (!(node instanceof HTMLElement)) {
+      return false
+    }
+
+    node.scrollIntoView({
+      block: "center",
+      inline: "center"
+    })
+    const rect = node.getBoundingClientRect()
+    for (const type of ["mousedown", "mouseup", "click"]) {
+      node.dispatchEvent(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2
+      }))
+    }
+    return true
+  }).catch(() => false)
+
+const findSizeChartTrigger = async (page: Page) =>
+  firstVisible([
+    page.locator(".skuAttrSizeChart .link"),
+    page.locator(".skuAttrSizeChart").locator(".link, button, a, [role='button'], span.link, span[class*='link']"),
+    page.locator(".ant-form-item").filter({ hasText: /\u5c3a\u7801\u8868/ }).locator(".link, button, a, [role='button'], span.link, span[class*='link']"),
+    page.locator("button, a, [role='button'], .link, span.link, span[class*='link']").filter({
+      hasText: /\u6dfb\u52a0\u5c3a\u7801\u8868|\u65b0\u589e\u5c3a\u7801\u8868/
+    }),
+    page.getByText("\u6dfb\u52a0\u5c3a\u7801\u8868", { exact: false }),
+    page.getByText("\u65b0\u589e\u5c3a\u7801\u8868", { exact: false })
+  ])
+
+const openSizeChartModalFromTrigger = async (page: Page) => {
+  const topmostBeforeOpen = await closeTopmostNonSizeChartDialogIfPresent(page)
+  const trigger = await findSizeChartTrigger(page)
+  if (!trigger) {
+    return {
+      trigger: null,
+      triggerText: "",
+      modalRecord: null,
+      openMethod: null as string | null,
+      attempts: [] as Array<Record<string, unknown>>,
+      topmostBeforeOpen,
+      triggerSurfaceDiagnostics: null,
+      finalSurfaceDiagnostics: await collectSizeChartSurfaceDiagnostics(page, null)
+    }
+  }
+
+  const triggerText = await readVisibleText(trigger)
+  await trigger.scrollIntoViewIfNeeded().catch(() => undefined)
+  const triggerSurfaceDiagnostics = await collectSizeChartSurfaceDiagnostics(page, trigger)
+
+  const attempts: Array<Record<string, unknown>> = []
+  const openers: Array<{
+    method: "idle-click" | "force-click" | "native-mouse"
+    run: () => Promise<void>
+  }> = [
+    {
+      method: "idle-click",
+      run: async () => {
+        await clickAfterDianxiaomiIdle(page, trigger, 2)
+      }
+    },
+    {
+      method: "force-click",
+      run: async () => {
+        await trigger.click({
+          force: true,
+          timeout: 5_000
+        })
+      }
+    },
+    {
+      method: "native-mouse",
+      run: async () => {
+        const dispatched = await dispatchNativeMouseGesture(trigger)
+        if (!dispatched) {
+          throw new Error("Could not dispatch a native mouse gesture to the size chart trigger")
+        }
+      }
+    }
+  ]
+
+  for (const opener of openers) {
+    try {
+      await waitForDianxiaomiLoadingOverlayToClear(page).catch(() => false)
+      await opener.run()
+      const modalRecord = await waitForSizeChartModal(page)
+      attempts.push({
+        method: opener.method,
+        outcome: modalRecord ? "opened" : "no-modal",
+        surfaceDiagnostics: modalRecord ? undefined : await collectSizeChartSurfaceDiagnostics(page, trigger)
+      })
+      if (modalRecord) {
+        return {
+          trigger,
+          triggerText,
+          modalRecord,
+          openMethod: opener.method,
+          attempts,
+          topmostBeforeOpen,
+          triggerSurfaceDiagnostics,
+          finalSurfaceDiagnostics: await collectSizeChartSurfaceDiagnostics(page, trigger)
+        }
+      }
+    } catch (error) {
+      attempts.push({
+        method: opener.method,
+        outcome: "error",
+        error: error instanceof Error ? error.message : String(error),
+        surfaceDiagnostics: await collectSizeChartSurfaceDiagnostics(page, trigger)
+      })
+    }
+  }
+
+  return {
+    trigger,
+    triggerText,
+    modalRecord: null,
+    openMethod: null as string | null,
+    attempts,
+    topmostBeforeOpen,
+    triggerSurfaceDiagnostics,
+    finalSurfaceDiagnostics: await collectSizeChartSurfaceDiagnostics(page, trigger)
+  }
+}
+
 // Temu rejects a listing when its volumetric weight exceeds the actual weight:
 //   接口报错：材积重量大于实际重量，无法录入，请调整体积或者重量
 // This is a UNIVERSAL Temu shipping rule every customer hits, not a per-product
@@ -4282,37 +4620,44 @@ export const normalizeSkuLogistics = async (page: Page) => {
   )
 }
 
-const normalizeSizeChart = async (page: Page) => {
+export const normalizeSizeChart = async (page: Page) => {
   const openDialogCount = (await visibleAntModalLocators(page)).length
   const existingModal = await findSizeChartModal(page)
   const baselineDialogCount = existingModal ? Math.max(0, openDialogCount - 1) : openDialogCount
   let openedByTrigger = false
   let triggerText = ""
   let modalRecord = existingModal
+  let triggerOpenMethod: string | null = null
+  let triggerOpenAttempts: Array<Record<string, unknown>> = []
+  let triggerTopmostBeforeOpen: Record<string, unknown> | null = null
+  let triggerSurfaceDiagnostics: Record<string, unknown> | null = null
+  let triggerFinalSurfaceDiagnostics: Record<string, unknown> | null = null
 
   if (!modalRecord) {
-    const trigger = await firstVisible([
-      page.locator(".skuAttrSizeChart .link"),
-      page.locator(".ant-form-item").filter({ hasText: /\u5c3a\u7801\u8868/ }).locator(".link"),
-      page.getByText("\u6dfb\u52a0\u5c3a\u7801\u8868", { exact: false }),
-      page.getByText("\u65b0\u589e\u5c3a\u7801\u8868", { exact: false })
-    ])
+    const opened = await openSizeChartModalFromTrigger(page)
+    triggerText = opened.triggerText
+    triggerOpenMethod = opened.openMethod
+    triggerOpenAttempts = opened.attempts
+    triggerTopmostBeforeOpen = opened.topmostBeforeOpen ?? null
+    triggerSurfaceDiagnostics = opened.triggerSurfaceDiagnostics ?? null
+    triggerFinalSurfaceDiagnostics = opened.finalSurfaceDiagnostics ?? null
 
-    if (!trigger) {
+    if (!opened.trigger) {
       return stepResult(
         "normalize-size-chart",
         "Normalize size chart",
         "skipped",
-        "No size chart trigger is visible on the current Dianxiaomi page"
+        "No size chart trigger is visible on the current Dianxiaomi page",
+        {
+          triggerTopmostBeforeOpen,
+          triggerSurfaceDiagnostics,
+          triggerFinalSurfaceDiagnostics
+        }
       )
     }
 
-    triggerText = await readVisibleText(trigger)
-    await trigger.scrollIntoViewIfNeeded()
-    await trigger.click()
     openedByTrigger = true
-    await page.waitForTimeout(800)
-    modalRecord = await findSizeChartModal(page)
+    modalRecord = opened.modalRecord
   }
 
   if (!modalRecord) {
@@ -4323,7 +4668,12 @@ const normalizeSizeChart = async (page: Page) => {
       "Clicked the size chart trigger but no size chart modal became visible",
       {
         openedByTrigger,
-        triggerText
+        triggerText,
+        triggerOpenMethod,
+        triggerOpenAttempts,
+        triggerTopmostBeforeOpen,
+        triggerSurfaceDiagnostics,
+        triggerFinalSurfaceDiagnostics
       }
     )
   }
@@ -4407,6 +4757,11 @@ const normalizeSizeChart = async (page: Page) => {
       {
         openedByTrigger,
         triggerText,
+        triggerOpenMethod,
+        triggerOpenAttempts,
+        triggerTopmostBeforeOpen,
+        triggerSurfaceDiagnostics,
+        triggerFinalSurfaceDiagnostics,
         templateName,
         sizeCategoryText,
         templateHints,
@@ -4431,6 +4786,11 @@ const normalizeSizeChart = async (page: Page) => {
       {
         openedByTrigger,
         triggerText,
+        triggerOpenMethod,
+        triggerOpenAttempts,
+        triggerTopmostBeforeOpen,
+        triggerSurfaceDiagnostics,
+        triggerFinalSurfaceDiagnostics,
         templateName,
         sizeCategoryText,
         templateHints,
@@ -4457,6 +4817,11 @@ const normalizeSizeChart = async (page: Page) => {
       {
         openedByTrigger,
         triggerText,
+        triggerOpenMethod,
+        triggerOpenAttempts,
+        triggerTopmostBeforeOpen,
+        triggerSurfaceDiagnostics,
+        triggerFinalSurfaceDiagnostics,
         templateName,
         sizeCategoryText,
         templateHints,
@@ -4483,6 +4848,11 @@ const normalizeSizeChart = async (page: Page) => {
     {
       openedByTrigger,
       triggerText,
+      triggerOpenMethod,
+      triggerOpenAttempts,
+      triggerTopmostBeforeOpen,
+      triggerSurfaceDiagnostics,
+      triggerFinalSurfaceDiagnostics,
       templateName,
       sizeCategoryText,
       templateHints,
@@ -10623,7 +10993,7 @@ const visibleDialogLocators = async (page: Page) => {
       if (!await isLikelyDialogContainer(item)) {
         continue
       }
-      const key = await locatorIdentityKey(item)
+      const key = await dialogIdentityKey(item)
       if (!key || seen.has(key)) {
         continue
       }
@@ -10636,7 +11006,7 @@ const visibleDialogLocators = async (page: Page) => {
     if (!await isLikelyDialogContainer(item)) {
       continue
     }
-    const key = await locatorIdentityKey(item)
+    const key = await dialogIdentityKey(item)
     if (!key || seen.has(key)) {
       continue
     }
@@ -13484,13 +13854,13 @@ const closeImageCheckDialogIfPresent = async (page: Page) => {
       return false
     }
 
-    const targetKey = await locatorIdentityKey(targetDialog)
+    const targetKey = await dialogIdentityKey(targetDialog)
     const topmost = candidates[candidates.length - 1] ?? null
     if (!topmost) {
       return false
     }
 
-    const topmostKey = await locatorIdentityKey(topmost)
+    const topmostKey = await dialogIdentityKey(topmost)
     if (!targetKey || !topmostKey || topmostKey === targetKey) {
       return false
     }

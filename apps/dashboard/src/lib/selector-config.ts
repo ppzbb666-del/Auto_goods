@@ -17,16 +17,21 @@ export const isFieldOrButtonSelectorItem = (
 export const normalizeSelectorList = (selectors: string[] | undefined) =>
   Array.from(new Set((selectors ?? []).map((selector) => selector.trim()).filter(Boolean)))
 
-export const cloneSelectorConfig = (config: DianxiaomiSelectorConfig | null | undefined): DianxiaomiSelectorConfig => ({
-  fields: Object.fromEntries(Object.entries(config?.fields ?? {}).map(([key, selectors]) => [key, normalizeSelectorList(selectors)])),
-  buttons: Object.fromEntries(Object.entries(config?.buttons ?? {}).map(([key, selectors]) => [key, normalizeSelectorList(selectors)])),
-  mediaTools: Object.fromEntries(Object.entries(config?.mediaTools ?? {}).map(([key, selectors]) => [key, normalizeSelectorList(selectors)])),
-  mediaToolActions: Object.fromEntries(Object.entries(config?.mediaToolActions ?? {}).map(([action, tools]) => [
-    action,
-    Object.fromEntries(Object.entries(tools ?? {}).map(([key, selectors]) => [key, normalizeSelectorList(selectors)]))
-  ])),
-  skuRows: normalizeSelectorList(config?.skuRows)
-})
+export const cloneSelectorConfig = (config: DianxiaomiSelectorConfig | null | undefined): DianxiaomiSelectorConfig => {
+  const shippingWarehouse = config?.shippingWarehouse?.trim()
+
+  return {
+    fields: Object.fromEntries(Object.entries(config?.fields ?? {}).map(([key, selectors]) => [key, normalizeSelectorList(selectors)])),
+    buttons: Object.fromEntries(Object.entries(config?.buttons ?? {}).map(([key, selectors]) => [key, normalizeSelectorList(selectors)])),
+    mediaTools: Object.fromEntries(Object.entries(config?.mediaTools ?? {}).map(([key, selectors]) => [key, normalizeSelectorList(selectors)])),
+    mediaToolActions: Object.fromEntries(Object.entries(config?.mediaToolActions ?? {}).map(([action, tools]) => [
+      action,
+      Object.fromEntries(Object.entries(tools ?? {}).map(([key, selectors]) => [key, normalizeSelectorList(selectors)]))
+    ])),
+    skuRows: normalizeSelectorList(config?.skuRows),
+    ...(shippingWarehouse ? { shippingWarehouse } : {})
+  }
+}
 
 export const createSelectorConfigDraft = (workbench: SelectorWorkbench): DianxiaomiSelectorConfig => {
   const draft = cloneSelectorConfig(workbench.config.config)

@@ -4,6 +4,10 @@ import cors from "@fastify/cors"
 import multipart from "@fastify/multipart"
 import Fastify from "fastify"
 import { z } from "zod"
+import { getCatalogProductFromTasks, listCatalogProductsFromTasks } from "./catalog"
+import { getPlatformCapability, listPlatformCapabilities } from "./platform-registry"
+import { getShopAccountSummary, shopAccountsFromDianxiaomiMetrics } from "./shop-catalog"
+import { getPublishingTaskSummary, listPublishingTaskSummaries } from "./publishing-task-catalog"
 import {
   CSV_IMPORT_TEMPLATE,
   createManualProductTask,
@@ -643,7 +647,68 @@ app.get("/health", async () => ({
   service: "temu-ai-ops-server"
 }))
 
+app.get("/platforms/capabilities", async () => listPlatformCapabilities())
+
+app.get("/platforms/:platform/capabilities", async (request, reply) => {
+  const params = z.object({
+    platform: z.enum(["temu", "tiktok-shop", "shopee", "amazon"])
+  }).parse(request.params)
+  const profile = getPlatformCapability(params.platform)
+  if (!profile) {
+    reply.code(404)
+    return { message: "platform capability profile not found" }
+  }
+  return profile
+})
+
+app.get("/shops", async () => shopAccountsFromDianxiaomiMetrics(listDianxiaomiStoreMetrics()))
+
+app.get("/shops/:accountId", async (request, reply) => {
+  const params = z.object({ accountId: z.string().min(1) }).parse(request.params)
+  const summary = getShopAccountSummary(
+    shopAccountsFromDianxiaomiMetrics(listDianxiaomiStoreMetrics()),
+    params.accountId
+  )
+  if (!summary) {
+    reply.code(404)
+    return { message: "shop account not found" }
+  }
+  return summary
+})
+
+app.get("/publishing/tasks", async () => listPublishingTaskSummaries(listTasks()))
+
+app.get("/publishing/tasks/:taskId", async (request, reply) => {
+  const params = z.object({ taskId: z.string().min(1) }).parse(request.params)
+  const task = getPublishingTaskSummary(listTasks(), params.taskId)
+  if (!task) {
+    reply.code(404)
+    return { message: "publishing task not found" }
+  }
+  return task
+})
+
 app.get("/tasks", async () => listTasks())
+
+app.get("/catalog/products", async (request) => {
+  const query = z.object({
+    search: z.string().optional(),
+    source: z.enum(["1688", "manual", "csv", "erp", "platform"]).optional(),
+    limit: z.coerce.number().int().positive().max(500).default(100)
+  }).parse(request.query)
+
+  return listCatalogProductsFromTasks(listTasks(), query)
+})
+
+app.get("/catalog/products/:productId", async (request, reply) => {
+  const params = z.object({ productId: z.string().min(1) }).parse(request.params)
+  const product = getCatalogProductFromTasks(listTasks(), params.productId)
+  if (!product) {
+    reply.code(404)
+    return { message: "catalog product not found" }
+  }
+  return product
+})
 
 app.get("/tasks/active", async (request, reply) => {
   const query = z.object({

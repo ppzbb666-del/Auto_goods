@@ -10,6 +10,6 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx test/pricing.test.ts && tsx test/automation-scope.test.ts && tsx test/llm-content.test.ts && tsx test/content.test.ts && tsx test/dianxiaomi-image-check.test.ts && tsx test/mock.test.ts"
+    "test": "tsx test/pricing.test.ts && tsx test/automation-scope.test.ts && tsx test/llm-content.test.ts && tsx test/content.test.ts && tsx test/dianxiaomi-image-check.test.ts && tsx test/mock.test.ts && tsx test/legacy-platform-mapping.test.ts"
   }
 }

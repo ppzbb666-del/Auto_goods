@@ -1,6 +1,6 @@
 # Current Status
 
-Updated: 2026-07-05
+Updated: 2026-07-08
 
 ## 当前卡点（先看这里）
 
@@ -663,10 +663,10 @@ Next, continue hardening the unattended publish success/failure loop: add route-
 **绿样本证据：**
 - **896984**（宠物绒衣）：`publishOutcome.succeeded / route:published`，dxmState **offline/publishFail → online/publishSuccess**（poll 7 次确认），submit「产品已提交发布」。item → `edited`。artifact `automation-full-flow-2026-07-07T04-39-30-523Z`。
 - **896488**（棉花娃娃，**62-SKU**）：同样 submit「产品已提交发布」/succeeded，item → `edited`。**注意：62-SKU 这次 fill+save+submit 全程跑通没 OOM 崩**（全程 free mem ~3.2–3.5GB 稳住），此前 62-SKU 是 fill→save 崩溃高危区——本次未复现。artifact `automation-full-flow-2026-07-07T04-53-26-692Z`。
-- **896128**（Women Lingerie）：❌ blocked，`fill-draft failed: 1`——**size-chart 点击超时**（`.skuAttrSizeChart .link` click Timeout 15s），崩在 `normalizeSizeChart`，**没到 shipping 步骤**，与本轮 shipping/重量修复无关。8-SKU 非 OOM。按分类干净停在 blocked，未反复重试。
+- **896128**（Women Lingerie）：此前真实阻塞点是 `normalizeSizeChart` 打不开尺码表，历史报错表现为 `.skuAttrSizeChart .link` click Timeout 15s，**没到 shipping 步骤**，与本轮 shipping/重量修复无关。8-SKU 非 OOM。现已在适配层补上两层修复：① size-chart 触发器增加 `idle-click -> force-click -> native mouse gesture` 三段回退；② 打开尺码表前先清理顶层残留的非尺码表弹窗（已在真实报错截图中确认过 `Temu产品描述` 会挡住后续点击）。另外，本地还补强了失败现场诊断：现在会记录触发器点击点上方命中的元素、打开前后的可见弹窗摘要、每次回退尝试后的页面状态。对应烟测已覆盖这两类场景与新增诊断，待下一次真机复跑确认 896128 解锁。
 
 **下一步优先级（更新）：**
-1. **[P0] 女装/内衣类 size-chart 点击超时**：`.skuAttrSizeChart .link` 在某些品类点不动（896128 lingerie 崩这里）。查该品类 size-chart 触发器结构差异 + 加超时/回退。这是现在挡在扩池前的墙。
+1. **[P0] 复跑验证女装/内衣类 size-chart 修复是否真机解锁**：896128 的历史卡点已定位成两类具体问题并已本地修复（触发器点击被拦截、残留非尺码表弹窗挡住流程）。下一步不是继续猜 selector，而是用真实页面复跑确认这条链路已经打通；若通过，就可以继续扩池。
 2. **[P1] shippingWarehouse 配置持久化**：`real-calibration` 重生成 selector-config 会丢 `shippingWarehouse`——需让校准保留它，或换个持久化位置（否则每次校准后要重设 LIVELY）。
 3. **[P1] 62-SKU OOM**：本次未复现，但仍是已知高危；layer-2 单会话方案继续。
 4. **[P2] LLM 品类映射兜底 TODO**；批量扩池（绿样本机制已通用化，可推广到更大账号池）。
