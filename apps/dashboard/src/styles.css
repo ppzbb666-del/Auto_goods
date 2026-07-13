@@ -32,23 +32,205 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 232px 1fr;
+  align-items: start;
   min-height: 100vh;
   min-width: 0;
   gap: 22px;
   padding: 22px;
 }
 
-.daily-workspace {
-  grid-column: 1 / -1;
-  display: grid;
-  gap: 12px;
+.app-view {
+  min-width: 0;
+}
+
+.app-view.view-daily,
+.app-view.view-pod {
   width: min(1180px, 100%);
   margin: 0 auto;
 }
 
+.app-view.view-advanced {
+  width: 100%;
+}
+
+.daily-workspace {
+  display: grid;
+  gap: 12px;
+}
+
+.advanced-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  align-items: start;
+  gap: 22px;
+  min-width: 0;
+}
+
 .pod-workspace {
   width: min(1320px, 100%);
+}
+
+/* 常驻左侧导航栏 */
+.app-nav-rail {
+  position: sticky;
+  top: 22px;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-height: calc(100vh - 44px);
+  padding: 18px 14px;
+  background: var(--card-strong);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  box-shadow: 0 18px 40px rgba(84, 57, 34, 0.08);
+}
+
+.app-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.app-nav-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+  font-size: 16px;
+}
+
+.app-nav-brand strong {
+  display: block;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.app-nav-brand span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.app-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.app-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.app-nav-item:hover {
+  background: var(--accent-soft);
+}
+
+.app-nav-item.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+.app-nav-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  font-size: 16px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.app-nav-item.active .app-nav-icon {
+  color: var(--accent-dark);
+}
+
+.app-nav-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.app-nav-text strong {
+  font-size: 13px;
+}
+
+.app-nav-text span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.app-nav-item.active .app-nav-text span {
+  color: var(--accent-dark);
+}
+
+.app-nav-status {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.app-nav-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+
+.app-nav-status.running {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+.app-nav-status.running .app-nav-status-dot {
+  background: var(--accent);
+}
+
+.app-nav-status.warn {
+  border-color: #d9a441;
+  color: #8a5a12;
+}
+
+.app-nav-status.warn .app-nav-status-dot {
+  background: #d9a441;
+}
+
+.app-nav-status.blocked {
+  border-color: #d98a7a;
+  color: #a23c28;
+}
+
+.app-nav-status.blocked .app-nav-status-dot {
+  background: #d0503a;
+}
+
+.app-nav-status.idle .app-nav-status-dot {
+  background: var(--accent);
 }
 
 .daily-console,
@@ -1258,155 +1440,6 @@ button {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
-}
-
-.app-shell.advanced-mode {
-  align-items: start;
-  gap: 12px;
-  padding: 12px;
-  background: #fff;
-}
-
-.app-shell.advanced-mode .sidebar,
-.app-shell.advanced-mode .workspace {
-  gap: 8px;
-}
-
-.app-shell.advanced-mode .brand-panel,
-.app-shell.advanced-mode .queue-panel,
-.app-shell.advanced-mode .hero-panel,
-.app-shell.advanced-mode .summary-card,
-.app-shell.advanced-mode .panel,
-.app-shell.advanced-mode .advanced-console-bar,
-.app-shell.advanced-mode .queue-item,
-.app-shell.advanced-mode .sku-item,
-.app-shell.advanced-mode .flow-item,
-.app-shell.advanced-mode .explain-item {
-  border: 1px solid #d9d9d9;
-  border-radius: 0;
-  box-shadow: none;
-  background: #fff;
-}
-
-.app-shell.advanced-mode .brand-panel,
-.app-shell.advanced-mode .queue-panel,
-.app-shell.advanced-mode .hero-panel,
-.app-shell.advanced-mode .panel {
-  padding: 12px;
-}
-
-.app-shell.advanced-mode .hero-panel {
-  display: block;
-  align-items: flex-start;
-}
-
-.app-shell.advanced-mode .summary-grid,
-.app-shell.advanced-mode .main-grid {
-  gap: 8px;
-}
-
-.app-shell.advanced-mode .summary-card {
-  padding: 10px 12px;
-}
-
-.app-shell.advanced-mode .queue-list,
-.app-shell.advanced-mode .sku-list,
-.app-shell.advanced-mode .flow-list,
-.app-shell.advanced-mode .explain-list,
-.app-shell.advanced-mode .report-list {
-  gap: 4px;
-}
-
-.app-shell.advanced-mode .queue-item.active {
-  border-color: #999;
-  background: #fff;
-}
-
-.app-shell.advanced-mode .primary-button,
-.app-shell.advanced-mode .ghost-button,
-.app-shell.advanced-mode .tag-chip,
-.app-shell.advanced-mode .risk-pill {
-  border-radius: 0;
-}
-
-.app-shell.advanced-mode .primary-button,
-.app-shell.advanced-mode .ghost-button {
-  padding: 8px 10px;
-  border: 1px solid #bfbfbf;
-  background: #f5f5f5;
-  color: #222;
-  font-weight: 400;
-}
-
-.app-shell.advanced-mode .primary-button {
-  background: #f5f5f5;
-  color: #222;
-}
-
-.app-shell.advanced-mode .small-button {
-  padding: 6px 8px;
-  font-size: 12px;
-}
-
-.app-shell.advanced-mode .advanced-console-bar {
-  padding: 8px 10px;
-}
-
-.app-shell.advanced-mode .advanced-console-bar span,
-.app-shell.advanced-mode .subtle,
-.app-shell.advanced-mode .queue-head p,
-.app-shell.advanced-mode .summary-card span,
-.app-shell.advanced-mode .summary-card p {
-  color: #555;
-}
-
-.app-shell.advanced-mode .eyebrow {
-  color: #666;
-  letter-spacing: 0;
-}
-
-.app-shell.advanced-mode .tag-chip,
-.app-shell.advanced-mode .risk-pill {
-  padding: 4px 8px;
-  border: 1px solid #d9d9d9;
-  background: #fff;
-  color: #333;
-  font-weight: 400;
-}
-
-.app-shell.advanced-mode .csv-import-box,
-.app-shell.advanced-mode .compact-textarea,
-.app-shell.advanced-mode .pricing-form input,
-.app-shell.advanced-mode .pricing-form .rule-toggle {
-  border-radius: 0;
-  background: #fff;
-}
-
-.app-shell.advanced-mode .queue-list {
-  margin-top: 10px;
-}
-
-.app-shell.advanced-mode .queue-item,
-.app-shell.advanced-mode .sku-item,
-.app-shell.advanced-mode .flow-item,
-.app-shell.advanced-mode .explain-item {
-  padding: 10px;
-}
-
-.app-shell.advanced-mode .panel-head,
-.app-shell.advanced-mode .queue-head {
-  margin-bottom: 10px;
-}
-
-.app-shell.advanced-mode .split-head {
-  align-items: flex-start;
-}
-
-.app-shell.advanced-mode .hero-actions,
-.app-shell.advanced-mode .review-actions,
-.app-shell.advanced-mode .task-export-actions,
-.app-shell.advanced-mode .daily-status-strip {
-  gap: 6px;
 }
 
 .sidebar,

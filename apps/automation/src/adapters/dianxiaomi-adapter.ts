@@ -1801,10 +1801,7 @@ const SAVE_BUTTON_KEYWORDS = [
   "\u4fdd\u5b58",
   "\u6682\u5b58",
   "save draft",
-  "save",
-  "娣囨繂鐡ㄩ懡澶岊焾",
-  "娣囨繂鐡?",
-  "閺嗗倸鐡?"
+  "save"
 ]
 
 const SUBMIT_BUTTON_KEYWORDS = [
@@ -1814,9 +1811,6 @@ const SUBMIT_BUTTON_KEYWORDS = [
   "\u520a\u767b",
   "submit",
   "publish",
-  "閸欐垵绔?",
-  "閹绘劒姘?",
-  "缁斿宓嗛崚濠勬"
 ]
 
 const LOGIN_OR_CAPTCHA_KEYWORDS = [
@@ -4142,8 +4136,8 @@ const findTitleFields = async (page: Page, config?: DianxiaomiSelectorConfig) =>
 const fillTitleFields = async (page: Page, value: string, config?: DianxiaomiSelectorConfig) => {
   const fields = await findTitleFields(page, config)
   if (fields.length === 0) {
-    console.warn("鏈壘鍒板瓧娈碉細title")
-    return stepResult("fill-title", "濉啓 title", "failed", "鏈壘鍒板瓧娈碉細title")
+    console.warn("未找到字段：title")
+    return stepResult("fill-title", "填写 title", "failed", "未找到字段：title")
   }
 
   const expected = value.trim()
@@ -4161,7 +4155,7 @@ const fillTitleFields = async (page: Page, value: string, config?: DianxiaomiSel
   if (mismatchCount > 0) {
     return stepResult(
       "write-verify-failed-title",
-      "濉啓 title (楠岃瘉澶辫触)",
+      "填写 title (验证失败)",
       "failed",
       `Title was filled but ${mismatchCount}/${fields.length} DOM value(s) did not match the expected text`,
       {
@@ -4173,12 +4167,12 @@ const fillTitleFields = async (page: Page, value: string, config?: DianxiaomiSel
     )
   }
 
-  console.log(`宸插～鍐欏瓧娈碉細title (${fields.length})`)
+  console.log(`已填写字段：title (${fields.length})`)
   return stepResult(
     "fill-title",
-    "濉啓 title",
+    "填写 title",
     "done",
-    `宸插～鍐欏瓧娈碉細title (${fields.length})`,
+    `已填写字段：title (${fields.length})`,
     {
       filledTitleFields: fields.length,
       actualPreviews: previews
@@ -5637,7 +5631,7 @@ const fillVariantRemapStageTwoTabs = async (
         updateBest(2_250 - Math.abs(normalizedOption.length - normalizedTarget.length) * 10, "contains-target")
       }
 
-      if (tab.text === "棰滆壊") {
+      if (tab.text === "颜色") {
         const optionColor = normalizeColorMatchText(optionText)
         const targetColor = normalizeColorMatchText(targetText)
         if (optionColor && targetColor && optionColor === targetColor) {
@@ -8412,10 +8406,10 @@ const clearSkuImageCellStable = async (page: Page, cell: Locator, maxRemovals = 
 
 const findSkuChooseButton = async (cell: Locator) =>
   firstVisible([
-    cell.getByRole("button", { name: /閫夋嫨鍥剧墖/i }),
-    cell.locator("button").filter({ hasText: /閫夋嫨鍥剧墖/ }),
-    cell.locator("[role='button']").filter({ hasText: /閫夋嫨鍥剧墖/ }),
-    cell.locator(".ant-btn").filter({ hasText: /閫夋嫨鍥剧墖/ }),
+    cell.getByRole("button", { name: /选择图片/i }),
+    cell.locator("button").filter({ hasText: /选择图片/ }),
+    cell.locator("[role='button']").filter({ hasText: /选择图片/ }),
+    cell.locator(".ant-btn").filter({ hasText: /选择图片/ }),
     cell.locator("button"),
     cell.locator("[role='button']"),
     cell.locator(".ant-btn")
@@ -8589,7 +8583,7 @@ const openSkuImageNetworkDialogStable = async (page: Page, cell: Locator) => {
     }
     await page.waitForTimeout(400 + attempt * 200)
 
-    const networkClicked = await clickVisibleMenuItemByKeywords(page, ["缃戠粶鍥剧墖", "缃戠粶鍦板潃", "url"], 3)
+    const networkClicked = await clickVisibleMenuItemByKeywords(page, ["网络图片", "网络地址", "url"], 3)
     if (!networkClicked) {
       continue
     }
@@ -10106,7 +10100,7 @@ const clickDianxiaomiSubmitAction = async (
   }
 
   const configured = await findByConfiguredSelectors(page, config.buttons?.submit)
-  const submitButton = configured ?? await findButtonByKeywords(page, ["\u53d1\u5e03", "\u63d0\u4ea4", "\u7acb\u5373\u520a\u767b", "submit", "publish"], config.buttons?.submit)
+  const submitButton = configured ?? await findButtonByKeywords(page, ["发布", "提交", "立即刊登", "submit", "publish"], config.buttons?.submit)
   if (!submitButton) {
     return result
   }
@@ -10264,12 +10258,6 @@ const SAVE_DRAFT_FAILURE_KEYWORDS = [
   "草稿保存失败",
   "保存出错",
   "保存异常",
-  "閿欒",
-  "璇峰畬鍠?",
-  "涓嶈兘涓虹┖",
-  "蹇呭～",
-  "璇烽€夋嫨",
-  "璇峰～鍐?",
   "save failed",
   "draft save failed",
   "save error",
@@ -15298,8 +15286,8 @@ export const inspectPublishSurface = async (
     ))
   }
 
-  const saveButton = await findButtonByKeywords(page, ["淇濆瓨鑽夌", "淇濆瓨", "鏆傚瓨", "save draft", "save"], config.buttons?.save)
-  const submitButton = await findButtonByKeywords(page, ["鍙戝竷", "鎻愪氦", "绔嬪嵆鍒婄櫥", "submit", "publish"], config.buttons?.submit)
+  const saveButton = await findButtonByKeywords(page, ["保存草稿", "保存", "暂存", "save draft", "save"], config.buttons?.save)
+  const submitButton = await findButtonByKeywords(page, ["发布", "提交", "立即刊登", "submit", "publish"], config.buttons?.submit)
   results.push(stepResult(
     "inspect-save-button",
     "Inspect save button",

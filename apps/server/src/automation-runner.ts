@@ -4611,7 +4611,7 @@ export const classifyDianxiaomiWorkFailure = (reason, source = "queue-daemon"): 
         source: source as DianxiaomiWorkFailureDiagnosis["source"],
         updatedAt: new Date().toISOString()
     };
-    if (includesAny(["login", "captcha", "verify", "verification", "楠岃瘉鐮?", "验证码", "登录", "鐧诲綍"])) {
+    if (includesAny(["login", "captcha", "verify", "verification", "验证码", "登录"])) {
         return {
             ...base,
             category: "login-or-captcha",

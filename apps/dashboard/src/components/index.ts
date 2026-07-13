@@ -19,6 +19,8 @@ export {
   SubmitListingJobCard
 } from "./jobs"
 export { DianxiaomiAccountScanPool } from "./account-scan-pool"
+export { AppNavRail } from "./app-nav-rail"
+export type { AppView } from "./app-nav-rail"
 export { PodStudio } from "./pod-studio"
 export {
   QueueDaemonCard,

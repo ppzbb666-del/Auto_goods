@@ -2278,7 +2278,7 @@ const buildCollectedProduct = () => {
 
 const buildProductWorkItem = () => {
   const scan = scanPage()
-  const titleField = findEditableFields("title", ["鏍囬", "鍟嗗搧鏍囬", "title"])[0]
+  const titleField = findEditableFields("title", ["标题", "商品标题", "title"])[0]
   const title = getFieldValue(titleField) || document.querySelector("h1")?.textContent?.trim() || document.title || "Dianxiaomi product"
   const attributes = collectAttributeText()
   const images = collectImages()
