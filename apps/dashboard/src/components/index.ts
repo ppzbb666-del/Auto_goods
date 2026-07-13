@@ -21,6 +21,7 @@ export {
 export { DianxiaomiAccountScanPool } from "./account-scan-pool"
 export { AppNavRail } from "./app-nav-rail"
 export type { AppView } from "./app-nav-rail"
+export { TaskInsightsDock } from "./task-insights-dock"
 export { PodStudio } from "./pod-studio"
 export {
   QueueDaemonCard,

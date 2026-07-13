@@ -121,6 +121,7 @@ import {
   SubmitListingJobCard,
   SummaryCard,
   TargetSurfaceSummary,
+  TaskInsightsDock,
   TaskSnapshotDiffPreview,
   PodStudio,
   UnattendedStartupCheckCard
@@ -627,6 +628,7 @@ export function App() {
   const [automationQueueDaemonMaxFailures, setAutomationQueueDaemonMaxFailures] = useState("3")
   const [activeView, setActiveView] = useState<"daily" | "advanced" | "pod">("daily")
   const [advancedTab, setAdvancedTab] = useState<"work" | "intake" | "config" | "diagnostics">("work")
+  const [workDetailTab, setWorkDetailTab] = useState<"detail" | "automation">("detail")
   const [showDailyDetails, setShowDailyDetails] = useState(false)
   const [selectedStoreScopeKey, setSelectedStoreScopeKey] = useState("auto")
   const [selectedQueueProductScopeMode, setSelectedQueueProductScopeMode] = useState<QueueProductScopeMode>("ready-queue")
@@ -3257,6 +3259,14 @@ export function App() {
               <SummaryCard label="执行进度" value={String(progress) + "%"} detail="根据任务步骤完成情况计算" />
             </section>
 
+            <div className="work-subtabs">
+              <button type="button" className={"work-subtab " + (workDetailTab === "detail" ? "active" : "")} onClick={() => setWorkDetailTab("detail")}>商品详情</button>
+              <button type="button" className={"work-subtab " + (workDetailTab === "automation" ? "active" : "")} onClick={() => setWorkDetailTab("automation")}>自动化报告</button>
+            </div>
+
+            {workDetailTab === "detail" ? (
+              <>
+
             <section className="main-grid">
               <article className="panel">
                 <div className="panel-head"><h3>AI 上品方案</h3></div>
@@ -3406,35 +3416,10 @@ export function App() {
                   </div>
                 </div>
               </article>
-
-              <article className="panel">
-                <div className="panel-head"><h3>执行步骤</h3></div>
-                <div className="flow-list">
-                  {activeTask.steps.map((step) => (
-                    <div key={step.id} className={"flow-item step-" + step.status}>
-                      <strong>{step.title}</strong>
-                      <p>{step.instruction}</p>
-                      <span>{step.status}</span>
-                    </div>
-                  ))}
-                </div>
-              </article>
             </section>
 
-            <section className="bottom-grid">
-              <article className="panel">
-                <div className="panel-head"><h3>核价说明</h3></div>
-                <div className="explain-list">{activeTask.pricing.rationale.map((item) => <div key={item} className="explain-item">{item}</div>)}</div>
-              </article>
-              <article className="panel">
-                <div className="panel-head"><h3>风险提醒</h3></div>
-                <div className="risk-list-simple">
-                  {activeTask.risks.length > 0
-                    ? activeTask.risks.map((risk) => <div key={risk.id} className={"risk-pill " + risk.level}>{risk.message}</div>)
-                    : <div className="empty-report">暂无风险提醒</div>}
-                </div>
-              </article>
-            </section>
+              </>
+            ) : (
 
             <section className="panel">
               <div className="panel-head split-head">
@@ -3978,6 +3963,8 @@ export function App() {
                 }) : <div className="empty-report">暂无自动化执行报告。</div>}
               </div>
             </section>
+            )}
+            <TaskInsightsDock task={activeTask} />
                   </>
                 ) : (
           <section className="hero-panel">
