@@ -9,10 +9,9 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "baseUrl": ".",
     "paths": {
       "@temu-ai-ops/shared": [
-        "packages/shared/src"
+        "./packages/shared/src"
       ]
     }
   }
