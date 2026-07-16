@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx test/automation-runner.test.ts && tsx test/profile-lock-archive-route.test.ts",
+    "test": "tsx test/automation-runner.test.ts && tsx test/profile-lock-archive-route.test.ts && tsx test/ai-generation-route.test.ts",
     "test:size-chart-cleanup": "tsx test/fill-draft-size-chart-cleanup.smoke.ts",
     "test:smoke": "tsx test/automation-safety-smoke.ts",
     "test:shared-profile": "tsx test/shared-profile-queue-run.smoke.ts"
@@ -16,6 +16,7 @@
     "@fastify/cors": "^11.1.0",
     "@fastify/multipart": "^10.0.0",
     "@temu-ai-ops/shared": "0.1.0",
+    "dotenv": "^16.6.1",
     "fastify": "^5.3.2",
     "read-excel-file": "^9.0.10",
     "zod": "^3.24.4"

@@ -1,4 +1,6 @@
 import type {
+  AiCopyResult,
+  AiImageResult,
   AutomationDryRunStartInput,
   AutomationDryRunStartResult,
   AutomationDryRunJob,
@@ -115,6 +117,26 @@ const assertOkWithResponseMessage = async (response: Response, message: string) 
 
   const detail = await response.json().then((body) => typeof body?.message === "string" ? body.message : "").catch(() => "")
   throw new Error(detail ? `${message}: ${detail}` : message)
+}
+
+export const generatePodImage = async (prompt: string): Promise<AiImageResult> => {
+  const response = await fetch(`${API_BASE}/pod/ai/image`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt })
+  })
+  await assertOkWithResponseMessage(response, "AI 生图失败")
+  return response.json()
+}
+
+export const generatePodCopy = async (prompt: string, product: string): Promise<AiCopyResult> => {
+  const response = await fetch(`${API_BASE}/pod/ai/copy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, product })
+  })
+  await assertOkWithResponseMessage(response, "AI 文案生成失败")
+  return response.json()
 }
 
 const automationQuery = (input: AutomationDryRunStartInput = {}) => {

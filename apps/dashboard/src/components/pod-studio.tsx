@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
+import type { AiCopyResult } from "@temu-ai-ops/shared"
+import { generatePodCopy, generatePodImage } from "../api"
 
 type PodStudioProps = {
   onBack: () => void
@@ -60,6 +62,28 @@ type RenderOptions = {
 const CANVAS_SIZE = 1800
 const MAX_OUTPUTS = 48
 const DEMO_DESIGN_SIZE = 1400
+
+// 画布直接操作参数范围（比原滑块更宽，支持自由拖拽/旋转）
+const OFFSET_RANGE = 60
+const ROTATION_RANGE = 180
+const SCALE_MIN = 30
+const SCALE_MAX = 200
+const ROTATE_HANDLE_GAP = 96 // 旋转把手离选中框顶边的距离（视图局部单位）
+const HANDLE_HIT_CSS = 18 // 把手命中半径（CSS 像素）
+
+type DragMode = "move" | "rotate" | "scale"
+
+type DragSession = {
+  mode: DragMode
+  vp: ViewParams
+  area: ProductTemplate["printArea"]
+  startPointerX: number
+  startPointerY: number
+  startCenterX: number
+  startCenterY: number
+  startScale: number
+  startHalfDiagonal: number
+}
 
 const VIEW_OPTIONS: Array<{ key: ViewKey; label: string; description: string }> = [
   { key: "hero", label: "主图", description: "干净货架图" },
@@ -201,6 +225,9 @@ export function PodStudio({ onBack }: PodStudioProps) {
   const inputRef = useRef<HTMLInputElement | null>(null)
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const demoDesignRef = useRef<HTMLCanvasElement | null>(null)
+  const dragRef = useRef<DragSession | null>(null)
+  const [activeMode, setActiveMode] = useState<DragMode | null>(null)
+  const [previewHover, setPreviewHover] = useState(false)
 
   const [sourceFile, setSourceFile] = useState<File | null>(null)
   const [sourceImage, setSourceImage] = useState<CanvasImageSource | null>(null)
@@ -224,6 +251,12 @@ export function PodStudio({ onBack }: PodStudioProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [useDemoDesign, setUseDemoDesign] = useState(true)
+  const [aiPrompt, setAiPrompt] = useState("")
+  const [aiImages, setAiImages] = useState<Array<{ id: string; dataUrl: string }>>([])
+  const [appliedAiId, setAppliedAiId] = useState("")
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false)
+  const [aiCopy, setAiCopy] = useState<AiCopyResult | null>(null)
+  const [isGeneratingCopy, setIsGeneratingCopy] = useState(false)
   const [message, setMessage] = useState("先用内置演示图看效果，也可以上传你自己的 PNG / JPG / WebP 设计图。")
 
   const totalOutputs = selectedProducts.length * selectedSwatches.length * selectedViews.length
@@ -486,6 +519,194 @@ export function PodStudio({ onBack }: PodStudioProps) {
     setPreviewView(result.viewKey)
   }
 
+  // 把 AI 生成的图片（同源 base64 dataURL，无 canvas taint）贴成衣服上的图案
+  const applyAiImage = (item: { id: string; dataUrl: string }) => {
+    const image = new Image()
+    image.onload = () => {
+      const base64 = item.dataUrl.split(",")[1] ?? ""
+      setSourceImage(image)
+      setSourceFile(null)
+      setSourcePreviewUrl("")
+      setSourceMeta({ width: image.width, height: image.height, sizeKb: Math.max(1, Math.round((base64.length * 0.75) / 1024)) })
+      setUseDemoDesign(false)
+      setResults([])
+      setSelectedResultId("")
+      setGeneratedSignature("")
+      setAppliedAiId(item.id)
+      setMessage("已把 AI 图片贴到衣服上，可直接在样张里拖拽 / 旋转，或继续生成。")
+    }
+    image.onerror = () => setMessage("AI 图片加载失败，请重试。")
+    image.src = item.dataUrl
+  }
+
+  const handleGenerateImage = async () => {
+    const prompt = aiPrompt.trim()
+    if (!prompt || isGeneratingImage) {
+      return
+    }
+    setIsGeneratingImage(true)
+    setMessage("AI 正在生成图片，请稍候...")
+    try {
+      const result = await generatePodImage(prompt)
+      const item = { id: "ai-" + Date.now(), dataUrl: result.dataUrl }
+      setAiImages((prev) => [item, ...prev].slice(0, 24))
+      setMessage("已生成 1 张图片。点下方缩略图即可贴到衣服上。")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "AI 生图失败")
+    } finally {
+      setIsGeneratingImage(false)
+    }
+  }
+
+  const handleGenerateCopy = async () => {
+    const prompt = aiPrompt.trim()
+    if (!prompt || isGeneratingCopy) {
+      return
+    }
+    setIsGeneratingCopy(true)
+    setMessage("AI 正在生成标题文案...")
+    try {
+      const result = await generatePodCopy(prompt, PRODUCT_MAP[previewProduct].label)
+      setAiCopy(result)
+      setMessage("标题文案已生成，可一键复制。")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "AI 文案生成失败")
+    } finally {
+      setIsGeneratingCopy(false)
+    }
+  }
+
+  const copyText = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setMessage(label + " 已复制到剪贴板。")
+    } catch {
+      setMessage("复制失败，请手动选择文本复制。")
+    }
+  }
+
+  // 选中框几何：把印花区里的设计图边界映射回画布 1800 坐标，供 SVG 叠加层绘制
+  const previewProductTemplate = PRODUCT_MAP[previewProduct]
+  const previewViewParams = getViewParams(previewProductTemplate, previewView)
+  const previewMetrics = activeDesign
+    ? getDesignMetrics(previewProductTemplate, activeDesign, fitMode, designScale, offsetX, offsetY)
+    : null
+  const overlayCorners = previewMetrics
+    ? getDesignCorners(previewMetrics, designRotation).map((point) => viewLocalToCanvas(previewViewParams, point.x, point.y))
+    : []
+  const overlayRotateLocal = previewMetrics ? getRotateHandle(previewMetrics, designRotation, ROTATE_HANDLE_GAP) : null
+  const overlayRotate = overlayRotateLocal
+    ? viewLocalToCanvas(previewViewParams, overlayRotateLocal.x, overlayRotateLocal.y)
+    : null
+  const overlayTopMid = overlayCorners.length === 4
+    ? { x: (overlayCorners[0].x + overlayCorners[1].x) / 2, y: (overlayCorners[0].y + overlayCorners[1].y) / 2 }
+    : null
+
+  const pointerToCanvas = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = previewCanvasRef.current
+    if (!canvas) {
+      return null
+    }
+    const rect = canvas.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) {
+      return null
+    }
+    const ratio = CANVAS_SIZE / rect.width
+    return {
+      x: (event.clientX - rect.left) * ratio,
+      y: (event.clientY - rect.top) * (CANVAS_SIZE / rect.height),
+      hitRadius: HANDLE_HIT_CSS * ratio
+    }
+  }
+
+  const handlePreviewPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!activeDesign || !previewMetrics) {
+      return
+    }
+    const pt = pointerToCanvas(event)
+    if (!pt) {
+      return
+    }
+
+    let mode: DragMode | null = null
+    if (overlayRotate && Math.hypot(overlayRotate.x - pt.x, overlayRotate.y - pt.y) <= pt.hitRadius) {
+      mode = "rotate"
+    } else if (overlayCorners.some((corner) => Math.hypot(corner.x - pt.x, corner.y - pt.y) <= pt.hitRadius)) {
+      mode = "scale"
+    } else {
+      const local = canvasToViewLocal(previewViewParams, pt.x, pt.y)
+      const dr = degToRad(designRotation)
+      const relX = local.x - previewMetrics.centerX
+      const relY = local.y - previewMetrics.centerY
+      const localX = relX * Math.cos(dr) + relY * Math.sin(dr)
+      const localY = -relX * Math.sin(dr) + relY * Math.cos(dr)
+      if (Math.abs(localX) <= previewMetrics.drawWidth / 2 && Math.abs(localY) <= previewMetrics.drawHeight / 2) {
+        mode = "move"
+      }
+    }
+    if (!mode) {
+      return
+    }
+
+    const local = canvasToViewLocal(previewViewParams, pt.x, pt.y)
+    dragRef.current = {
+      mode,
+      vp: previewViewParams,
+      area: previewMetrics.area,
+      startPointerX: local.x,
+      startPointerY: local.y,
+      startCenterX: previewMetrics.centerX,
+      startCenterY: previewMetrics.centerY,
+      startScale: designScale,
+      startHalfDiagonal: Math.hypot(previewMetrics.drawWidth / 2, previewMetrics.drawHeight / 2)
+    }
+    setActiveMode(mode)
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const handlePreviewPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const session = dragRef.current
+    if (!session) {
+      return
+    }
+    const pt = pointerToCanvas(event)
+    if (!pt) {
+      return
+    }
+    const local = canvasToViewLocal(session.vp, pt.x, pt.y)
+
+    if (session.mode === "move") {
+      const nextCenterX = session.startCenterX + (local.x - session.startPointerX)
+      const nextCenterY = session.startCenterY + (local.y - session.startPointerY)
+      setOffsetX(Math.round(clampNumber((nextCenterX - session.area.x) / session.area.width * 100, -OFFSET_RANGE, OFFSET_RANGE)))
+      setOffsetY(Math.round(clampNumber((nextCenterY - session.area.y) / session.area.height * 100, -OFFSET_RANGE, OFFSET_RANGE)))
+      return
+    }
+
+    if (session.mode === "rotate") {
+      const angle = Math.atan2(local.y - session.startCenterY, local.x - session.startCenterX)
+      setDesignRotation(Math.round(clampNumber(normalizeDegrees(radToDeg(angle) + 90), -ROTATION_RANGE, ROTATION_RANGE)))
+      return
+    }
+
+    if (session.startHalfDiagonal < 1) {
+      return
+    }
+    const distance = Math.hypot(local.x - session.startCenterX, local.y - session.startCenterY)
+    setDesignScale(Math.round(clampNumber(session.startScale * (distance / session.startHalfDiagonal), SCALE_MIN, SCALE_MAX)))
+  }
+
+  const handlePreviewPointerUp = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!dragRef.current) {
+      return
+    }
+    dragRef.current = null
+    setActiveMode(null)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
   return (
     <main className="daily-workspace pod-workspace">
       <section className="daily-console pod-console">
@@ -690,26 +911,124 @@ export function PodStudio({ onBack }: PodStudioProps) {
               </select>
             </label>
           </div>
-          <canvas ref={previewCanvasRef} className="pod-preview-canvas" />
+          <div className={"pod-preview-stage" + (activeMode ? " pod-preview-stage-" + activeMode : "")}>
+            <canvas
+              ref={previewCanvasRef}
+              className="pod-preview-canvas"
+              onPointerDown={handlePreviewPointerDown}
+              onPointerMove={handlePreviewPointerMove}
+              onPointerUp={handlePreviewPointerUp}
+              onPointerCancel={handlePreviewPointerUp}
+              onPointerEnter={() => setPreviewHover(true)}
+              onPointerLeave={() => setPreviewHover(false)}
+            />
+            {previewMetrics && overlayCorners.length === 4 ? (
+              <svg
+                className={"pod-preview-overlay" + (previewHover || activeMode ? " visible" : "")}
+                viewBox={"0 0 " + CANVAS_SIZE + " " + CANVAS_SIZE}
+                preserveAspectRatio="xMidYMid meet"
+                aria-hidden="true"
+              >
+                <polygon className="pod-overlay-box" points={overlayCorners.map((corner) => corner.x + "," + corner.y).join(" ")} />
+                {overlayTopMid && overlayRotate ? (
+                  <line className="pod-overlay-stem" x1={overlayTopMid.x} y1={overlayTopMid.y} x2={overlayRotate.x} y2={overlayRotate.y} />
+                ) : null}
+                {overlayRotate ? <circle className="pod-overlay-rotate" cx={overlayRotate.x} cy={overlayRotate.y} r={26} /> : null}
+                {overlayCorners.map((corner, index) => (
+                  <rect key={index} className="pod-overlay-handle" x={corner.x - 22} y={corner.y - 22} width={44} height={44} rx={9} />
+                ))}
+              </svg>
+            ) : null}
+            <p className="pod-preview-hint">拖动图案移动 · 拖四角缩放 · 拖顶部圆点旋转</p>
+          </div>
           <div className="pod-slider-list">
             <label>
               <span>设计缩放 {designScale}%</span>
-              <input type="range" min="40" max="130" value={designScale} onChange={(event) => setDesignScale(Number(event.target.value))} />
+              <input type="range" min={SCALE_MIN} max={SCALE_MAX} value={designScale} onChange={(event) => setDesignScale(Number(event.target.value))} />
             </label>
             <label>
               <span>旋转角度 {designRotation}°</span>
-              <input type="range" min="-25" max="25" value={designRotation} onChange={(event) => setDesignRotation(Number(event.target.value))} />
+              <input type="range" min={-ROTATION_RANGE} max={ROTATION_RANGE} value={designRotation} onChange={(event) => setDesignRotation(Number(event.target.value))} />
             </label>
             <label>
               <span>左右位移 {offsetX}</span>
-              <input type="range" min="-30" max="30" value={offsetX} onChange={(event) => setOffsetX(Number(event.target.value))} />
+              <input type="range" min={-OFFSET_RANGE} max={OFFSET_RANGE} value={offsetX} onChange={(event) => setOffsetX(Number(event.target.value))} />
             </label>
             <label>
               <span>上下位移 {offsetY}</span>
-              <input type="range" min="-30" max="30" value={offsetY} onChange={(event) => setOffsetY(Number(event.target.value))} />
+              <input type="range" min={-OFFSET_RANGE} max={OFFSET_RANGE} value={offsetY} onChange={(event) => setOffsetY(Number(event.target.value))} />
             </label>
           </div>
         </article>
+      </section>
+
+      <section className="daily-panel pod-ai-panel">
+        <div className="daily-panel-head">
+          <strong>AI 创意生成</strong>
+          <span>输入提示词，生成图案与标题文案</span>
+        </div>
+        <label className="pod-ai-prompt">
+          <span>提示词</span>
+          <textarea
+            value={aiPrompt}
+            onChange={(event) => setAiPrompt(event.target.value)}
+            placeholder="例如：a retro sunset mountain badge, bold typography, vintage print style"
+            rows={3}
+          />
+        </label>
+        <div className="pod-ai-actions">
+          <button className="primary-button" onClick={() => void handleGenerateImage()} disabled={!aiPrompt.trim() || isGeneratingImage}>
+            {isGeneratingImage ? "生成图片中..." : "生成图片"}
+          </button>
+          <button className="ghost-button" onClick={() => void handleGenerateCopy()} disabled={!aiPrompt.trim() || isGeneratingCopy}>
+            {isGeneratingCopy ? "生成文案中..." : "生成标题文案"}
+          </button>
+        </div>
+        <div className="pod-ai-body">
+          <div className="pod-ai-block">
+            <strong className="pod-ai-subhead">生成的图片</strong>
+            {aiImages.length > 0 ? (
+              <div className="pod-ai-gallery">
+                {aiImages.map((item) => (
+                  <button
+                    key={item.id}
+                    className={"pod-ai-thumb " + (appliedAiId === item.id ? "selected" : "")}
+                    onClick={() => applyAiImage(item)}
+                    aria-pressed={appliedAiId === item.id}
+                  >
+                    <img src={item.dataUrl} alt="AI 生成图案" />
+                    {appliedAiId === item.id ? <span className="pod-ai-thumb-badge">已贴到衣服</span> : null}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="pod-ai-empty">还没有生成图片。输入提示词点“生成图片”，再点缩略图贴到衣服上。</p>
+            )}
+          </div>
+          <div className="pod-ai-block">
+            <strong className="pod-ai-subhead">标题文案</strong>
+            {aiCopy ? (
+              <div className="pod-ai-copy">
+                <div className="pod-ai-copy-title">
+                  <p>{aiCopy.title}</p>
+                  <button className="ghost-button small-button" onClick={() => void copyText(aiCopy.title, "标题")}>复制标题</button>
+                </div>
+                {aiCopy.sellingPoints.length > 0 ? (
+                  <ul className="pod-ai-points">
+                    {aiCopy.sellingPoints.map((point, index) => (
+                      <li key={index}>
+                        <span>{point}</span>
+                        <button className="ghost-button small-button" onClick={() => void copyText(point, "卖点")}>复制</button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : (
+              <p className="pod-ai-empty">点“生成标题文案”，基于提示词 + 当前商品生成 Temu 英文标题和卖点。</p>
+            )}
+          </div>
+        </div>
       </section>
 
       <section className="daily-panel">
@@ -819,12 +1138,7 @@ function renderMockupToCanvas(canvas: HTMLCanvasElement, options: RenderOptions)
 
   drawBackdrop(ctx, options.backdrop, options.view, options.swatch)
 
-  const baseLayout = VIEW_LAYOUTS[options.view]
-  const tweak = options.product.viewTweaks?.[options.view] ?? {}
-  const scale = baseLayout.scale * options.product.baseScale * (tweak.scale ?? 1)
-  const rotation = degToRad(baseLayout.rotate + (tweak.rotate ?? 0))
-  const originX = baseLayout.x + (tweak.x ?? 0)
-  const originY = baseLayout.y + (tweak.y ?? 0)
+  const { scale, rotation, originX, originY } = getViewParams(options.product, options.view)
 
   ctx.save()
   ctx.translate(originX, originY)
@@ -1485,6 +1799,92 @@ function alpha(color: string, opacity: number) {
 
 function degToRad(value: number) {
   return value * (Math.PI / 180)
+}
+
+function radToDeg(value: number) {
+  return value * (180 / Math.PI)
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function normalizeDegrees(value: number) {
+  return ((value + 180) % 360 + 360) % 360 - 180
+}
+
+// 整件商品的视图变换（渲染与鼠标换算共用同一套参数，保证拖拽跟手）
+function getViewParams(product: ProductTemplate, view: ViewKey) {
+  const baseLayout = VIEW_LAYOUTS[view]
+  const tweak = product.viewTweaks?.[view] ?? {}
+  return {
+    scale: baseLayout.scale * product.baseScale * (tweak.scale ?? 1),
+    rotation: degToRad(baseLayout.rotate + (tweak.rotate ?? 0)),
+    originX: baseLayout.x + (tweak.x ?? 0),
+    originY: baseLayout.y + (tweak.y ?? 0)
+  }
+}
+
+type ViewParams = ReturnType<typeof getViewParams>
+
+// 印花区内设计图的中心（视图局部坐标）与绘制尺寸
+function getDesignMetrics(product: ProductTemplate, image: CanvasImageSource, fitMode: FitMode, designScale: number, offsetX: number, offsetY: number) {
+  const area = product.printArea
+  const { width: imageWidth, height: imageHeight } = getImageDimensions(image)
+  const baseScale = fitMode === "cover"
+    ? Math.max(area.width / imageWidth, area.height / imageHeight)
+    : Math.min(area.width / imageWidth, area.height / imageHeight)
+  const finalScale = baseScale * (designScale / 100)
+  return {
+    area,
+    centerX: area.x + area.width * (offsetX / 100),
+    centerY: area.y + area.height * (offsetY / 100),
+    drawWidth: imageWidth * finalScale,
+    drawHeight: imageHeight * finalScale
+  }
+}
+
+// 视图局部坐标 -> 画布 1800 坐标
+function viewLocalToCanvas(vp: ViewParams, x: number, y: number) {
+  const cos = Math.cos(vp.rotation)
+  const sin = Math.sin(vp.rotation)
+  const sx = x * vp.scale
+  const sy = y * vp.scale
+  return { x: vp.originX + sx * cos - sy * sin, y: vp.originY + sx * sin + sy * cos }
+}
+
+// 画布 1800 坐标 -> 视图局部坐标（拖拽时把鼠标位移换算回印花区）
+function canvasToViewLocal(vp: ViewParams, x: number, y: number) {
+  const cos = Math.cos(vp.rotation)
+  const sin = Math.sin(vp.rotation)
+  const dx = x - vp.originX
+  const dy = y - vp.originY
+  return { x: (dx * cos + dy * sin) / vp.scale, y: (-dx * sin + dy * cos) / vp.scale }
+}
+
+type DesignMetrics = ReturnType<typeof getDesignMetrics>
+
+// 选中框四角（视图局部坐标），随设计旋转
+function getDesignCorners(metrics: DesignMetrics, designRotation: number) {
+  const dr = degToRad(designRotation)
+  const cos = Math.cos(dr)
+  const sin = Math.sin(dr)
+  const hw = metrics.drawWidth / 2
+  const hh = metrics.drawHeight / 2
+  return ([[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]] as const).map(([dx, dy]) => ({
+    x: metrics.centerX + dx * cos - dy * sin,
+    y: metrics.centerY + dx * sin + dy * cos
+  }))
+}
+
+// 旋转把手锚点（选中框上方，视图局部坐标）
+function getRotateHandle(metrics: DesignMetrics, designRotation: number, gap: number) {
+  const dr = degToRad(designRotation)
+  const distance = metrics.drawHeight / 2 + gap
+  return {
+    x: metrics.centerX + distance * Math.sin(dr),
+    y: metrics.centerY - distance * Math.cos(dr)
+  }
 }
 
 function downloadDataUrl(dataUrl: string, fileName: string) {

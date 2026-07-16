@@ -1,7 +1,10 @@
+import { fileURLToPath } from "node:url"
 import cors from "@fastify/cors"
 import multipart from "@fastify/multipart"
+import dotenv from "dotenv"
 import Fastify from "fastify"
 import { z } from "zod"
+import { AiGenerationError, generateAiCopy, generateAiImage } from "./ai-generation.js"
 import {
   CSV_IMPORT_TEMPLATE,
   createManualProductTask,
@@ -134,6 +137,10 @@ import {
   listSelectorCalibrationJobs,
   startSelectorCalibration
 } from "./selector-calibration-runner"
+
+// 从 apps/server/.env 读取 AI 代理密钥（无论 cwd 在哪都能命中；
+// ai-generation 里按需惰性读 process.env，故加载时机在 import 之后即可）
+dotenv.config({ path: fileURLToPath(new URL("../.env", import.meta.url)) })
 
 const app = Fastify({
   logger: true
@@ -1798,6 +1805,41 @@ app.post("/imports/csv", async (request) => {
   }).parse(request.body)
 
   return importCsvProducts(body.csvText)
+})
+
+app.post("/pod/ai/image", async (request, reply) => {
+  const body = z.object({
+    prompt: z.string().min(1)
+  }).parse(request.body)
+
+  try {
+    return await generateAiImage(body.prompt)
+  } catch (error) {
+    if (error instanceof AiGenerationError) {
+      reply.code(error.statusCode)
+      return { message: error.message }
+    }
+    reply.code(502)
+    return { message: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+app.post("/pod/ai/copy", async (request, reply) => {
+  const body = z.object({
+    prompt: z.string().min(1),
+    product: z.string().default("apparel")
+  }).parse(request.body)
+
+  try {
+    return await generateAiCopy(body.prompt, body.product)
+  } catch (error) {
+    if (error instanceof AiGenerationError) {
+      reply.code(error.statusCode)
+      return { message: error.message }
+    }
+    reply.code(502)
+    return { message: error instanceof Error ? error.message : String(error) }
+  }
 })
 
 app.post("/imports/excel", async (request, reply) => {

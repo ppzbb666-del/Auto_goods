@@ -1836,3 +1836,16 @@ export type DraftUpdateInput = Partial<{
     attributeSummary?: string
   }>
 }>
+
+// POD Studio AI 生图结果：服务端把外部生图接口的图代理成
+// base64 dataURL（data:image/png;base64,...），前端直接塞进 <img>/canvas
+// 图源使用，规避跨域 canvas taint。
+export type AiImageResult = {
+  dataUrl: string
+}
+
+// POD Studio AI 标题文案结果：Temu 英文标题 + 3-4 条卖点。
+export type AiCopyResult = {
+  title: string
+  sellingPoints: string[]
+}
